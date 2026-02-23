@@ -110,7 +110,7 @@ router.get("/daily", async (req, res, next) => {
 
     const sql = `
       SELECT
-        CAST(timestamp AS DATE) AS date,
+        CAST(CAST(timestamp AS DATE) AS VARCHAR) AS date,
         model,
         SUM(cost_usd) AS total_cost,
         SUM(input_tokens) AS input_tokens,
@@ -123,8 +123,8 @@ router.get("/daily", async (req, res, next) => {
         AND cost_usd > 0
         AND timestamp >= $1 AND timestamp < $2
         ${f.clauses.join("\n        ")}
-      GROUP BY CAST(timestamp AS DATE), model
-      ORDER BY date DESC, total_cost DESC
+      GROUP BY CAST(CAST(timestamp AS DATE) AS VARCHAR), model
+      ORDER BY date ASC, total_cost DESC
     `;
 
     const result = await query(sql, [
