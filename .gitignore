@@ -1,0 +1,13 @@
+node_modules/
+dist/
+*.duckdb
+*.duckdb.wal
+.a5c
+.DS_Store
+coverage/
+*.tsbuildinfo
+.env
+.env.local
+*.log
+tmp/
+.claude/

@@ -1,0 +1,49 @@
+{
+  "name": "ccanalytics",
+  "version": "0.1.0",
+  "description": "Local-first analytics for Claude Code sessions — cost tracking, cache efficiency, tool usage patterns",
+  "type": "module",
+  "bin": {
+    "ccanalytics": "./dist/cli.cjs"
+  },
+  "main": "./dist/cli.cjs",
+  "files": [
+    "dist",
+    "sql"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "lint": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "commander": "^12",
+    "@duckdb/node-api": "1.4.4-r.1",
+    "chokidar": "^5",
+    "picocolors": "^1",
+    "nanospinner": "^1",
+    "cli-table3": "^0.6"
+  },
+  "devDependencies": {
+    "tsup": "^8",
+    "vitest": "^3",
+    "typescript": "^5.7",
+    "@types/node": "^22"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "analytics",
+    "duckdb",
+    "cli",
+    "cost-tracking"
+  ],
+  "license": "MIT"
+}
