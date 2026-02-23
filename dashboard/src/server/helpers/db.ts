@@ -8,7 +8,12 @@
 
 import { DuckDBInstance, type DuckDBValue } from "@duckdb/node-api";
 import path from "node:path";
+import fs from "node:fs";
 import os from "node:os";
+import { fileURLToPath } from "node:url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 /** Result of a database query. */
 export interface DbResult<T = Record<string, unknown>> {
@@ -46,7 +51,59 @@ async function getConnection() {
   dbPath = getDbPath();
   instance = await DuckDBInstance.create(dbPath);
   connection = await instance.connect();
+
+  // Ensure analytical views are up-to-date on first connection.
+  await initViews(connection);
+
   return connection;
+}
+
+/**
+ * Run the views.sql file to create/replace analytical views.
+ * This ensures the dashboard always uses the latest view definitions.
+ */
+async function initViews(
+  conn: Awaited<ReturnType<InstanceType<typeof DuckDBInstance>["connect"]>>,
+): Promise<void> {
+  // Resolve views.sql relative to known locations
+  const thisDir = __dirname;
+  const candidates = [
+    path.resolve(thisDir, "../../../../sql/views.sql"),       // dev: src/server/helpers/ -> root
+    path.resolve(thisDir, "../../../sql/views.sql"),          // built
+    path.resolve(process.cwd(), "sql/views.sql"),              // cwd = project root
+    path.resolve(process.cwd(), "../sql/views.sql"),           // cwd = dashboard/
+  ];
+
+  let viewsSql: string | null = null;
+  for (const candidate of candidates) {
+    try {
+      viewsSql = fs.readFileSync(candidate, "utf-8");
+      break;
+    } catch {
+      // Try next candidate
+    }
+  }
+
+  if (!viewsSql) {
+    console.warn("Warning: Could not find sql/views.sql — skipping view initialization");
+    return;
+  }
+
+  // Split on semicolons and execute each statement
+  const statements = viewsSql
+    .split(";")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0 && !s.startsWith("--"));
+
+  for (const stmt of statements) {
+    try {
+      await conn.run(stmt);
+    } catch (err) {
+      console.warn(`Warning: Failed to execute view statement: ${(err as Error).message}`);
+    }
+  }
+
+  console.log("Analytical views initialized.");
 }
 
 /**

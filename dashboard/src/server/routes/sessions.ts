@@ -38,6 +38,7 @@ router.get("/", async (req, res, next) => {
     const sortColumn = sortColumnMap[sortBy] ?? "start_time";
 
     const f = buildSessionFilterClauses(filters, 5, "v_session_summary");
+    const fCount = buildSessionFilterClauses(filters, 3, "v_session_summary");
 
     const sql = `
       SELECT session_id, start_time, end_time, duration_seconds, model,
@@ -54,12 +55,12 @@ router.get("/", async (req, res, next) => {
       SELECT COUNT(*) AS total
       FROM v_session_summary
       WHERE start_time >= $1 AND start_time < $2
-        ${f.clauses.join("\n        ")}
+        ${fCount.clauses.join("\n        ")}
     `;
 
     const [result, countResult] = await Promise.all([
       query(sql, [filters.range.start, filters.range.end, limit, offset, ...f.params]),
-      query(countSql, [filters.range.start, filters.range.end, ...f.params]),
+      query(countSql, [filters.range.start, filters.range.end, ...fCount.params]),
     ]);
 
     const rows = result.rows.map((row: Record<string, unknown>) => ({

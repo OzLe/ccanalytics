@@ -75,64 +75,71 @@ export class ClaudeDesktopAdapter implements ISourceAdapter {
     const sinceDate = options?.since ? new Date(options.since) : null;
     const results: DiscoveredFile[] = [];
 
-    // Read top-level session group directories
-    let groupDirs: string[];
-    try {
-      const entries = await fs.readdir(sessionsDir, { withFileTypes: true });
-      groupDirs = entries.filter((e) => e.isDirectory()).map((e) => e.name);
-    } catch {
-      // Directory doesn't exist — Desktop not installed or no sessions yet
-      return [];
-    }
-
-    for (const groupName of groupDirs) {
-      const groupPath = path.join(sessionsDir, groupName);
-
-      // Each group directory contains session subdirectories
-      let sessionDirs: string[];
-      try {
-        const entries = await fs.readdir(groupPath, { withFileTypes: true });
-        sessionDirs = entries.filter((e) => e.isDirectory()).map((e) => e.name);
-      } catch {
-        continue;
-      }
-
-      for (const sessionDirName of sessionDirs) {
-        const sessionPath = path.join(groupPath, sessionDirName);
-        const auditPath = path.join(sessionPath, "audit.jsonl");
-
-        let stat: Awaited<ReturnType<typeof fs.stat>>;
-        try {
-          stat = await fs.stat(auditPath);
-        } catch {
-          // No audit.jsonl in this session directory
-          continue;
-        }
-
-        if (sinceDate && stat.mtime < sinceDate) {
-          continue;
-        }
-
-        // Try to load companion session metadata
-        const metadata = await this.loadSessionMetadata(sessionPath, sessionDirName);
-
-        results.push({
-          absolutePath: auditPath,
-          projectPath: (metadata?.cwd as string) ?? sessionDirName,
-          sessionId: sessionDirName,
-          isSidechain: false,
-          sizeBytes: stat.size,
-          modifiedAt: stat.mtime,
-          sourceType: this.sourceType,
-          metadata: metadata ?? undefined,
-        });
-      }
-    }
+    // Recursively find all audit.jsonl files under the sessions directory.
+    // The Desktop directory structure can be nested arbitrarily:
+    //   local-agent-mode-sessions/<orgId>/<projectId>/<sessionId>/audit.jsonl
+    await this.walkForAuditFiles(sessionsDir, sinceDate, results);
 
     // Sort by modification time descending (newest first)
     results.sort((a, b) => b.modifiedAt.getTime() - a.modifiedAt.getTime());
 
     return results;
+  }
+
+  /**
+   * Recursively walk directories looking for audit.jsonl files.
+   * When found, the parent directory is treated as the session directory.
+   */
+  private async walkForAuditFiles(
+    dir: string,
+    sinceDate: Date | null,
+    results: DiscoveredFile[],
+  ): Promise<void> {
+    let entries: Awaited<ReturnType<typeof fs.readdir>>;
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    // Check if this directory contains an audit.jsonl
+    const hasAudit = entries.some((e) => !e.isDirectory() && e.name === "audit.jsonl");
+
+    if (hasAudit) {
+      const auditPath = path.join(dir, "audit.jsonl");
+      let stat: Awaited<ReturnType<typeof fs.stat>>;
+      try {
+        stat = await fs.stat(auditPath);
+      } catch {
+        return;
+      }
+
+      if (sinceDate && stat.mtime < sinceDate) {
+        return;
+      }
+
+      const sessionDirName = path.basename(dir);
+      const metadata = await this.loadSessionMetadata(dir, sessionDirName);
+
+      results.push({
+        absolutePath: auditPath,
+        projectPath: (metadata?.cwd as string) ?? sessionDirName,
+        sessionId: sessionDirName,
+        isSidechain: false,
+        sizeBytes: stat.size,
+        modifiedAt: stat.mtime,
+        sourceType: this.sourceType,
+        metadata: metadata ?? undefined,
+      });
+      return; // Don't recurse further into a session directory
+    }
+
+    // Recurse into subdirectories
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        await this.walkForAuditFiles(path.join(dir, entry.name), sinceDate, results);
+      }
+    }
   }
 
   async parseFile(
