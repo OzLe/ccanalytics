@@ -20,6 +20,7 @@ import {
   GRID_PROPS,
   X_AXIS_PROPS,
   Y_AXIS_PROPS,
+  AXIS_TICK_FILL,
 } from "@/lib/chartTheme";
 
 export default function ToolsPage() {
@@ -60,9 +61,9 @@ export default function ToolsPage() {
   }, [toolUsage.data]);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       {/* KPI Cards */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+      <div className="grid grid-cols-1 gap-5 sm:grid-cols-3">
         <KPICard
           label="Total Tool Calls"
           value={totalToolCalls.toLocaleString()}
@@ -106,7 +107,7 @@ export default function ToolsPage() {
               dataKey="name"
               {...Y_AXIS_PROPS}
               width={130}
-              tick={{ fill: "#94a3b8", fontSize: 11 }}
+              tick={{ fill: AXIS_TICK_FILL, fontSize: 11 }}
             />
             <Tooltip
               content={
@@ -118,7 +119,7 @@ export default function ToolsPage() {
             <Bar
               dataKey="calls"
               name="Calls"
-              fill="#8b5cf6"
+              fill={CHART_COLORS[1]}
               radius={[0, 4, 4, 0]}
               maxBarSize={22}
             />
@@ -144,11 +145,11 @@ export default function ToolsPage() {
                     color: "var(--text-muted)",
                   }}
                 >
-                  <th className="py-2 pr-3">Tool</th>
-                  <th className="py-2 pr-3 text-right">Calls</th>
-                  <th className="py-2 pr-5 text-right">Rate</th>
-                  <th className="py-2 pl-4 w-28">Bar</th>
-                  <th className="py-2 pr-3 text-right">Avg Time</th>
+                  <th className="py-3 px-4">Tool</th>
+                  <th className="py-3 px-4 text-right">Calls</th>
+                  <th className="py-3 px-4 text-right">Rate</th>
+                  <th className="py-3 px-4 w-28">Bar</th>
+                  <th className="py-3 px-4 text-right">Avg Time</th>
                 </tr>
               </thead>
               <tbody>
@@ -156,35 +157,36 @@ export default function ToolsPage() {
                   const ratePercent = tool.successRate * 100;
                   const barColor =
                     ratePercent >= 95
-                      ? "#22c55e"
+                      ? "var(--success)"
                       : ratePercent >= 80
-                        ? "#f59e0b"
-                        : "#ef4444";
+                        ? "var(--warning)"
+                        : "var(--danger)";
                   return (
                     <tr
                       key={tool.toolName}
-                      className="border-b"
+                      className="table-row-hover border-b"
                       style={{ borderColor: "var(--border)" }}
+                      tabIndex={0}
                     >
                       <td
-                        className="py-2 pr-3 font-medium"
+                        className="py-3 px-4 font-medium"
                         style={{ color: "var(--text-primary)" }}
                       >
                         {tool.toolName}
                       </td>
                       <td
-                        className="py-2 pr-3 text-right tabular-nums"
+                        className="py-3 px-4 text-right tabular-nums"
                         style={{ color: "var(--text-secondary)" }}
                       >
                         {tool.totalCalls.toLocaleString()}
                       </td>
                       <td
-                        className="py-2 pr-3 text-right font-semibold tabular-nums"
+                        className="py-3 px-4 text-right font-semibold tabular-nums"
                         style={{ color: barColor }}
                       >
                         {ratePercent.toFixed(1)}%
                       </td>
-                      <td className="py-2 pl-3">
+                      <td className="py-3 px-4">
                         <div
                           className="h-2 rounded-full"
                           style={{ backgroundColor: "var(--bg-hover)" }}
@@ -201,7 +203,7 @@ export default function ToolsPage() {
                         </div>
                       </td>
                       <td
-                        className="py-2 pr-3 text-right tabular-nums"
+                        className="py-3 px-4 text-right tabular-nums"
                         style={{ color: "var(--text-secondary)" }}
                       >
                         {formatDuration(tool.avgDurationMs / 1000)}
@@ -232,19 +234,20 @@ export default function ToolsPage() {
                     color: "var(--text-muted)",
                   }}
                 >
-                  <th className="py-2 pr-3">Chain</th>
-                  <th className="py-2 pr-3 text-right">Count</th>
-                  <th className="py-2 text-right">Avg Time</th>
+                  <th className="py-3 px-4">Chain</th>
+                  <th className="py-3 px-4 text-right">Count</th>
+                  <th className="py-3 px-4 text-right">Avg Time</th>
                 </tr>
               </thead>
               <tbody>
                 {toolChains.data?.map((chain, idx) => (
                   <tr
                     key={idx}
-                    className="border-b"
+                    className="table-row-hover border-b"
                     style={{ borderColor: "var(--border)" }}
+                    tabIndex={0}
                   >
-                    <td className="py-2.5 pr-3">
+                    <td className="py-3 px-4">
                       <div className="flex flex-wrap items-center gap-1">
                         {chain.chain.map((tool, ti) => (
                           <span key={ti} className="flex items-center gap-1">
@@ -270,13 +273,13 @@ export default function ToolsPage() {
                       </div>
                     </td>
                     <td
-                      className="py-2.5 pr-3 text-right font-semibold tabular-nums"
+                      className="py-3 px-4 text-right font-semibold tabular-nums"
                       style={{ color: "var(--text-primary)" }}
                     >
                       {chain.occurrences.toLocaleString()}
                     </td>
                     <td
-                      className="py-2.5 text-right tabular-nums"
+                      className="py-3 px-4 text-right tabular-nums"
                       style={{ color: "var(--text-secondary)" }}
                     >
                       {formatDuration(chain.avgDurationMs / 1000)}

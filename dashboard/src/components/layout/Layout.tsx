@@ -15,7 +15,7 @@ export default function Layout() {
       <div className="flex flex-1 flex-col overflow-hidden">
         <TopBar onMenuClick={() => setMobileMenuOpen(true)} />
         <main
-          className="flex-1 overflow-y-auto p-6"
+          className="flex-1 overflow-y-auto p-5 sm:p-6 lg:p-8"
           style={{ backgroundColor: "var(--bg-primary)" }}
         >
           <Outlet />

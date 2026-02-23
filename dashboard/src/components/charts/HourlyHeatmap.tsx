@@ -79,6 +79,7 @@ export default function HourlyHeatmap({ data }: Props) {
       .attr("text-anchor", "end")
       .attr("fill", "#94a3b8")
       .attr("font-size", 11)
+      .attr("font-family", "'Inter', sans-serif")
       .text((d) => d);
 
     // Hour labels (columns) - every 3 hours
@@ -93,8 +94,9 @@ export default function HourlyHeatmap({ data }: Props) {
       )
       .attr("y", marginTop - 8)
       .attr("text-anchor", "middle")
-      .attr("fill", "#64748b")
+      .attr("fill", "#7c8aa3")
       .attr("font-size", 10)
+      .attr("font-family", "'Inter', sans-serif")
       .text((d) => d.label);
 
     // Build cell data

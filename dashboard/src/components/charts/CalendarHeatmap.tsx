@@ -58,7 +58,7 @@ export default function CalendarHeatmap({ data }: Props) {
 
     const colorScale = d3
       .scaleSequential((t) => {
-        if (t === 0) return "#1e2235";
+        if (t === 0) return "#1a1d2e";
         return d3.interpolate("#1a3a2a", "#22c55e")(t);
       })
       .domain([0, maxValue]);
@@ -89,8 +89,9 @@ export default function CalendarHeatmap({ data }: Props) {
       .attr("y", (_, i) => marginTop + i * (CELL_SIZE + CELL_GAP) + CELL_SIZE / 2)
       .attr("dy", "0.35em")
       .attr("text-anchor", "end")
-      .attr("fill", "#64748b")
+      .attr("fill", "#7c8aa3")
       .attr("font-size", 10)
+      .attr("font-family", "'Inter', sans-serif")
       .text((d) => d);
 
     // Month labels
@@ -116,8 +117,9 @@ export default function CalendarHeatmap({ data }: Props) {
       .join("text")
       .attr("x", (d) => d.x)
       .attr("y", marginTop - 6)
-      .attr("fill", "#64748b")
+      .attr("fill", "#7c8aa3")
       .attr("font-size", 10)
+      .attr("font-family", "'Inter', sans-serif")
       .text((d) => d.label);
 
     // Day cells

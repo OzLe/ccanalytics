@@ -15,7 +15,7 @@ export default function EmptyState({
   action,
 }: EmptyStateProps) {
   return (
-    <div className="flex flex-col items-center justify-center py-16 px-4">
+    <div className="flex flex-col items-center justify-center py-12 px-4">
       <div
         className="mb-4 flex h-16 w-16 items-center justify-center rounded-full text-2xl"
         style={{ backgroundColor: "var(--bg-hover)", color: "var(--text-muted)" }}
@@ -53,14 +53,7 @@ export default function EmptyState({
       {action && (
         <button
           onClick={action.onClick}
-          className="mt-4 rounded-lg px-4 py-2 text-sm font-medium text-white transition-colors"
-          style={{ backgroundColor: "var(--accent)" }}
-          onMouseEnter={(e) =>
-            (e.currentTarget.style.backgroundColor = "var(--accent-hover)")
-          }
-          onMouseLeave={(e) =>
-            (e.currentTarget.style.backgroundColor = "var(--accent)")
-          }
+          className="empty-state-action mt-4 rounded-lg px-4 py-2 text-sm font-medium text-white transition-colors"
         >
           {action.label}
         </button>

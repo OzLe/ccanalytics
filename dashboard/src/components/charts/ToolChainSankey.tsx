@@ -249,6 +249,7 @@ export default function ToolChainSankey({ data }: Props) {
       .attr("fill", "#e2e8f0")
       .attr("font-size", 12)
       .attr("font-weight", 500)
+      .attr("font-family", "'Inter', sans-serif")
       .text((d) => d.name ?? "");
   }, [data]);
 

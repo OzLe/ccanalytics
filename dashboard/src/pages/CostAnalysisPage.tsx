@@ -28,6 +28,8 @@ import {
   GRID_PROPS,
   X_AXIS_PROPS,
   Y_AXIS_PROPS,
+  AXIS_TICK_FILL,
+  TREND_LINE_COLOR,
 } from "@/lib/chartTheme";
 
 /**
@@ -138,9 +140,9 @@ export default function CostAnalysisPage() {
   );
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       {/* KPI Cards */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+      <div className="grid grid-cols-1 gap-5 sm:grid-cols-3">
         <KPICard
           label="Total Cost"
           value={formatCost(totalCost)}
@@ -190,7 +192,7 @@ export default function CostAnalysisPage() {
               }
             />
             <Legend
-              wrapperStyle={{ color: "#94a3b8", fontSize: 12 }}
+              wrapperStyle={{ color: AXIS_TICK_FILL, fontSize: 12 }}
             />
             {models.map((model, i) => (
               <Bar
@@ -213,7 +215,7 @@ export default function CostAnalysisPage() {
                 return sum;
               }}
               name="Total"
-              stroke="#e2e8f0"
+              stroke={TREND_LINE_COLOR}
               strokeWidth={1.5}
               strokeDasharray="4 3"
               dot={false}
@@ -251,7 +253,7 @@ export default function CostAnalysisPage() {
                 dataKey="name"
                 {...Y_AXIS_PROPS}
                 width={110}
-                tick={{ fill: "#94a3b8", fontSize: 11 }}
+                tick={{ fill: AXIS_TICK_FILL, fontSize: 11 }}
               />
               <Tooltip
                 content={
@@ -263,7 +265,7 @@ export default function CostAnalysisPage() {
               <Bar
                 dataKey="cost"
                 name="Cost"
-                fill="#ec4899"
+                fill={CHART_COLORS[2]}
                 radius={[0, 4, 4, 0]}
                 maxBarSize={24}
               />
@@ -288,38 +290,39 @@ export default function CostAnalysisPage() {
                     color: "var(--text-muted)",
                   }}
                 >
-                  <th className="py-2 pr-4 whitespace-nowrap">Model</th>
-                  <th className="py-2 pr-4 text-right whitespace-nowrap">Sessions</th>
-                  <th className="py-2 pr-6 text-right whitespace-nowrap">Cost</th>
-                  <th className="py-2 pl-4 w-24 whitespace-nowrap">Dist.</th>
+                  <th className="px-4 py-3 whitespace-nowrap">Model</th>
+                  <th className="px-4 py-3 text-right whitespace-nowrap">Sessions</th>
+                  <th className="px-4 py-3 text-right whitespace-nowrap">Cost</th>
+                  <th className="px-4 py-3 w-24 whitespace-nowrap">Dist.</th>
                 </tr>
               </thead>
               <tbody>
                 {modelTableData.map((row) => (
                   <tr
                     key={row.fullModel}
-                    className="border-b"
+                    className="table-row-hover border-b"
                     style={{ borderColor: "var(--border)" }}
+                    tabIndex={0}
                   >
                     <td
-                      className="py-2.5 pr-4 font-medium"
+                      className="px-4 py-3 font-medium"
                       style={{ color: "var(--text-primary)" }}
                     >
                       {row.model}
                     </td>
                     <td
-                      className="py-2.5 pr-4 text-right tabular-nums"
+                      className="px-4 py-3 text-right tabular-nums"
                       style={{ color: "var(--text-secondary)" }}
                     >
                       {row.sessions.toLocaleString()}
                     </td>
                     <td
-                      className="py-2.5 pr-4 text-right font-semibold tabular-nums"
+                      className="px-4 py-3 text-right font-semibold tabular-nums"
                       style={{ color: "var(--text-primary)" }}
                     >
                       {formatCost(row.totalCost)}
                     </td>
-                    <td className="py-2.5 pl-3">
+                    <td className="px-4 py-3">
                       <div
                         className="h-2 rounded-full"
                         style={{ backgroundColor: "var(--bg-hover)" }}
@@ -328,7 +331,7 @@ export default function CostAnalysisPage() {
                           className="h-2 rounded-full"
                           style={{
                             width: `${(row.totalCost / maxModelCost) * 100}%`,
-                            backgroundColor: "#6366f1",
+                            backgroundColor: CHART_COLORS[0],
                             minWidth: row.totalCost > 0 ? "4px" : "0px",
                           }}
                         />
@@ -344,7 +347,7 @@ export default function CostAnalysisPage() {
 
       {/* Cost Treemap */}
       <ChartCard
-        title="Cost by Project"
+        title="Project Cost Treemap"
         subtitle="Hierarchical cost breakdown"
         loading={costByProject.isLoading}
         empty={!costByProject.data || costByProject.data.length === 0}

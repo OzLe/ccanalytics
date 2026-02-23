@@ -78,9 +78,9 @@ export default function CachePage() {
   }, [metrics.data]);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       {/* KPI Cards */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
         <KPICard
           label="Cache Hit Rate"
           value={
@@ -112,7 +112,7 @@ export default function CachePage() {
           loading={metrics.isLoading}
         />
         <div
-          className="rounded-xl border p-5 flex flex-col justify-between"
+          className="rounded-xl border p-6 flex flex-col justify-between"
           style={{
             backgroundColor: "var(--bg-card)",
             borderColor: "var(--border)",

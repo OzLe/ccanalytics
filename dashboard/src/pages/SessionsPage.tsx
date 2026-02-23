@@ -100,13 +100,13 @@ function CacheBar({ rate }: { rate: number }) {
 function SortArrow({ active, order }: { active: boolean; order: "asc" | "desc" }) {
   if (!active) {
     return (
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" opacity={0.3}>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" opacity={0.3}>
         <path d="M8 15l4 4 4-4M8 9l4-4 4 4" />
       </svg>
     );
   }
   return (
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2.5">
       {order === "asc" ? <path d="M8 15l4-4 4 4" /> : <path d="M8 9l4 4 4-4" />}
     </svg>
   );
@@ -177,9 +177,9 @@ export default function SessionsPage() {
   const skeletonRows = Array.from({ length: 5 });
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       {/* KPI Cards */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
         <KPICard
           label="Total Sessions"
           value={kpiTotalSessions.toLocaleString()}
@@ -224,17 +224,10 @@ export default function SessionsPage() {
                 {COLUMNS.map((col) => (
                   <th
                     key={col.key}
-                    className={`cursor-pointer select-none px-4 py-3 text-xs font-semibold uppercase tracking-wider transition-colors ${col.align === "right" ? "text-right" : ""}`}
-                    style={{ color: "var(--text-muted)" }}
+                    className={`table-header-sortable cursor-pointer select-none px-4 py-3 text-xs font-semibold uppercase tracking-wider transition-colors ${col.align === "right" ? "text-right" : ""}`}
                     onClick={() => handleSort(col.key)}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.color = "var(--text-primary)";
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.color = "var(--text-muted)";
-                    }}
                   >
-                    <span className="inline-flex items-center gap-1">
+                    <span className="inline-flex items-center gap-1.5">
                       {col.label}
                       <SortArrow
                         active={sort.field === col.key}
@@ -245,8 +238,7 @@ export default function SessionsPage() {
                 ))}
                 {/* Sparkline column header */}
                 <th
-                  className="px-4 py-3 text-xs font-semibold uppercase tracking-wider"
-                  style={{ color: "var(--text-muted)" }}
+                  className="table-header-sortable px-4 py-3 text-xs font-semibold uppercase tracking-wider"
                 >
                   Cost/Turn
                 </th>
@@ -283,15 +275,10 @@ export default function SessionsPage() {
                 items.map((session) => (
                   <tr
                     key={session.sessionId}
-                    className="cursor-pointer border-b transition-colors"
+                    className="table-row-hover cursor-pointer border-b"
+                    tabIndex={0}
                     style={{ borderColor: "var(--border)" }}
                     onClick={() => navigate(`/sessions/${session.sessionId}`)}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.backgroundColor = "var(--bg-hover)";
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.backgroundColor = "transparent";
-                    }}
                   >
                     {/* Start Time */}
                     <td
@@ -358,7 +345,7 @@ export default function SessionsPage() {
         {/* Pagination Controls */}
         {!sessions.isLoading && items.length > 0 && (
           <div
-            className="flex items-center justify-between border-t px-4 py-3"
+            className="flex items-center justify-between border-t px-4 py-3.5"
             style={{ borderColor: "var(--border)" }}
           >
             <p
@@ -372,22 +359,7 @@ export default function SessionsPage() {
               <button
                 onClick={goPrev}
                 disabled={offset === 0}
-                className="rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-40"
-                style={{
-                  borderColor: "var(--border)",
-                  color: "var(--text-secondary)",
-                  backgroundColor: "var(--bg-secondary)",
-                }}
-                onMouseEnter={(e) => {
-                  if (!e.currentTarget.disabled) {
-                    e.currentTarget.style.borderColor = "var(--border-hover)";
-                    e.currentTarget.style.color = "var(--text-primary)";
-                  }
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.borderColor = "var(--border)";
-                  e.currentTarget.style.color = "var(--text-secondary)";
-                }}
+                className="pagination-btn rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors"
               >
                 Prev
               </button>
@@ -400,22 +372,7 @@ export default function SessionsPage() {
               <button
                 onClick={goNext}
                 disabled={currentPage >= totalPages}
-                className="rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-40"
-                style={{
-                  borderColor: "var(--border)",
-                  color: "var(--text-secondary)",
-                  backgroundColor: "var(--bg-secondary)",
-                }}
-                onMouseEnter={(e) => {
-                  if (!e.currentTarget.disabled) {
-                    e.currentTarget.style.borderColor = "var(--border-hover)";
-                    e.currentTarget.style.color = "var(--text-primary)";
-                  }
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.borderColor = "var(--border)";
-                  e.currentTarget.style.color = "var(--text-secondary)";
-                }}
+                className="pagination-btn rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors"
               >
                 Next
               </button>

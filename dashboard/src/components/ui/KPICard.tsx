@@ -14,30 +14,21 @@ interface KPICardProps {
 }
 
 const typeBg: Record<KPIType, string> = {
-  cost: "rgba(99, 102, 241, 0.08)",
-  cache: "rgba(34, 197, 94, 0.08)",
-  sessions: "rgba(168, 85, 247, 0.08)",
-  tools: "rgba(249, 115, 22, 0.08)",
-  tokens: "rgba(56, 189, 248, 0.08)",
-  duration: "rgba(234, 179, 8, 0.08)",
+  cost: "var(--accent-subtle)",
+  cache: "var(--success-subtle)",
+  sessions: "var(--purple-subtle)",
+  tools: "var(--orange-subtle)",
+  tokens: "var(--info-subtle)",
+  duration: "var(--warning-subtle)",
 };
 
 const typeBorder: Record<KPIType, string> = {
-  cost: "rgba(99, 102, 241, 0.2)",
-  cache: "rgba(34, 197, 94, 0.2)",
-  sessions: "rgba(168, 85, 247, 0.2)",
-  tools: "rgba(249, 115, 22, 0.2)",
-  tokens: "rgba(56, 189, 248, 0.2)",
-  duration: "rgba(234, 179, 8, 0.2)",
-};
-
-const typeIconColor: Record<KPIType, string> = {
-  cost: "#6366f1",
-  cache: "#22c55e",
-  sessions: "#a855f7",
-  tools: "#f97316",
-  tokens: "#38bdf8",
-  duration: "#eab308",
+  cost: "var(--accent-muted)",
+  cache: "var(--success-muted)",
+  sessions: "var(--purple-muted)",
+  tools: "var(--orange-muted)",
+  tokens: "var(--info-muted)",
+  duration: "var(--warning-muted)",
 };
 
 function TrendIndicator({ value, label }: { value: number; label?: string }) {
@@ -82,7 +73,7 @@ export default function KPICard({
   if (loading) {
     return (
       <div
-        className="rounded-xl border p-5"
+        className="rounded-xl border p-6"
         style={{
           backgroundColor: "var(--bg-card)",
           borderColor: "var(--border)",
@@ -97,32 +88,27 @@ export default function KPICard({
 
   return (
     <div
-      className="rounded-xl border p-5 transition-all duration-200"
+      className="rounded-xl border p-6 transition-all duration-200 hover:border-[var(--border-hover)]"
       style={{
         backgroundColor: typeBg[type],
         borderColor: typeBorder[type],
-      }}
-      onMouseEnter={(e) => {
-        e.currentTarget.style.borderColor = typeIconColor[type];
-      }}
-      onMouseLeave={(e) => {
-        e.currentTarget.style.borderColor = typeBorder[type];
+        boxShadow: "var(--shadow-sm)",
       }}
     >
       <p
-        className="text-xs font-medium uppercase tracking-wider"
-        style={{ color: "var(--text-secondary)" }}
+        className="text-[11px] font-semibold uppercase"
+        style={{ color: "var(--text-secondary)", letterSpacing: "0.05em" }}
       >
         {label}
       </p>
       <p
-        className="mt-2 text-2xl font-bold tracking-tight"
+        className="mt-3 text-[30px] font-bold tracking-tight leading-tight"
         style={{ color: "var(--text-primary)" }}
       >
         {value}
       </p>
       {trend && (
-        <div className="mt-1.5">
+        <div className="mt-2">
           <TrendIndicator value={trend.value} label={trend.label} />
         </div>
       )}

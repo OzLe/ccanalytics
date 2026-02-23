@@ -25,32 +25,27 @@ export default function ChartCard({
 }: ChartCardProps) {
   return (
     <div
-      className={`rounded-xl border transition-colors duration-200 ${className}`}
+      className={`rounded-xl border transition-all duration-200 hover:border-[var(--border-hover)] ${className}`}
       style={{
         backgroundColor: "var(--bg-card)",
         borderColor: "var(--border)",
-      }}
-      onMouseEnter={(e) => {
-        e.currentTarget.style.borderColor = "var(--border-hover)";
-      }}
-      onMouseLeave={(e) => {
-        e.currentTarget.style.borderColor = "var(--border)";
+        boxShadow: "var(--shadow-sm)",
       }}
     >
       <div
-        className="flex items-start justify-between border-b px-5 py-4"
+        className="flex items-start justify-between border-b px-6 py-5"
         style={{ borderColor: "var(--border)" }}
       >
         <div>
           <h3
-            className="text-sm font-semibold"
+            className="text-base font-medium"
             style={{ color: "var(--text-primary)" }}
           >
             {title}
           </h3>
           {subtitle && (
             <p
-              className="mt-0.5 text-xs"
+              className="mt-0.5 text-[13px]"
               style={{ color: "var(--text-muted)" }}
             >
               {subtitle}
@@ -60,7 +55,7 @@ export default function ChartCard({
         {action && <div>{action}</div>}
       </div>
 
-      <div className="p-5">
+      <div className="p-6">
         {loading ? (
           <div className="space-y-3 py-8">
             <Skeleton height="1rem" width="80%" />

@@ -70,76 +70,69 @@ function FilterDropdown({
     return () => document.removeEventListener("mousedown", handleClick);
   }, []);
 
+  const isActive = value !== null;
+
+  const chipClasses = [
+    "filter-chip",
+    isActive && "filter-chip--active",
+    open && "filter-chip--open",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  const chevronClasses = [
+    "filter-chip__chevron",
+    open && "filter-chip__chevron--open",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
     <div ref={ref} className="relative">
-      <button
-        onClick={() => setOpen(!open)}
-        className="flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors"
-        style={{
-          backgroundColor: value ? "var(--accent-muted)" : "var(--bg-secondary)",
-          borderColor: value ? "var(--accent)" : "var(--border)",
-          color: value ? "var(--accent-hover)" : "var(--text-secondary)",
-        }}
-      >
-        {label}
-        {value && (
-          <span
-            className="max-w-[100px] truncate"
-            style={{ color: "var(--accent-hover)" }}
-          >
-            : {value}
+      <button onClick={() => setOpen(!open)} className={chipClasses}>
+        {isActive && <span className="filter-dot" />}
+        <span>{label}</span>
+        {isActive && (
+          <span className="max-w-[100px] truncate opacity-70">
+            {value}
           </span>
         )}
         <svg
-          width="12"
-          height="12"
+          width="10"
+          height="10"
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"
-          strokeWidth="2"
+          strokeWidth="2.5"
           strokeLinecap="round"
           strokeLinejoin="round"
-          className="ml-0.5 flex-shrink-0"
+          className={chevronClasses}
         >
           <path d="M6 9l6 6 6-6" />
         </svg>
       </button>
 
       {open && (
-        <div
-          className="absolute right-0 top-full z-50 mt-1 min-w-[180px] rounded-lg border py-1 shadow-lg"
-          style={{
-            backgroundColor: "var(--bg-card)",
-            borderColor: "var(--border)",
-          }}
-        >
+        <div className="filter-dropdown">
+          {/* "All" option */}
           <button
             onClick={() => {
               onChange(null);
               setOpen(false);
             }}
-            className="w-full px-3 py-1.5 text-left text-xs transition-colors"
-            style={{
-              color: !value ? "var(--accent)" : "var(--text-secondary)",
-              backgroundColor: !value ? "var(--accent-muted)" : "transparent",
-            }}
-            onMouseEnter={(e) => {
-              if (value)
-                e.currentTarget.style.backgroundColor = "var(--bg-hover)";
-            }}
-            onMouseLeave={(e) => {
-              if (value)
-                e.currentTarget.style.backgroundColor = "transparent";
-            }}
+            className={`filter-dropdown__item ${
+              !value ? "filter-dropdown__item--selected" : ""
+            }`}
           >
-            All
+            {!value && <CheckIcon />}
+            <span>All</span>
           </button>
+
+          <div className="filter-dropdown__separator" />
+
           {loading ? (
-            <div
-              className="px-3 py-2 text-xs"
-              style={{ color: "var(--text-muted)" }}
-            >
-              Loading...
+            <div className="filter-dropdown__item" style={{ cursor: "default" }}>
+              <LoadingDots />
             </div>
           ) : (
             options.map((opt) => (
@@ -149,30 +142,62 @@ function FilterDropdown({
                   onChange(opt.value);
                   setOpen(false);
                 }}
-                className="w-full truncate px-3 py-1.5 text-left text-xs transition-colors"
-                style={{
-                  color:
-                    value === opt.value
-                      ? "var(--accent)"
-                      : "var(--text-secondary)",
-                  backgroundColor:
-                    value === opt.value ? "var(--accent-muted)" : "transparent",
-                }}
-                onMouseEnter={(e) => {
-                  if (value !== opt.value)
-                    e.currentTarget.style.backgroundColor = "var(--bg-hover)";
-                }}
-                onMouseLeave={(e) => {
-                  if (value !== opt.value)
-                    e.currentTarget.style.backgroundColor = "transparent";
-                }}
+                className={`filter-dropdown__item ${
+                  value === opt.value
+                    ? "filter-dropdown__item--selected"
+                    : ""
+                }`}
               >
-                {opt.label}
+                {value === opt.value && <CheckIcon />}
+                <span className="truncate">{opt.label}</span>
               </button>
             ))
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="var(--accent)"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="flex-shrink-0"
+    >
+      <path d="M20 6L9 17l-5-5" />
+    </svg>
+  );
+}
+
+function LoadingDots() {
+  return (
+    <div className="flex items-center gap-1">
+      <span
+        className="inline-block h-1 w-1 animate-pulse rounded-full"
+        style={{ background: "var(--text-muted)", animationDelay: "0ms" }}
+      />
+      <span
+        className="inline-block h-1 w-1 animate-pulse rounded-full"
+        style={{
+          background: "var(--text-muted)",
+          animationDelay: "150ms",
+        }}
+      />
+      <span
+        className="inline-block h-1 w-1 animate-pulse rounded-full"
+        style={{
+          background: "var(--text-muted)",
+          animationDelay: "300ms",
+        }}
+      />
     </div>
   );
 }
@@ -185,7 +210,8 @@ export default function TopBar({ onMenuClick }: TopBarProps) {
   const location = useLocation();
   const { filters, setPeriod, setModel, setProject } = useFilters();
 
-  const pathKey = location.pathname.replace(/\/[^/]+$/, "") || location.pathname;
+  const pathKey =
+    location.pathname.replace(/\/[^/]+$/, "") || location.pathname;
   const pageInfo = routeTitles[pathKey] ??
     routeTitles[location.pathname] ?? {
       title: "Dashboard",
@@ -227,7 +253,7 @@ export default function TopBar({ onMenuClick }: TopBarProps) {
 
   return (
     <header
-      className="flex flex-col gap-3 border-b px-6 py-4 sm:flex-row sm:items-center sm:justify-between"
+      className="flex flex-col gap-3 border-b px-6 py-5 sm:flex-row sm:items-center sm:justify-between"
       style={{
         backgroundColor: "var(--bg-primary)",
         borderColor: "var(--border)",
@@ -237,14 +263,7 @@ export default function TopBar({ onMenuClick }: TopBarProps) {
         {/* Mobile menu button */}
         <button
           onClick={onMenuClick}
-          className="rounded-lg p-1.5 transition-colors lg:hidden"
-          style={{ color: "var(--text-secondary)" }}
-          onMouseEnter={(e) =>
-            (e.currentTarget.style.backgroundColor = "var(--bg-hover)")
-          }
-          onMouseLeave={(e) =>
-            (e.currentTarget.style.backgroundColor = "transparent")
-          }
+          className="mobile-menu-btn lg:hidden"
         >
           <svg
             width="20"
@@ -262,60 +281,39 @@ export default function TopBar({ onMenuClick }: TopBarProps) {
 
         <div>
           <h1
-            className="text-lg font-semibold"
+            className="text-2xl font-semibold tracking-tight"
             style={{ color: "var(--text-primary)" }}
           >
             {title}
           </h1>
           {subtitle && (
-            <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+            <p className="text-sm" style={{ color: "var(--text-muted)" }}>
               {subtitle}
             </p>
           )}
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2">
-        {/* Period selector */}
-        <div
-          className="inline-flex gap-1 rounded-lg border p-0.5"
-          style={{
-            backgroundColor: "var(--bg-secondary)",
-            borderColor: "var(--border)",
-          }}
-        >
+      <div className="flex flex-wrap items-center gap-2.5">
+        {/* Period selector - pill segmented control */}
+        <div className="period-seg">
           {periodOptions.map((opt) => (
             <button
               key={opt.value}
               onClick={() => setPeriod(opt.value)}
-              className="rounded-md px-2.5 py-1 text-xs font-medium transition-all duration-150"
-              style={{
-                backgroundColor:
-                  filters.period === opt.value
-                    ? "var(--accent)"
-                    : "transparent",
-                color:
-                  filters.period === opt.value
-                    ? "#ffffff"
-                    : "var(--text-secondary)",
-              }}
-              onMouseEnter={(e) => {
-                if (filters.period !== opt.value) {
-                  e.currentTarget.style.backgroundColor = "var(--bg-hover)";
-                }
-              }}
-              onMouseLeave={(e) => {
-                if (filters.period !== opt.value) {
-                  e.currentTarget.style.backgroundColor = "transparent";
-                }
-              }}
+              className={`period-btn ${
+                filters.period === opt.value ? "period-btn--active" : ""
+              }`}
             >
               {opt.label}
             </button>
           ))}
         </div>
 
-        {/* Filter dropdowns */}
+        {/* Divider */}
+        <div className="filter-divider hidden sm:block" />
+
+        {/* Filter chips */}
         <FilterDropdown
           label="Model"
           value={filters.model}

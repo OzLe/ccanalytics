@@ -90,9 +90,9 @@ export default function ActivityPage() {
   );
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       {/* KPI Cards */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+      <div className="grid grid-cols-1 gap-5 sm:grid-cols-3">
         <KPICard
           label="Peak Hour"
           value={peakHour}

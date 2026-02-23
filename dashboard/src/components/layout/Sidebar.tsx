@@ -39,13 +39,6 @@ const iconPaths: Record<string, string[]> = {
     "M3 3v18h18",
     "M18.7 8l-5.1 5.2-2.8-2.7L7 14.3",
   ],
-  sun: [
-    "M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42",
-    "M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z",
-  ],
-  moon: [
-    "M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z",
-  ],
   chevronLeft: ["M15 18l-6-6 6-6"],
   chevronRight: ["M9 18l6-6-6-6"],
 };
@@ -78,7 +71,6 @@ interface SidebarProps {
 
 export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
-  const [isDark, setIsDark] = useState(true);
 
   return (
     <>
@@ -97,24 +89,24 @@ export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
           ${collapsed ? "w-[68px]" : "w-60"}
         `}
         style={{
-          backgroundColor: "#0f1117",
+          backgroundColor: "var(--bg-primary)",
           borderColor: "var(--border)",
         }}
       >
         {/* Logo */}
         <div
-          className={`flex items-center border-b ${collapsed ? "justify-center px-2" : "gap-3 px-5"} py-5`}
+          className={`flex items-center border-b ${collapsed ? "justify-center px-2" : "gap-3 px-5"} py-6`}
           style={{ borderColor: "var(--border)" }}
         >
           <div
-            className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg text-xs font-bold text-white"
+            className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg text-xs font-bold text-white"
             style={{ backgroundColor: "var(--accent)" }}
           >
             CC
           </div>
           {!collapsed && (
             <span
-              className="text-base font-semibold tracking-tight"
+              className="text-lg font-semibold tracking-tight"
               style={{ color: "var(--text-primary)" }}
             >
               Analytics
@@ -123,7 +115,7 @@ export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
         </div>
 
         {/* Navigation */}
-        <nav className={`mt-3 flex flex-1 flex-col gap-0.5 ${collapsed ? "px-2" : "px-3"}`}>
+        <nav className={`mt-4 flex flex-1 flex-col gap-1.5 ${collapsed ? "px-2" : "px-3"}`}>
           {navItems.map((item) => (
             <NavLink
               key={item.to}
@@ -131,35 +123,10 @@ export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
               end={item.to === "/"}
               onClick={onMobileClose}
               className={({ isActive }) =>
-                `group flex items-center rounded-lg text-sm font-medium transition-all duration-150 ${
-                  collapsed ? "justify-center px-2 py-2.5" : "gap-3 px-3 py-2.5"
-                } ${isActive ? "" : ""}`
+                `sidebar-nav-link group flex items-center rounded-lg text-sm font-medium transition-all duration-150 ${
+                  collapsed ? "sidebar-nav-link--collapsed justify-center px-2 py-2.5" : "gap-3 px-3 py-2.5"
+                }${isActive ? " sidebar-nav-link--active" : ""}`
               }
-              style={({ isActive }) => ({
-                backgroundColor: isActive
-                  ? "var(--accent-muted)"
-                  : "transparent",
-                color: isActive ? "var(--accent-hover)" : "var(--text-secondary)",
-              })}
-              onMouseEnter={(e) => {
-                const isActive =
-                  e.currentTarget.style.backgroundColor ===
-                  "var(--accent-muted)";
-                if (!isActive) {
-                  e.currentTarget.style.backgroundColor = "var(--bg-hover)";
-                  e.currentTarget.style.color = "var(--text-primary)";
-                }
-              }}
-              onMouseLeave={(e) => {
-                const link = e.currentTarget;
-                // Check if it has accent-muted bg (active state) by checking aria
-                const isActive =
-                  link.getAttribute("aria-current") === "page";
-                if (!isActive) {
-                  link.style.backgroundColor = "transparent";
-                  link.style.color = "var(--text-secondary)";
-                }
-              }}
               title={collapsed ? item.label : undefined}
             >
               <NavIcon icon={item.icon} />
@@ -170,47 +137,15 @@ export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
 
         {/* Bottom section */}
         <div
-          className={`border-t ${collapsed ? "px-2" : "px-3"} py-3`}
+          className={`border-t ${collapsed ? "px-2" : "px-3"} py-4`}
           style={{ borderColor: "var(--border)" }}
         >
-          {/* Theme toggle */}
-          <button
-            onClick={() => setIsDark(!isDark)}
-            className={`flex w-full items-center rounded-lg text-xs font-medium transition-colors ${
-              collapsed ? "justify-center px-2 py-2" : "gap-3 px-3 py-2"
-            }`}
-            style={{ color: "var(--text-muted)" }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.backgroundColor = "var(--bg-hover)";
-              e.currentTarget.style.color = "var(--text-secondary)";
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.backgroundColor = "transparent";
-              e.currentTarget.style.color = "var(--text-muted)";
-            }}
-            title={collapsed ? (isDark ? "Light mode" : "Dark mode") : undefined}
-          >
-            <NavIcon icon={isDark ? "sun" : "moon"} />
-            {!collapsed && (
-              <span>{isDark ? "Light Mode" : "Dark Mode"}</span>
-            )}
-          </button>
-
           {/* Collapse toggle (hidden on mobile) */}
           <button
             onClick={() => setCollapsed(!collapsed)}
-            className={`hidden w-full items-center rounded-lg text-xs font-medium transition-colors lg:flex ${
+            className={`sidebar-bottom-btn hidden w-full items-center rounded-lg text-xs font-medium transition-colors lg:flex ${
               collapsed ? "justify-center px-2 py-2" : "gap-3 px-3 py-2"
             }`}
-            style={{ color: "var(--text-muted)" }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.backgroundColor = "var(--bg-hover)";
-              e.currentTarget.style.color = "var(--text-secondary)";
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.backgroundColor = "transparent";
-              e.currentTarget.style.color = "var(--text-muted)";
-            }}
           >
             <NavIcon icon={collapsed ? "chevronRight" : "chevronLeft"} />
             {!collapsed && <span>Collapse</span>}

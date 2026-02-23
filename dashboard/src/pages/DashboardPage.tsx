@@ -26,6 +26,7 @@ import {
   GRID_PROPS,
   X_AXIS_PROPS,
   Y_AXIS_PROPS,
+  AXIS_TICK_FILL,
 } from "@/lib/chartTheme";
 
 export default function DashboardPage() {
@@ -79,9 +80,9 @@ export default function DashboardPage() {
   }, [toolUsage.data]);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       {/* KPI Cards */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
         <KPICard
           label="Total Cost"
           value={costTotal.data ? formatCost(costTotal.data.totalCostUSD) : "--"}
@@ -130,8 +131,8 @@ export default function DashboardPage() {
             <AreaChart data={trendData}>
               <defs>
                 <linearGradient id="costGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#6366f1" stopOpacity={0.3} />
-                  <stop offset="100%" stopColor="#6366f1" stopOpacity={0} />
+                  <stop offset="0%" stopColor={CHART_COLORS[0]} stopOpacity={0.3} />
+                  <stop offset="100%" stopColor={CHART_COLORS[0]} stopOpacity={0} />
                 </linearGradient>
               </defs>
               <CartesianGrid {...GRID_PROPS} />
@@ -152,7 +153,7 @@ export default function DashboardPage() {
                 type="monotone"
                 dataKey="cost"
                 name="Cost"
-                stroke="#6366f1"
+                stroke={CHART_COLORS[0]}
                 strokeWidth={2}
                 fill="url(#costGradient)"
               />
@@ -228,7 +229,7 @@ export default function DashboardPage() {
               dataKey="name"
               {...Y_AXIS_PROPS}
               width={110}
-              tick={{ fill: "#94a3b8", fontSize: 11 }}
+              tick={{ fill: AXIS_TICK_FILL, fontSize: 11 }}
             />
             <Tooltip
               content={
@@ -240,7 +241,7 @@ export default function DashboardPage() {
             <Bar
               dataKey="calls"
               name="Calls"
-              fill="#8b5cf6"
+              fill={CHART_COLORS[1]}
               radius={[0, 4, 4, 0]}
               maxBarSize={24}
             />

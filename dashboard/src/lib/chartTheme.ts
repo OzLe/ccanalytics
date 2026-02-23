@@ -17,37 +17,17 @@ export const CHART_COLORS = [
   "#facc15", // yellow
 ] as const;
 
-/** Grid line stroke color. */
-export const GRID_STROKE = "#2a2d3e";
+/** Grid line stroke color. Mirrors CSS var(--border): #2d3348 */
+export const GRID_STROKE = "#2d3348";
 
-/** Axis tick label fill color. */
-export const AXIS_TICK_FILL = "#94a3b8";
+/** Axis tick label fill color. Mirrors CSS var(--text-muted): #7c8aa3 */
+export const AXIS_TICK_FILL = "#7c8aa3";
 
-/** Default axis stroke color. */
-export const AXIS_STROKE = "#2a2d3e";
+/** Default axis stroke color. Mirrors CSS var(--border): #2d3348 */
+export const AXIS_STROKE = "#2d3348";
 
-/** Tooltip styling props for the Recharts Tooltip component. */
-export const TOOLTIP_STYLE = {
-  contentStyle: {
-    backgroundColor: "#1e2235",
-    borderColor: "#2a2d3e",
-    borderRadius: 8,
-    color: "#e2e8f0",
-    fontSize: 13,
-    padding: "8px 12px",
-  },
-  itemStyle: {
-    color: "#e2e8f0",
-    fontSize: 12,
-  },
-  labelStyle: {
-    color: "#94a3b8",
-    fontSize: 12,
-    fontWeight: 600,
-    marginBottom: 4,
-  },
-  cursor: { fill: "rgba(99, 102, 241, 0.08)" },
-} as const;
+/** Trend line stroke color. Mirrors CSS var(--text-primary): #e2e8f0 */
+export const TREND_LINE_COLOR = "#e2e8f0";
 
 /** Default CartesianGrid props. */
 export const GRID_PROPS = {

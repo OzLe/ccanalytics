@@ -28,13 +28,13 @@ export default function ChartTooltip({
     <div
       className="rounded-lg border px-3 py-2 shadow-xl"
       style={{
-        backgroundColor: "#1e2235",
-        borderColor: "#2a2d3e",
+        backgroundColor: "var(--bg-card)",
+        borderColor: "var(--border)",
       }}
     >
       <p
         className="mb-1.5 text-xs font-semibold"
-        style={{ color: "#94a3b8" }}
+        style={{ color: "var(--text-muted)" }}
       >
         {formattedLabel}
       </p>
@@ -48,8 +48,8 @@ export default function ChartTooltip({
                 className="inline-block h-2.5 w-2.5 rounded-full"
                 style={{ backgroundColor: entry.color }}
               />
-              <span style={{ color: "#cbd5e1" }}>{entry.name ?? entry.dataKey}</span>
-              <span className="ml-auto font-semibold" style={{ color: "#e2e8f0" }}>
+              <span style={{ color: "var(--text-secondary)" }}>{entry.name ?? entry.dataKey}</span>
+              <span className="ml-auto font-semibold" style={{ color: "var(--text-primary)" }}>
                 {displayValue}
               </span>
             </div>

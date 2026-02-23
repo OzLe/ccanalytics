@@ -131,6 +131,7 @@ export default function CostTreemap({ data }: Props) {
       .attr("fill", "#e2e8f0")
       .attr("font-size", 12)
       .attr("font-weight", 600)
+      .attr("font-family", "'Inter', sans-serif")
       .text((d) => {
         const w = d.x1 - d.x0;
         const h = d.y1 - d.y0;
@@ -146,6 +147,7 @@ export default function CostTreemap({ data }: Props) {
       .attr("y", 34)
       .attr("fill", "#94a3b8")
       .attr("font-size", 11)
+      .attr("font-family", "'Inter', sans-serif")
       .text((d) => {
         const w = d.x1 - d.x0;
         const h = d.y1 - d.y0;
