@@ -42,7 +42,7 @@ router.get("/", async (req, res, next) => {
     const sql = `
       SELECT session_id, start_time, end_time, duration_seconds, model,
              total_cost_usd, num_turns, num_tool_calls, cache_hit_rate,
-             project_path
+             project_path, source_type
       FROM v_session_summary
       WHERE start_time >= $1 AND start_time < $2
         ${f.clauses.join("\n        ")}
@@ -73,6 +73,7 @@ router.get("/", async (req, res, next) => {
       numToolCalls: Number(row.num_tool_calls),
       cacheHitRate: Number(row.cache_hit_rate),
       projectPath: row.project_path,
+      sourceType: row.source_type ?? "claude-code",
     }));
 
     const total = Number((countResult.rows[0] as Record<string, unknown>)?.total ?? 0);
@@ -185,7 +186,7 @@ router.get("/:id", async (req, res, next) => {
     const sessionResult = await query(
       `SELECT session_id, start_time, end_time, duration_seconds, model,
               total_cost_usd, num_turns, num_tool_calls, cache_hit_rate,
-              project_path
+              project_path, source_type
        FROM v_session_summary
        WHERE session_id = $1`,
       [sessionId],
@@ -242,6 +243,7 @@ router.get("/:id", async (req, res, next) => {
         numToolCalls: Number(session.num_tool_calls),
         cacheHitRate: Number(session.cache_hit_rate),
         projectPath: session.project_path,
+        sourceType: session.source_type ?? "claude-code",
         turns: turnsResult.rows.map((t: Record<string, unknown>) => ({
           turnId: t.turn_id,
           role: t.role,

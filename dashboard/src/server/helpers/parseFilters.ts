@@ -19,6 +19,7 @@ export interface ParsedFilters {
   period: string;
   model?: string;
   project?: string;
+  source?: string;
 }
 
 /**
@@ -78,12 +79,14 @@ export function parseFilters(req: Request): ParsedFilters {
   const range = parsePeriod(period);
   const model = req.query.model as string | undefined;
   const project = req.query.project as string | undefined;
+  const source = req.query.source as string | undefined;
 
   return {
     range,
     period,
     model: model || undefined,
     project: project || undefined,
+    source: source || undefined,
   };
 }
 
@@ -114,6 +117,13 @@ export function buildTurnFilterClauses(
     params.push(filters.project);
     startIndex++;
   }
+  if (filters.source) {
+    clauses.push(
+      `AND session_id IN (SELECT session_id FROM sessions WHERE source_type = $${startIndex})`,
+    );
+    params.push(filters.source);
+    startIndex++;
+  }
 
   return { clauses, params };
 }
@@ -142,6 +152,11 @@ export function buildSessionFilterClauses(
   if (filters.project) {
     clauses.push(`AND ${alias}.project_path LIKE '%' || $${startIndex} || '%'`);
     params.push(filters.project);
+    startIndex++;
+  }
+  if (filters.source) {
+    clauses.push(`AND ${alias}.source_type = $${startIndex}`);
+    params.push(filters.source);
     startIndex++;
   }
 

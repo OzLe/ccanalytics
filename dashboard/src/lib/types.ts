@@ -307,6 +307,7 @@ export interface SessionListItem {
   numToolCalls: number;
   cacheHitRate: number;
   projectPath: string;
+  sourceType: string;
   /** Per-turn cost values used for sparkline rendering. */
   costPerTurn?: number[];
 }
@@ -359,6 +360,7 @@ export interface SessionDetailResponse {
   numToolCalls: number;
   cacheHitRate: number;
   projectPath: string;
+  sourceType: string;
   turns: SessionTurn[];
   toolCalls: SessionToolCall[];
   errors: SessionError[];

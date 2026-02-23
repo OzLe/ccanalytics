@@ -54,7 +54,8 @@ SELECT
     s.git_branch,
     s.claude_version,
     s.cwd,
-    s.source_file
+    s.source_file,
+    s.source_type
 FROM sessions s
 ORDER BY s.start_time DESC;
 

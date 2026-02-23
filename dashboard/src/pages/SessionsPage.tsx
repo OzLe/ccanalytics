@@ -20,6 +20,7 @@ type SortField =
   | "startTime"
   | "projectPath"
   | "model"
+  | "sourceType"
   | "durationMinutes"
   | "numTurns"
   | "numToolCalls"
@@ -35,6 +36,7 @@ const COLUMNS: { key: SortField; label: string; align?: "right" }[] = [
   { key: "startTime", label: "Start Time" },
   { key: "projectPath", label: "Project" },
   { key: "model", label: "Model" },
+  { key: "sourceType", label: "Source" },
   { key: "durationMinutes", label: "Duration", align: "right" },
   { key: "numTurns", label: "Turns", align: "right" },
   { key: "numToolCalls", label: "Tool Calls", align: "right" },
@@ -298,6 +300,12 @@ export default function SessionsPage() {
                     {/* Model */}
                     <td className="px-4 py-3">
                       <Badge variant="accent">{shortModel(session.model)}</Badge>
+                    </td>
+                    {/* Source */}
+                    <td className="px-4 py-3">
+                      <Badge variant={session.sourceType === "claude-desktop" ? "warning" : "neutral"}>
+                        {session.sourceType === "claude-desktop" ? "Desktop" : "CLI"}
+                      </Badge>
                     </td>
                     {/* Duration */}
                     <td

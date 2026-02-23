@@ -14,6 +14,7 @@ export interface Filters {
   period: Period;
   model: string | null;
   project: string | null;
+  source: string | null;
 }
 
 interface FiltersContextValue {
@@ -21,6 +22,7 @@ interface FiltersContextValue {
   setPeriod: (period: Period) => void;
   setModel: (model: string | null) => void;
   setProject: (project: string | null) => void;
+  setSource: (source: string | null) => void;
   resetFilters: () => void;
 }
 
@@ -28,6 +30,7 @@ const defaultFilters: Filters = {
   period: "7d",
   model: null,
   project: null,
+  source: null,
 };
 
 const FiltersContext = createContext<FiltersContextValue | null>(null);
@@ -47,13 +50,17 @@ export function FilterProvider({ children }: { children: ReactNode }) {
     setFilters((prev) => ({ ...prev, project }));
   }, []);
 
+  const setSource = useCallback((source: string | null) => {
+    setFilters((prev) => ({ ...prev, source }));
+  }, []);
+
   const resetFilters = useCallback(() => {
     setFilters(defaultFilters);
   }, []);
 
   const value = useMemo<FiltersContextValue>(
-    () => ({ filters, setPeriod, setModel, setProject, resetFilters }),
-    [filters, setPeriod, setModel, setProject, resetFilters],
+    () => ({ filters, setPeriod, setModel, setProject, setSource, resetFilters }),
+    [filters, setPeriod, setModel, setProject, setSource, resetFilters],
   );
 
   return React.createElement(FiltersContext.Provider, { value }, children);

@@ -208,7 +208,7 @@ interface TopBarProps {
 
 export default function TopBar({ onMenuClick }: TopBarProps) {
   const location = useLocation();
-  const { filters, setPeriod, setModel, setProject } = useFilters();
+  const { filters, setPeriod, setModel, setProject, setSource } = useFilters();
 
   const pathKey =
     location.pathname.replace(/\/[^/]+$/, "") || location.pathname;
@@ -239,6 +239,14 @@ export default function TopBar({ onMenuClick }: TopBarProps) {
       }>(`/filters/projects?period=${filters.period}`),
   });
 
+  const { data: sourcesData, isLoading: sourcesLoading } = useQuery({
+    queryKey: ["filters", "sources", filters.period],
+    queryFn: () =>
+      apiGet<{
+        data: { sourceType: string; sessionCount: number }[];
+      }>(`/filters/sources?period=${filters.period}`),
+  });
+
   const modelOptions: FilterOption[] = (modelsData?.data ?? []).map((m) => ({
     value: m,
     label: m,
@@ -248,6 +256,13 @@ export default function TopBar({ onMenuClick }: TopBarProps) {
     (p) => ({
       value: p.projectPath,
       label: p.projectPath.split("/").pop() ?? p.projectPath,
+    }),
+  );
+
+  const sourceOptions: FilterOption[] = (sourcesData?.data ?? []).map(
+    (s) => ({
+      value: s.sourceType,
+      label: s.sourceType === "claude-desktop" ? "Desktop" : s.sourceType === "claude-code" ? "CLI" : s.sourceType,
     }),
   );
 
@@ -327,6 +342,13 @@ export default function TopBar({ onMenuClick }: TopBarProps) {
           options={projectOptions}
           onChange={setProject}
           loading={projectsLoading}
+        />
+        <FilterDropdown
+          label="Source"
+          value={filters.source}
+          options={sourceOptions}
+          onChange={setSource}
+          loading={sourcesLoading}
         />
       </div>
     </header>

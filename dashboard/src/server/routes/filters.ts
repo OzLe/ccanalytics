@@ -76,4 +76,37 @@ router.get("/projects", async (req, res, next) => {
   }
 });
 
+/**
+ * GET /api/filters/sources
+ *
+ * Get distinct source types available in the data.
+ * Query params: ?period=7d
+ */
+router.get("/sources", async (req, res, next) => {
+  try {
+    const filters = parseFilters(req);
+
+    const sql = `
+      SELECT DISTINCT source_type,
+             COUNT(*) AS session_count
+      FROM sessions
+      WHERE source_type IS NOT NULL
+        AND start_time >= $1 AND start_time < $2
+      GROUP BY source_type
+      ORDER BY session_count DESC
+    `;
+
+    const result = await query(sql, [filters.range.start, filters.range.end]);
+
+    const sources = result.rows.map((row: Record<string, unknown>) => ({
+      sourceType: row.source_type as string,
+      sessionCount: Number(row.session_count),
+    }));
+
+    res.json(envelope(sources, filters.period));
+  } catch (err) {
+    next(err);
+  }
+});
+
 export default router;

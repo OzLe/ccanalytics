@@ -11,6 +11,7 @@ export function buildFilterQS(filters: Filters): string {
   params.set("period", filters.period);
   if (filters.model) params.set("model", filters.model);
   if (filters.project) params.set("project", filters.project);
+  if (filters.source) params.set("source", filters.source);
   return params.toString();
 }
 
