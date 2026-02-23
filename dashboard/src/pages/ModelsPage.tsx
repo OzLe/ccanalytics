@@ -1,6 +1,6 @@
 export default function ModelsPage() {
   return (
-    <div className="space-y-6">
+    <div className="min-h-0 flex-1 overflow-y-auto space-y-6">
       <div>
         <h1
           className="text-2xl font-bold"

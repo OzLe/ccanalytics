@@ -441,16 +441,21 @@ body {
 .pagination-btn {
   border-color: var(--border);
   color: var(--text-secondary);
-  background-color: var(--bg-secondary);
+  background-color: var(--bg-card);
 }
 
 .pagination-btn:hover:not(:disabled) {
-  border-color: var(--border-hover);
+  border-color: var(--accent);
   color: var(--text-primary);
+  background-color: var(--accent-subtle);
+}
+
+.pagination-btn:active:not(:disabled) {
+  background-color: var(--accent-muted);
 }
 
 .pagination-btn:disabled {
-  opacity: 0.4;
+  opacity: 0.3;
   cursor: not-allowed;
 }
 

@@ -62,17 +62,25 @@ async function getConnection() {
 }
 
 /**
- * Rebuild ART indexes on conversation_turns to fix corruption caused by
- * DuckDB's ON CONFLICT operations during ingestion.
+ * Rebuild ART indexes on conversation_turns, tool_calls, and errors to fix
+ * corruption caused by DuckDB's ON CONFLICT operations during ingestion.
  * Without this, WHERE session_id = $1 returns wrong results.
  */
 async function rebuildIndexes(
   conn: Awaited<ReturnType<InstanceType<typeof DuckDBInstance>["connect"]>>,
 ): Promise<void> {
   const indexes = [
+    // conversation_turns indexes
     { name: "idx_turns_session_id", table: "conversation_turns", cols: "(session_id)" },
     { name: "idx_turns_session_time", table: "conversation_turns", cols: "(session_id, timestamp)" },
     { name: "idx_turns_request_id", table: "conversation_turns", cols: "(request_id)" },
+    // tool_calls indexes
+    { name: "idx_tools_session_id", table: "tool_calls", cols: "(session_id)" },
+    { name: "idx_tools_session_tool", table: "tool_calls", cols: "(session_id, tool_name)" },
+    { name: "idx_tools_turn_id", table: "tool_calls", cols: "(turn_id)" },
+    // errors indexes
+    { name: "idx_errors_session_id", table: "errors", cols: "(session_id)" },
+    { name: "idx_errors_session_time", table: "errors", cols: "(session_id, timestamp)" },
   ];
 
   for (const idx of indexes) {

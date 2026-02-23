@@ -140,7 +140,7 @@ export default function CostAnalysisPage() {
   );
 
   return (
-    <div className="space-y-8">
+    <div className="min-h-0 flex-1 overflow-y-auto space-y-8">
       {/* KPI Cards */}
       <div className="grid grid-cols-1 gap-5 sm:grid-cols-3">
         <KPICard

@@ -96,7 +96,7 @@ export default function SessionDetailPage() {
 
   if (isLoading) {
     return (
-      <div className="space-y-6">
+      <div className="min-h-0 flex-1 overflow-y-auto space-y-6">
         <Skeleton height="2rem" width="12rem" />
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3 lg:grid-cols-5">
           {Array.from({ length: 5 }).map((_, i) => (
@@ -110,7 +110,7 @@ export default function SessionDetailPage() {
 
   if (isError || !session) {
     return (
-      <div className="space-y-6">
+      <div className="min-h-0 flex-1 overflow-y-auto space-y-6">
         <button
           onClick={() => navigate("/sessions")}
           className="inline-flex items-center gap-1.5 text-sm font-medium transition-colors"
@@ -137,7 +137,7 @@ export default function SessionDetailPage() {
   const errors: SessionError[] = session.errors ?? [];
 
   return (
-    <div className="space-y-6">
+    <div className="min-h-0 flex-1 overflow-y-auto space-y-6">
       {/* Back Button & Header */}
       <div>
         <button

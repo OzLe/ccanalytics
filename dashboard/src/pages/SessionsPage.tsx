@@ -14,7 +14,7 @@ import { CHART_COLORS } from "@/lib/chartTheme";
 import { useSessions, useSessionStats } from "@/hooks/useSessionsQuery";
 import type { SessionListItem } from "@/lib/types";
 
-const PAGE_SIZE = 20;
+const PAGE_SIZE = 100;
 
 type SortField =
   | "startTime"
@@ -68,7 +68,7 @@ function CostSparkline({ data }: { data: number[] }) {
 
 /** Colored progress bar for cache hit rate. */
 function CacheBar({ rate }: { rate: number }) {
-  const pct = rate * 100;
+  const pct = (rate || 0) * 100;
   let barColor: string;
   if (pct > 70) barColor = "var(--success)";
   else if (pct >= 40) barColor = "var(--warning)";
@@ -157,12 +157,14 @@ export default function SessionsPage() {
   }, []);
 
   // Format project name (last segment)
-  const shortProject = useCallback((path: string) => {
+  const shortProject = useCallback((path: string | null | undefined) => {
+    if (!path) return "Unknown";
     return path.split("/").pop() ?? path;
   }, []);
 
   // Format model name (last segment)
-  const shortModel = useCallback((model: string) => {
+  const shortModel = useCallback((model: string | null | undefined) => {
+    if (!model) return "Unknown";
     return model.split("/").pop() ?? model;
   }, []);
 
@@ -179,7 +181,7 @@ export default function SessionsPage() {
   const skeletonRows = Array.from({ length: 5 });
 
   return (
-    <div className="flex h-full flex-col gap-8">
+    <div className="flex min-h-0 flex-1 flex-col gap-8">
       {/* KPI Cards */}
       <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
         <KPICard
@@ -210,23 +212,26 @@ export default function SessionsPage() {
 
       {/* Sessions Table */}
       <div
-        className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border"
+        className="flex min-h-0 flex-1 flex-col overflow-hidden border"
         style={{
           backgroundColor: "var(--bg-card)",
           borderColor: "var(--border)",
+          borderRadius: "var(--radius-lg)",
         }}
       >
         <div className="flex-1 overflow-auto">
           <table className="w-full text-left text-sm">
-            <thead className="sticky top-0 z-10" style={{ backgroundColor: "var(--bg-card)" }}>
+            <thead className="sticky top-0 z-10">
               <tr
-                className="border-b"
-                style={{ borderColor: "var(--border)" }}
+                style={{
+                  backgroundColor: "var(--bg-secondary)",
+                  borderBottom: "2px solid var(--border)",
+                }}
               >
                 {COLUMNS.map((col) => (
                   <th
                     key={col.key}
-                    className={`table-header-sortable cursor-pointer select-none px-4 py-3 text-xs font-semibold uppercase tracking-wider transition-colors ${col.align === "right" ? "text-right" : ""}`}
+                    className={`table-header-sortable cursor-pointer select-none whitespace-nowrap px-5 py-3.5 text-[13px] font-semibold uppercase tracking-wide transition-colors ${col.align === "right" ? "text-right" : ""}`}
                     onClick={() => handleSort(col.key)}
                   >
                     <span className="inline-flex items-center gap-1.5">
@@ -240,7 +245,7 @@ export default function SessionsPage() {
                 ))}
                 {/* Sparkline column header */}
                 <th
-                  className="table-header-sortable px-4 py-3 text-xs font-semibold uppercase tracking-wider"
+                  className="table-header-sortable whitespace-nowrap px-5 py-3.5 text-[13px] font-semibold uppercase tracking-wide"
                 >
                   Cost/Turn
                 </th>
@@ -255,11 +260,11 @@ export default function SessionsPage() {
                     style={{ borderColor: "var(--border)" }}
                   >
                     {COLUMNS.map((col) => (
-                      <td key={col.key} className="px-4 py-3">
+                      <td key={col.key} className="px-5 py-3">
                         <Skeleton height="0.875rem" width={col.key === "cacheHitRate" ? "100%" : "70%"} />
                       </td>
                     ))}
-                    <td className="px-4 py-3">
+                    <td className="px-5 py-3">
                       <Skeleton height="1.875rem" width="5rem" />
                     </td>
                   </tr>
@@ -284,63 +289,63 @@ export default function SessionsPage() {
                   >
                     {/* Start Time */}
                     <td
-                      className="whitespace-nowrap px-4 py-3 font-medium"
+                      className="whitespace-nowrap px-5 py-3 font-medium"
                       style={{ color: "var(--text-primary)" }}
                     >
                       {formatDateTime(session.startTime)}
                     </td>
                     {/* Project */}
                     <td
-                      className="max-w-[160px] truncate px-4 py-3"
+                      className="max-w-[180px] truncate px-5 py-3"
                       style={{ color: "var(--text-secondary)" }}
                       title={session.projectPath}
                     >
                       {shortProject(session.projectPath)}
                     </td>
                     {/* Model */}
-                    <td className="px-4 py-3">
+                    <td className="px-5 py-3">
                       <Badge variant="accent">{shortModel(session.model)}</Badge>
                     </td>
                     {/* Source */}
-                    <td className="px-4 py-3">
+                    <td className="px-5 py-3">
                       <Badge variant={session.sourceType === "claude-desktop" ? "warning" : "neutral"}>
                         {session.sourceType === "claude-desktop" ? "Desktop" : "CLI"}
                       </Badge>
                     </td>
                     {/* Duration */}
                     <td
-                      className="px-4 py-3 text-right tabular-nums"
+                      className="px-5 py-3 text-right tabular-nums"
                       style={{ color: "var(--text-secondary)" }}
                     >
                       {formatDuration(session.durationMinutes * 60)}
                     </td>
                     {/* Turns */}
                     <td
-                      className="px-4 py-3 text-right tabular-nums"
+                      className="px-5 py-3 text-right tabular-nums"
                       style={{ color: "var(--text-secondary)" }}
                     >
                       {session.numTurns}
                     </td>
                     {/* Tool Calls */}
                     <td
-                      className="px-4 py-3 text-right tabular-nums"
+                      className="px-5 py-3 text-right tabular-nums"
                       style={{ color: "var(--text-secondary)" }}
                     >
                       {session.numToolCalls}
                     </td>
                     {/* Cache Hit Rate */}
-                    <td className="px-4 py-3" style={{ minWidth: 140 }}>
+                    <td className="px-5 py-3" style={{ minWidth: 140 }}>
                       <CacheBar rate={session.cacheHitRate} />
                     </td>
                     {/* Cost */}
                     <td
-                      className="px-4 py-3 text-right font-semibold tabular-nums"
+                      className="px-5 py-3 text-right font-semibold tabular-nums"
                       style={{ color: "var(--text-primary)" }}
                     >
                       {formatCost(session.totalCostUSD)}
                     </td>
                     {/* Sparkline */}
-                    <td className="px-4 py-3">
+                    <td className="px-5 py-3">
                       <CostSparkline data={session.costPerTurn ?? []} />
                     </td>
                   </tr>
@@ -353,26 +358,32 @@ export default function SessionsPage() {
         {/* Pagination Controls */}
         {!sessions.isLoading && items.length > 0 && (
           <div
-            className="flex items-center justify-between border-t px-4 py-3.5"
-            style={{ borderColor: "var(--border)" }}
+            className="flex shrink-0 items-center justify-between px-5 py-3"
+            style={{
+              borderTop: "2px solid var(--border)",
+              backgroundColor: "var(--bg-secondary)",
+            }}
           >
             <p
-              className="text-xs"
+              className="text-sm"
               style={{ color: "var(--text-muted)" }}
             >
               Showing {offset + 1}–{Math.min(offset + PAGE_SIZE, total)} of{" "}
               {total.toLocaleString()} sessions
             </p>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-3">
               <button
                 onClick={goPrev}
                 disabled={offset === 0}
-                className="pagination-btn rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors"
+                className="pagination-btn inline-flex items-center gap-1.5 rounded-lg border px-4 py-2 text-sm font-medium transition-colors"
               >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M15 18l-6-6 6-6" />
+                </svg>
                 Prev
               </button>
               <span
-                className="text-xs tabular-nums"
+                className="text-sm tabular-nums"
                 style={{ color: "var(--text-secondary)" }}
               >
                 Page {currentPage} of {totalPages}
@@ -380,9 +391,12 @@ export default function SessionsPage() {
               <button
                 onClick={goNext}
                 disabled={currentPage >= totalPages}
-                className="pagination-btn rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors"
+                className="pagination-btn inline-flex items-center gap-1.5 rounded-lg border px-4 py-2 text-sm font-medium transition-colors"
               >
                 Next
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M9 18l6-6-6-6" />
+                </svg>
               </button>
             </div>
           </div>
