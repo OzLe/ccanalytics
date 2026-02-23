@@ -136,7 +136,7 @@ export class BatchInserter {
         ${sqlVal(t.cache_read_tokens)}, ${sqlVal(t.cost_usd)}, ${sqlVal(t.model)},
         ${sqlVal(t.stop_reason)}, ${sqlVal(t.request_id)}, ${sqlVal(t.parent_uuid)},
         ${sqlVal(t.has_tool_use)}, ${sqlVal(t.has_thinking)}
-      ) ON CONFLICT(turn_id) DO NOTHING`;
+      ) ON CONFLICT DO NOTHING`;
       await this.conn.run(sql);
       count++;
     }

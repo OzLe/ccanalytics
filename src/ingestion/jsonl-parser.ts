@@ -21,10 +21,19 @@ export type ParsedEntry =
   | { type: "file-history-snapshot"; data: FileHistorySnapshot }
   | { type: "queue-operation"; data: QueueOperation };
 
+/** Known JSONL types that we intentionally skip (no analytics value). */
+const SKIPPED_TYPES = new Set(["progress", "system", "summary"]);
+
+/** Result of parsing a single line. */
+type LineResult =
+  | { status: "parsed"; entry: ParsedEntry }
+  | { status: "skipped" }
+  | { status: "error" };
+
 /** Result of parsing a single JSONL file. */
 export interface ParseResult {
   entries: ParsedEntry[];
-  /** Number of lines that failed to parse. */
+  /** Number of lines that failed to parse (invalid JSON). */
   parseErrors: number;
   /** Total bytes read. */
   bytesRead: number;
@@ -38,52 +47,60 @@ export interface ParseResult {
 export class JSONLParser {
   /**
    * Parse a single JSONL line into a typed entry.
-   * Returns null if the line cannot be parsed or has an unknown type.
    *
    * @param line - A single JSON line from a JSONL file
-   * @returns Typed ParsedEntry, or null if unparseable
+   * @returns Parsed entry, "skipped" for known non-analytical types, or "error" for invalid JSON
    */
   parseLine(line: string): ParsedEntry | null {
+    return this.parseLineWithStatus(line).status === "parsed"
+      ? (this.parseLineWithStatus(line) as { status: "parsed"; entry: ParsedEntry }).entry
+      : null;
+  }
+
+  /**
+   * Parse a single line with full status information.
+   */
+  private parseLineWithStatus(line: string): LineResult {
     if (!line || line.trim() === "") {
-      return null;
+      return { status: "skipped" };
     }
 
     let raw: RawJSONLEntry;
     try {
       raw = JSON.parse(line) as RawJSONLEntry;
     } catch {
-      return null;
+      return { status: "error" };
     }
 
     if (!raw.type) {
-      return null;
+      return { status: "error" };
     }
 
     switch (raw.type) {
       case "user":
-        return { type: "user", data: raw as unknown as UserMessage };
+        return { status: "parsed", entry: { type: "user", data: raw as unknown as UserMessage } };
 
       case "assistant":
         return {
-          type: "assistant",
-          data: raw as unknown as AssistantMessage,
+          status: "parsed",
+          entry: { type: "assistant", data: raw as unknown as AssistantMessage },
         };
 
       case "file-history-snapshot":
         return {
-          type: "file-history-snapshot",
-          data: raw as unknown as FileHistorySnapshot,
+          status: "parsed",
+          entry: { type: "file-history-snapshot", data: raw as unknown as FileHistorySnapshot },
         };
 
       case "queue-operation":
         return {
-          type: "queue-operation",
-          data: raw as unknown as QueueOperation,
+          status: "parsed",
+          entry: { type: "queue-operation", data: raw as unknown as QueueOperation },
         };
 
       default:
-        // Unknown type — silently skip (forward-compatible)
-        return null;
+        // Known non-analytical types or unknown future types — skip silently
+        return { status: "skipped" };
     }
   }
 
@@ -123,12 +140,15 @@ export class JSONLParser {
       // Track bytes: line content + 1 byte for newline
       bytesRead += Buffer.byteLength(line, "utf-8") + 1;
 
-      const entry = this.parseLine(line);
-      if (entry !== null) {
-        entries.push(entry);
-      } else if (line.trim() !== "") {
-        // Non-empty line that failed to parse
-        parseErrors++;
+      const result = this.parseLineWithStatus(line);
+      switch (result.status) {
+        case "parsed":
+          entries.push(result.entry);
+          break;
+        case "error":
+          parseErrors++;
+          break;
+        // "skipped" — intentionally ignored
       }
     }
 
