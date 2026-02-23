@@ -17,6 +17,7 @@ import { registerWatchCommand } from "./commands/watch.js";
 import { registerDashboardCommand } from "./commands/dashboard.js";
 import { registerStatusCommand } from "./commands/status.js";
 import { registerExportCommand } from "./commands/export.js";
+import { registerWebCommand } from "./commands/web.js";
 
 /**
  * Build and return the configured Commander program.
@@ -49,6 +50,7 @@ export function createProgram(): Command {
   registerDashboardCommand(program);
   registerStatusCommand(program);
   registerExportCommand(program);
+  registerWebCommand(program);
 
   return program;
 }
