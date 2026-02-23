@@ -175,6 +175,7 @@ router.get("/by-model", async (req, res, next) => {
         COALESCE(SUM(ct.cache_read_tokens), 0) AS total_cache_read_tokens
       FROM conversation_turns ct
       WHERE ct.role = 'assistant'
+        AND ct.model IS NOT NULL AND ct.model NOT LIKE '<%>'
         AND ct.timestamp >= $1 AND ct.timestamp < $2
         ${filterClauses.join("\n        ")}
       GROUP BY ct.model

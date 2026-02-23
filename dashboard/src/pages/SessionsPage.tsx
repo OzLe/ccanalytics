@@ -179,7 +179,7 @@ export default function SessionsPage() {
   const skeletonRows = Array.from({ length: 5 });
 
   return (
-    <div className="space-y-8">
+    <div className="flex h-full flex-col gap-8">
       {/* KPI Cards */}
       <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
         <KPICard
@@ -210,15 +210,15 @@ export default function SessionsPage() {
 
       {/* Sessions Table */}
       <div
-        className="overflow-hidden rounded-xl border"
+        className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border"
         style={{
           backgroundColor: "var(--bg-card)",
           borderColor: "var(--border)",
         }}
       >
-        <div className="overflow-x-auto">
+        <div className="flex-1 overflow-auto">
           <table className="w-full text-left text-sm">
-            <thead>
+            <thead className="sticky top-0 z-10" style={{ backgroundColor: "var(--bg-card)" }}>
               <tr
                 className="border-b"
                 style={{ borderColor: "var(--border)" }}

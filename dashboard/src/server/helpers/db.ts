@@ -52,10 +52,39 @@ async function getConnection() {
   instance = await DuckDBInstance.create(dbPath);
   connection = await instance.connect();
 
+  // Rebuild indexes to fix potential ART index corruption from ON CONFLICT ops.
+  await rebuildIndexes(connection);
+
   // Ensure analytical views are up-to-date on first connection.
   await initViews(connection);
 
   return connection;
+}
+
+/**
+ * Rebuild ART indexes on conversation_turns to fix corruption caused by
+ * DuckDB's ON CONFLICT operations during ingestion.
+ * Without this, WHERE session_id = $1 returns wrong results.
+ */
+async function rebuildIndexes(
+  conn: Awaited<ReturnType<InstanceType<typeof DuckDBInstance>["connect"]>>,
+): Promise<void> {
+  const indexes = [
+    { name: "idx_turns_session_id", table: "conversation_turns", cols: "(session_id)" },
+    { name: "idx_turns_session_time", table: "conversation_turns", cols: "(session_id, timestamp)" },
+    { name: "idx_turns_request_id", table: "conversation_turns", cols: "(request_id)" },
+  ];
+
+  for (const idx of indexes) {
+    try {
+      await conn.run(`DROP INDEX IF EXISTS ${idx.name}`);
+      await conn.run(`CREATE INDEX ${idx.name} ON ${idx.table} ${idx.cols}`);
+    } catch (err) {
+      console.warn(`Warning: Failed to rebuild index ${idx.name}: ${(err as Error).message}`);
+    }
+  }
+
+  console.log("Indexes rebuilt.");
 }
 
 /**

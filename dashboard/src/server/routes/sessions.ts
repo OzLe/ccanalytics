@@ -31,9 +31,18 @@ router.get("/", async (req, res, next) => {
 
     const sortColumnMap: Record<string, string> = {
       start_time: "start_time",
+      startTime: "start_time",
       cost: "total_cost_usd",
+      totalCostUSD: "total_cost_usd",
       turns: "num_turns",
+      numTurns: "num_turns",
       duration: "duration_seconds",
+      durationMinutes: "duration_seconds",
+      numToolCalls: "num_tool_calls",
+      cacheHitRate: "cache_hit_rate",
+      model: "model",
+      projectPath: "project_path",
+      sourceType: "source_type",
     };
     const sortColumn = sortColumnMap[sortBy] ?? "start_time";
 
