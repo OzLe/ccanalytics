@@ -242,6 +242,7 @@ export interface SessionRow {
   git_branch: string | null;
   claude_version: string | null;
   project_path: string | null;
+  source_type: string | null;
 }
 
 /** Row type for the conversation_turns table. */

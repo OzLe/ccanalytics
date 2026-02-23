@@ -23,6 +23,10 @@ export interface DiscoveredFile {
   sizeBytes: number;
   /** Last modified timestamp. */
   modifiedAt: Date;
+  /** Source type discriminator (set by adapters). */
+  sourceType?: string;
+  /** Arbitrary adapter-specific metadata (e.g. Desktop session info). */
+  metadata?: Record<string, unknown>;
 }
 
 /**

@@ -12,6 +12,8 @@ import type { CCAnalyticsConfig } from "../types/index.js";
 export const DEFAULT_CONFIG: Readonly<CCAnalyticsConfig> = {
   dbPath: "~/.ccanalytics/analytics.duckdb",
   claudeDir: "~/.claude",
+  desktopDataDir: "~/Library/Application Support/Claude",
+  sources: ["claude-code", "claude-desktop"],
   format: "table",
   verbose: false,
   ingestion: {

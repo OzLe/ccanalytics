@@ -88,12 +88,12 @@ export class BatchInserter {
         session_id, start_time, end_time, duration_seconds, model,
         input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
         total_cost_usd, num_turns, num_tool_calls, cwd, source_file,
-        git_branch, claude_version, project_path
+        git_branch, claude_version, project_path, source_type
       ) VALUES (
         ${sqlVal(s.session_id)}, ${sqlVal(s.start_time)}, ${sqlVal(s.end_time)}, ${sqlVal(s.duration_seconds)}, ${sqlVal(s.model)},
         ${sqlVal(s.input_tokens)}, ${sqlVal(s.output_tokens)}, ${sqlVal(s.cache_creation_tokens)}, ${sqlVal(s.cache_read_tokens)},
         ${sqlVal(s.total_cost_usd)}, ${sqlVal(s.num_turns)}, ${sqlVal(s.num_tool_calls)}, ${sqlVal(s.cwd)}, ${sqlVal(s.source_file)},
-        ${sqlVal(s.git_branch)}, ${sqlVal(s.claude_version)}, ${sqlVal(s.project_path)}
+        ${sqlVal(s.git_branch)}, ${sqlVal(s.claude_version)}, ${sqlVal(s.project_path)}, ${sqlVal(s.source_type)}
       ) ON CONFLICT(session_id) DO UPDATE SET
         start_time = ${sqlVal(s.start_time)},
         end_time = ${sqlVal(s.end_time)},
@@ -110,7 +110,8 @@ export class BatchInserter {
         source_file = ${sqlVal(s.source_file)},
         git_branch = ${sqlVal(s.git_branch)},
         claude_version = ${sqlVal(s.claude_version)},
-        project_path = ${sqlVal(s.project_path)}`;
+        project_path = ${sqlVal(s.project_path)},
+        source_type = ${sqlVal(s.source_type)}`;
       await this.conn.run(sql);
       count++;
     }

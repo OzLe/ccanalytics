@@ -3,7 +3,7 @@
  *
  * CLI command: `ccanalytics ingest`
  *
- * Parses JSONL session transcripts from the Claude data directory
+ * Parses JSONL session transcripts from configured data sources
  * and loads them into the DuckDB analytical store. Supports incremental
  * ingestion via byte-offset tracking per file.
  */
@@ -18,6 +18,7 @@ import { Command } from "commander";
  *   --full          Force full re-ingestion, ignoring byte-offset state
  *   --project <n>   Restrict ingestion to a specific project
  *   --batch-size <n> Max rows per INSERT batch (default: 1000)
+ *   --source <type> Data source: "claude-code", "claude-desktop", or "all" (default: "all")
  *
  * @param parent - The parent Commander program
  */
@@ -46,20 +47,16 @@ export function registerIngestCommand(parent: Command): void {
       "Max rows per INSERT batch",
       "1000",
     )
+    .option(
+      "--source <type>",
+      'Data source: "claude-code", "claude-desktop", or "all"',
+      "all",
+    )
     .action(async (options) => {
-      // TODO: Implement ingest command
-      // 1. Load config with CLI overrides
-      // 2. Create ConnectionManager and open DB
-      // 3. Initialize schema via SchemaManager
-      // 4. Create IngestionPipeline
-      // 5. Set up progress display (nanospinner)
-      // 6. Run pipeline with options
-      // 7. Print summary
-      // 8. Close DB connection
-      // 9. Exit with appropriate code
       const { loadConfig } = await import("../config/index.js");
       const { ConnectionManager } = await import("../db/connection.js");
       const { IngestionPipeline } = await import("../ingestion/index.js");
+      const { createAdapters } = await import("../ingestion/adapters/index.js");
       const { createLogger } = await import("../utils/logger.js");
 
       const globalOpts = parent.opts();
@@ -95,13 +92,22 @@ export function registerIngestCommand(parent: Command): void {
         await db.open(dbPath);
         logger.debug(`Database opened: ${dbPath}`);
 
-        // Initialize schema
+        // Initialize schema (runs migrations if needed)
         const schema = new SchemaManager();
         await schema.initialize(db.getConnection());
+        await schema.migrate(db.getConnection());
         logger.debug("Schema initialized");
 
-        // Create ingestion pipeline
-        const pipeline = new IngestionPipeline(config, db);
+        // Create adapters based on --source flag
+        const sourceFilter = options.source === "all"
+          ? undefined
+          : (options.source as "claude-code" | "claude-desktop");
+        const adapters = createAdapters(config, sourceFilter);
+
+        logger.debug(`Active adapters: ${adapters.map(a => a.name).join(", ")}`);
+
+        // Create ingestion pipeline with adapters
+        const pipeline = new IngestionPipeline(adapters, db);
 
         // Set batch size from options
         if (options.batchSize) {

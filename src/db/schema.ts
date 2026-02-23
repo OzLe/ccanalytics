@@ -11,7 +11,7 @@ import * as path from "node:path";
 import { MigrationError } from "../errors.js";
 
 /** Current schema version matching sql/schema.sql */
-const CURRENT_VERSION = 1;
+const CURRENT_VERSION = 2;
 
 /**
  * Split a SQL file into individual statements.
@@ -122,11 +122,34 @@ export class SchemaManager {
       return 1;
     }
 
+    let applied = 0;
+
+    if (currentVersion < 2) {
+      await this.applyMigration2(connection);
+      applied++;
+    }
+
     // Future migrations would go here as:
-    // if (currentVersion < 2) { applyMigration2(connection); }
     // if (currentVersion < 3) { applyMigration3(connection); }
 
-    return 0;
+    return applied;
+  }
+
+  /**
+   * Migration v2: Add source_type column to sessions table.
+   */
+  private async applyMigration2(connection: unknown): Promise<void> {
+    const conn = connection as { run(sql: string): Promise<unknown> };
+    try {
+      await conn.run(
+        `ALTER TABLE sessions ADD COLUMN IF NOT EXISTS source_type VARCHAR DEFAULT 'claude-code'`,
+      );
+      await conn.run(
+        `INSERT INTO schema_migrations (version, description) VALUES (2, 'Add source_type column to sessions') ON CONFLICT (version) DO NOTHING`,
+      );
+    } catch (err) {
+      throw new MigrationError(2, err as Error);
+    }
   }
 
   /**

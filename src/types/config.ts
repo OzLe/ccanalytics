@@ -8,12 +8,19 @@
 
 import type { OutputFormat } from "./analytics.js";
 
+/** Discriminator for data source origin. */
+export type SourceType = "claude-code" | "claude-desktop";
+
 /** Top-level configuration for ccanalytics. */
 export interface CCAnalyticsConfig {
   /** Path to DuckDB database file. Default: ~/.ccanalytics/analytics.duckdb */
   dbPath: string;
   /** Path to Claude data directory. Default: ~/.claude */
   claudeDir: string;
+  /** Path to Claude Desktop data directory. Default: ~/Library/Application Support/Claude */
+  desktopDataDir?: string;
+  /** Which sources to ingest. Default: ["claude-code", "claude-desktop"] */
+  sources?: SourceType[];
   /** Default output format. Default: "table" */
   format: OutputFormat;
   /** Enable verbose logging. Default: false */

@@ -29,22 +29,11 @@ export function registerWatchCommand(parent: Command): void {
       "2000",
     )
     .action(async (options) => {
-      // TODO: Implement watch command
-      // 1. Load config with CLI overrides
-      // 2. Open DB connection
-      // 3. Initialize schema
-      // 4. Create IngestionPipeline
-      // 5. Create Watcher with config
-      // 6. Register onEvent handler for logging
-      // 7. Start watcher
-      // 8. Register SIGINT/SIGTERM handlers for graceful shutdown
-      // 9. Wait until signal received
-      // 10. Stop watcher, close DB
-
       const { loadConfig } = await import("../config/index.js");
       const { ConnectionManager } = await import("../db/connection.js");
       const { SchemaManager } = await import("../db/schema.js");
       const { IngestionPipeline } = await import("../ingestion/index.js");
+      const { createAdapters } = await import("../ingestion/adapters/index.js");
       const { Watcher } = await import("../watcher/index.js");
       const { createLogger } = await import("../utils/logger.js");
       const { findClaudeDir, expandHome, ensureDir } = await import("../utils/paths.js");
@@ -86,12 +75,14 @@ export function registerWatchCommand(parent: Command): void {
         db = new ConnectionManager();
         await db.open(dbPath);
 
-        // Initialize schema
+        // Initialize schema (runs migrations if needed)
         const schema = new SchemaManager();
         await schema.initialize(db.getConnection());
+        await schema.migrate(db.getConnection());
 
-        // Create ingestion pipeline
-        const pipeline = new IngestionPipeline(config, db);
+        // Create adapters and pipeline
+        const adapters = createAdapters(config);
+        const pipeline = new IngestionPipeline(adapters, db);
 
         // Create watcher
         watcher = new Watcher(config.watcher, pipeline);
