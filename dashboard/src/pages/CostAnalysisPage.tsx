@@ -139,18 +139,6 @@ export default function CostAnalysisPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1
-          className="text-2xl font-bold"
-          style={{ color: "var(--text-primary)" }}
-        >
-          Cost Analysis
-        </h1>
-        <p className="mt-1 text-sm" style={{ color: "var(--text-secondary)" }}>
-          Analyze spending patterns across models and projects.
-        </p>
-      </div>
-
       {/* KPI Cards */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <KPICard
@@ -300,10 +288,10 @@ export default function CostAnalysisPage() {
                     color: "var(--text-muted)",
                   }}
                 >
-                  <th className="py-2 pr-4">Model</th>
-                  <th className="py-2 pr-4 text-right">Sessions</th>
-                  <th className="py-2 pr-4 text-right">Total Cost</th>
-                  <th className="py-2 w-32">Distribution</th>
+                  <th className="py-2 pr-4 whitespace-nowrap">Model</th>
+                  <th className="py-2 pr-4 text-right whitespace-nowrap">Sessions</th>
+                  <th className="py-2 pr-6 text-right whitespace-nowrap">Cost</th>
+                  <th className="py-2 pl-4 w-24 whitespace-nowrap">Dist.</th>
                 </tr>
               </thead>
               <tbody>
@@ -331,7 +319,7 @@ export default function CostAnalysisPage() {
                     >
                       {formatCost(row.totalCost)}
                     </td>
-                    <td className="py-2.5">
+                    <td className="py-2.5 pl-3">
                       <div
                         className="h-2 rounded-full"
                         style={{ backgroundColor: "var(--bg-hover)" }}

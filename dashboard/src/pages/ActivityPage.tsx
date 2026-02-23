@@ -91,18 +91,6 @@ export default function ActivityPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1
-          className="text-2xl font-bold"
-          style={{ color: "var(--text-primary)" }}
-        >
-          Activity
-        </h1>
-        <p className="mt-1 text-sm" style={{ color: "var(--text-secondary)" }}>
-          Usage patterns by time of day and daily volume.
-        </p>
-      </div>
-
       {/* KPI Cards */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <KPICard

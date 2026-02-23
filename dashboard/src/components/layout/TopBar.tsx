@@ -278,7 +278,7 @@ export default function TopBar({ onMenuClick }: TopBarProps) {
       <div className="flex flex-wrap items-center gap-2">
         {/* Period selector */}
         <div
-          className="inline-flex rounded-lg border p-0.5"
+          className="inline-flex gap-1 rounded-lg border p-0.5"
           style={{
             backgroundColor: "var(--bg-secondary)",
             borderColor: "var(--border)",

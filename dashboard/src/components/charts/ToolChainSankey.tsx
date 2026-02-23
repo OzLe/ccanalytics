@@ -82,6 +82,35 @@ export default function ToolChainSankey({ data }: Props) {
 
     if (nodes.length === 0 || links.length === 0) return;
 
+    // Detect and remove cycles - d3-sankey throws "circular link" otherwise
+    const adj = new Map<number, Set<number>>();
+    for (const l of links) {
+      if (!adj.has(l.source)) adj.set(l.source, new Set());
+      adj.get(l.source)!.add(l.target);
+    }
+    const visited = new Set<number>();
+    const stack = new Set<number>();
+    const cycleEdges = new Set<string>();
+    function dfs(node: number): void {
+      visited.add(node);
+      stack.add(node);
+      for (const neighbor of adj.get(node) ?? []) {
+        if (stack.has(neighbor)) {
+          cycleEdges.add(`${node}->${neighbor}`);
+        } else if (!visited.has(neighbor)) {
+          dfs(neighbor);
+        }
+      }
+      stack.delete(node);
+    }
+    for (const n of nodes.keys()) {
+      if (!visited.has(n)) dfs(n);
+    }
+    const safeLinks = links.filter(
+      (l) => !cycleEdges.has(`${l.source}->${l.target}`),
+    );
+    if (safeLinks.length === 0) return;
+
     const svg = d3
       .select(svgRef.current)
       .attr("width", width)
@@ -97,10 +126,15 @@ export default function ToolChainSankey({ data }: Props) {
         [width - margin.right, height - margin.bottom],
       ]);
 
-    const graph = sankeyGen({
-      nodes: nodes.map((d) => ({ ...d })),
-      links: links.map((d) => ({ ...d })),
-    });
+    let graph;
+    try {
+      graph = sankeyGen({
+        nodes: nodes.map((d) => ({ ...d })),
+        links: safeLinks.map((d) => ({ ...d })),
+      });
+    } catch {
+      return; // gracefully bail if sankey still fails
+    }
 
     const tooltip = d3.select(tooltipRef.current);
 

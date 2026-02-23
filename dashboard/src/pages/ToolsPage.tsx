@@ -61,18 +61,6 @@ export default function ToolsPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1
-          className="text-2xl font-bold"
-          style={{ color: "var(--text-primary)" }}
-        >
-          Tool Usage
-        </h1>
-        <p className="mt-1 text-sm" style={{ color: "var(--text-secondary)" }}>
-          Analyze tool invocation patterns, success rates, and workflows.
-        </p>
-      </div>
-
       {/* KPI Cards */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <KPICard
@@ -158,8 +146,8 @@ export default function ToolsPage() {
                 >
                   <th className="py-2 pr-3">Tool</th>
                   <th className="py-2 pr-3 text-right">Calls</th>
-                  <th className="py-2 pr-3 text-right">Rate</th>
-                  <th className="py-2 w-28">Success</th>
+                  <th className="py-2 pr-5 text-right">Rate</th>
+                  <th className="py-2 pl-4 w-28">Bar</th>
                   <th className="py-2 pr-3 text-right">Avg Time</th>
                 </tr>
               </thead>
@@ -196,7 +184,7 @@ export default function ToolsPage() {
                       >
                         {ratePercent.toFixed(1)}%
                       </td>
-                      <td className="py-2">
+                      <td className="py-2 pl-3">
                         <div
                           className="h-2 rounded-full"
                           style={{ backgroundColor: "var(--bg-hover)" }}

@@ -80,18 +80,6 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1
-          className="text-2xl font-bold"
-          style={{ color: "var(--text-primary)" }}
-        >
-          Dashboard
-        </h1>
-        <p className="mt-1 text-sm" style={{ color: "var(--text-secondary)" }}>
-          Overview of your Claude Code usage and costs.
-        </p>
-      </div>
-
       {/* KPI Cards */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <KPICard

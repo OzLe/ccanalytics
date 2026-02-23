@@ -153,13 +153,7 @@ export default function SessionDetailPage() {
         >
           <BackArrow /> Back to Sessions
         </button>
-        <h1
-          className="text-2xl font-bold"
-          style={{ color: "var(--text-primary)" }}
-        >
-          Session Detail
-        </h1>
-        <div className="mt-1 flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <p className="text-sm" style={{ color: "var(--text-secondary)" }}>
             {formatDateTime(session.startTime)}
             {session.endTime ? ` - ${formatDateTime(session.endTime)}` : ""}
