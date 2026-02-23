@@ -11,8 +11,10 @@ import type {
   TimeBucket,
   TimeSeriesPoint,
   HourlyActivity,
+  QueryFilters,
 } from "../types/index.js";
 import type { QueryExecutor } from "../db/executor.js";
+import { buildTurnFilters } from "./filter-builder.js";
 
 /** Token usage breakdown at a point in time. */
 export interface TokenUsagePoint {
@@ -54,9 +56,12 @@ export class TimeSeriesAnalyzer {
    * @param range - Time range to query
    * @returns Hourly activity data (24 rows, one per hour of day)
    */
-  async getHourlyActivity(range: TimeRange): Promise<HourlyActivity[]> {
-    // The v_hourly_activity view aggregates all-time data, so we need a subquery
-    // to filter by the time range before aggregating by hour_of_day.
+  async getHourlyActivity(range: TimeRange, filters?: QueryFilters): Promise<HourlyActivity[]> {
+    const f = buildTurnFilters(filters, 3);
+    // Prefix filter clauses with ct. for aliased queries
+    const filterClauses = f.clauses.map((c) =>
+      c.replace(/\bAND model\b/, "AND ct.model").replace(/\bAND session_id\b/, "AND ct.session_id"),
+    );
     const sql = `
       SELECT
         EXTRACT(HOUR FROM ct.timestamp)::INTEGER AS hour_of_day,
@@ -71,6 +76,7 @@ export class TimeSeriesAnalyzer {
         END AS avg_tokens_per_turn
       FROM conversation_turns ct
       WHERE ct.timestamp >= $1 AND ct.timestamp < $2
+        ${filterClauses.join("\n        ")}
       GROUP BY hour_of_day
       ORDER BY hour_of_day ASC
     `;
@@ -82,7 +88,7 @@ export class TimeSeriesAnalyzer {
       total_tokens: number;
       total_cost: number;
       avg_tokens_per_turn: number;
-    }>(sql, [range.start, range.end]);
+    }>(sql, [range.start, range.end, ...f.params]);
 
     return result.rows.map((row) => ({
       hourOfDay: Number(row.hour_of_day),
@@ -119,6 +125,36 @@ export class TimeSeriesAnalyzer {
 
     return result.rows.map((row) => ({
       timestamp: new Date(row.date),
+      value: Number(row.value),
+    }));
+  }
+
+  /**
+   * Get an activity heatmap (hour-of-day x day-of-week).
+   *
+   * @param range - Time range to query
+   * @returns Array of heatmap cells with day/hour/count
+   */
+  async getActivityHeatmap(range: TimeRange): Promise<HeatmapCell[]> {
+    const sql = `
+      SELECT
+        EXTRACT(DOW FROM ct.timestamp)::INTEGER AS day_of_week,
+        EXTRACT(HOUR FROM ct.timestamp)::INTEGER AS hour_of_day,
+        COUNT(*) AS value
+      FROM conversation_turns ct
+      WHERE ct.timestamp >= $1 AND ct.timestamp < $2
+      GROUP BY day_of_week, hour_of_day
+      ORDER BY day_of_week ASC, hour_of_day ASC
+    `;
+    const result = await this.executor.query<{
+      day_of_week: number;
+      hour_of_day: number;
+      value: number;
+    }>(sql, [range.start, range.end]);
+
+    return result.rows.map((row) => ({
+      dayOfWeek: Number(row.day_of_week),
+      hourOfDay: Number(row.hour_of_day),
       value: Number(row.value),
     }));
   }

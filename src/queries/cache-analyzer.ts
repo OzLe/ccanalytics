@@ -18,8 +18,10 @@ import type {
   CacheEfficiencyTrend,
   TimeRange,
   TimeBucket,
+  QueryFilters,
 } from "../types/index.js";
 import type { QueryExecutor } from "../db/executor.js";
+import { buildTurnFilters } from "./filter-builder.js";
 
 /** Cache metrics for a single session. */
 export interface SessionCacheMetrics {
@@ -52,7 +54,8 @@ export class CacheAnalyzer {
    * @param range - Time range to analyze
    * @returns Aggregate cache metrics with interpretation
    */
-  async getCacheHitRate(range: TimeRange): Promise<CacheMetrics> {
+  async getCacheHitRate(range: TimeRange, filters?: QueryFilters): Promise<CacheMetrics> {
+    const f = buildTurnFilters(filters, 3);
     const sql = `
       SELECT
         COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
@@ -61,12 +64,13 @@ export class CacheAnalyzer {
       FROM conversation_turns
       WHERE role = 'assistant'
         AND timestamp >= $1 AND timestamp < $2
+        ${f.clauses.join("\n        ")}
     `;
     const result = await this.executor.query<{
       cache_read_tokens: number;
       cache_write_tokens: number;
       total_input_tokens: number;
-    }>(sql, [range.start, range.end]);
+    }>(sql, [range.start, range.end, ...f.params]);
 
     const row = result.rows[0];
     const cacheReadTokens = Number(row?.cache_read_tokens ?? 0);
@@ -113,11 +117,26 @@ export class CacheAnalyzer {
   async getCacheTrend(
     range: TimeRange,
     _bucket?: TimeBucket,
+    filters?: QueryFilters,
   ): Promise<CacheEfficiencyTrend[]> {
+    const f = buildTurnFilters(filters, 3);
+    // Query conversation_turns directly (instead of the view) to support filters
     const sql = `
-      SELECT date, cache_hit_rate, cache_read_tokens, cache_write_tokens
-      FROM v_cache_efficiency
-      WHERE date >= $1 AND date < $2
+      SELECT
+        CAST(timestamp AS DATE) AS date,
+        CASE
+          WHEN (SUM(cache_read_tokens) + SUM(cache_creation_tokens) + SUM(input_tokens)) > 0
+          THEN SUM(cache_read_tokens)::DOUBLE /
+               (SUM(cache_read_tokens) + SUM(cache_creation_tokens) + SUM(input_tokens))::DOUBLE
+          ELSE 0.0
+        END AS cache_hit_rate,
+        SUM(cache_read_tokens) AS cache_read_tokens,
+        SUM(cache_creation_tokens) AS cache_write_tokens
+      FROM conversation_turns
+      WHERE role = 'assistant'
+        AND timestamp >= $1 AND timestamp < $2
+        ${f.clauses.join("\n        ")}
+      GROUP BY CAST(timestamp AS DATE)
       ORDER BY date ASC
     `;
     const result = await this.executor.query<{
@@ -125,7 +144,7 @@ export class CacheAnalyzer {
       cache_hit_rate: number;
       cache_read_tokens: number;
       cache_write_tokens: number;
-    }>(sql, [range.start, range.end]);
+    }>(sql, [range.start, range.end, ...f.params]);
 
     return result.rows.map((row) => ({
       timestamp: new Date(row.date),

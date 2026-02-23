@@ -22,6 +22,12 @@ export type OutputFormat = "table" | "json" | "csv";
 
 export type SortOrder = "asc" | "desc";
 
+/** Optional filters applied to analytical queries. */
+export interface QueryFilters {
+  model?: string;
+  project?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Session Analytics
 // ---------------------------------------------------------------------------

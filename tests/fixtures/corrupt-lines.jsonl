@@ -1,0 +1,9 @@
+{"type":"user","sessionId":"sess-corrupt-001","timestamp":"2026-02-20T12:00:00.000Z","message":{"role":"user","content":[{"type":"text","text":"Hello"}]},"uuid":"uuid-c-u1","parentUuid":null}
+{"type":"assistant","sessionId":"sess-corrupt-001","timestamp":"2026-02-20T12:00:01.000Z","costUSD":0.003,"usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"requestId":"req_corrupt_001","parentUuid":"uuid-c-u1","uuid":"uuid-c-a1","version":"1.0.35","model":"claude-sonnet-4-5","message":{"role":"assistant","content":[{"type":"text","text":"Hi there!"}],"stop_reason":"end_turn","model":"claude-sonnet-4-5"}}
+{"type":"assistant","sessionId":"sess-corrupt-001","truncated
+not json at all %%%
+{"no_type_field":true,"sessionId":"sess-corrupt-001","timestamp":"2026-02-20T12:00:03.000Z"}
+
+{"type":"unknown_type_xyz","sessionId":"sess-corrupt-001","timestamp":"2026-02-20T12:00:04.000Z","data":"something"}
+{"type":"user","sessionId":"sess-corrupt-001","timestamp":"2026-02-20T12:00:05.000Z","message":{"role":"user","content":[{"type":"text","text":"Are you still there?"}]},"uuid":"uuid-c-u2","parentUuid":"uuid-c-a1"}
+{"type":"assistant","sessionId":"sess-corrupt-001","timestamp":"2026-02-20T12:00:06.000Z","costUSD":0.004,"usage":{"input_tokens":120,"output_tokens":60,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"requestId":"req_corrupt_002","parentUuid":"uuid-c-u2","uuid":"uuid-c-a2","version":"1.0.35","model":"claude-sonnet-4-5","message":{"role":"assistant","content":[{"type":"text","text":"Yes, I am still here!"}],"stop_reason":"end_turn","model":"claude-sonnet-4-5"}}

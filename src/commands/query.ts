@@ -89,42 +89,7 @@ export function registerQueryCommand(parent: Command): void {
       });
 
       const logger = createLogger({ verbose: config.verbose, prefix: "query" });
-
-      // Parse period to TimeRange
-      const parsePeriod = (period: string): { start: Date; end: Date } => {
-        const now = new Date();
-        const end = now;
-        let start: Date;
-
-        switch (period) {
-          case "today": {
-            start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-            break;
-          }
-          case "7d": {
-            start = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-            break;
-          }
-          case "30d": {
-            start = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-            break;
-          }
-          case "90d": {
-            start = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
-            break;
-          }
-          case "all": {
-            start = new Date("2020-01-01");
-            break;
-          }
-          default: {
-            start = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-            break;
-          }
-        }
-
-        return { start, end };
-      };
+      const { parsePeriod } = await import("../utils/time.js");
 
       let db: InstanceType<typeof ConnectionManager> | null = null;
       try {
@@ -145,26 +110,50 @@ export function registerQueryCommand(parent: Command): void {
         const queryType = type as QueryType;
 
         type ColumnDef = import("../utils/format.js").TableColumn;
+        type QF = import("../types/index.js").QueryFilters;
+
+        // Build filters from CLI options
+        const filters: QF = {};
+        if (options.model) filters.model = options.model;
+        if (options.project) filters.project = options.project;
+        const hasFilters = filters.model || filters.project ? filters : undefined;
 
         if (queryType === "cost") {
           const { CostAnalyzer } = await import("../queries/index.js");
           const analyzer = new CostAnalyzer(executor);
-          const results = await analyzer.getDailyCosts(range);
-          const limited = results.slice(0, limit);
 
-          const columns: ColumnDef[] = [
-            { header: "Date", key: "date" },
-            { header: "Model", key: "model", maxWidth: 30 },
-            { header: "Cost", key: "totalCost", align: "right", format: (v) => `$${Number(v).toFixed(2)}` },
-            { header: "Input Tokens", key: "inputTokens", align: "right", format: (v) => Number(v).toLocaleString() },
-            { header: "Output Tokens", key: "outputTokens", align: "right", format: (v) => Number(v).toLocaleString() },
-            { header: "Cache Read", key: "cacheReadTokens", align: "right", format: (v) => Number(v).toLocaleString() },
-            { header: "Turns", key: "turnCount", align: "right" },
-            { header: "Sessions", key: "sessionCount", align: "right" },
-          ];
+          // If --sort trending, use getCostTrend for time-series view
+          if (options.sort === "trending") {
+            const results = await analyzer.getCostTrend(range, "day", hasFilters);
+            const limited = results.slice(0, limit);
 
-          const output = formatter.auto(limited as unknown as Record<string, unknown>[], columns, format);
-          console.log(output);
+            const columns: ColumnDef[] = [
+              { header: "Date", key: "timestamp", format: (v) => v instanceof Date ? v.toISOString().slice(0, 10) : String(v) },
+              { header: "Cost", key: "costUSD", align: "right", format: (v) => `$${Number(v).toFixed(2)}` },
+              { header: "Input Tokens", key: "inputTokens", align: "right", format: (v) => Number(v).toLocaleString() },
+              { header: "Output Tokens", key: "outputTokens", align: "right", format: (v) => Number(v).toLocaleString() },
+            ];
+
+            const output = formatter.auto(limited as unknown as Record<string, unknown>[], columns, format);
+            console.log(output);
+          } else {
+            const results = await analyzer.getDailyCosts(range, hasFilters);
+            const limited = results.slice(0, limit);
+
+            const columns: ColumnDef[] = [
+              { header: "Date", key: "date" },
+              { header: "Model", key: "model", maxWidth: 30 },
+              { header: "Cost", key: "totalCost", align: "right", format: (v) => `$${Number(v).toFixed(2)}` },
+              { header: "Input Tokens", key: "inputTokens", align: "right", format: (v) => Number(v).toLocaleString() },
+              { header: "Output Tokens", key: "outputTokens", align: "right", format: (v) => Number(v).toLocaleString() },
+              { header: "Cache Read", key: "cacheReadTokens", align: "right", format: (v) => Number(v).toLocaleString() },
+              { header: "Turns", key: "turnCount", align: "right" },
+              { header: "Sessions", key: "sessionCount", align: "right" },
+            ];
+
+            const output = formatter.auto(limited as unknown as Record<string, unknown>[], columns, format);
+            console.log(output);
+          }
         } else if (queryType === "sessions") {
           const { SessionAnalyzer } = await import("../queries/index.js");
           const analyzer = new SessionAnalyzer(executor);
@@ -173,6 +162,7 @@ export function registerQueryCommand(parent: Command): void {
             sortBy: (options.sort as "start_time" | "cost" | "turns" | "duration") ?? "start_time",
             order: options.desc ? "desc" : "asc",
             limit,
+            filters: hasFilters,
           });
 
           const columns: ColumnDef[] = [
@@ -191,7 +181,7 @@ export function registerQueryCommand(parent: Command): void {
         } else if (queryType === "tools") {
           const { ToolAnalyzer } = await import("../queries/index.js");
           const analyzer = new ToolAnalyzer(executor);
-          const results = await analyzer.getToolUsage(range);
+          const results = await analyzer.getToolUsage(range, hasFilters);
           const limited = results.slice(0, limit);
 
           const columns: ColumnDef[] = [
@@ -209,7 +199,7 @@ export function registerQueryCommand(parent: Command): void {
         } else if (queryType === "cache") {
           const { CacheAnalyzer } = await import("../queries/index.js");
           const analyzer = new CacheAnalyzer(executor);
-          const results = await analyzer.getCacheTrend(range);
+          const results = await analyzer.getCacheTrend(range, undefined, hasFilters);
           const limited = results.slice(0, limit);
 
           const columns: ColumnDef[] = [
@@ -224,7 +214,7 @@ export function registerQueryCommand(parent: Command): void {
         } else if (queryType === "activity") {
           const { TimeSeriesAnalyzer } = await import("../queries/index.js");
           const analyzer = new TimeSeriesAnalyzer(executor);
-          const results = await analyzer.getHourlyActivity(range);
+          const results = await analyzer.getHourlyActivity(range, hasFilters);
 
           const columns: ColumnDef[] = [
             { header: "Hour", key: "hourOfDay", format: (v) => `${String(v).padStart(2, "0")}:00` },

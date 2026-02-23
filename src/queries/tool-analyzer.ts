@@ -6,8 +6,9 @@
  * and sequential tool chain patterns.
  */
 
-import type { ToolUsageStats, TimeRange } from "../types/index.js";
+import type { ToolUsageStats, TimeRange, QueryFilters } from "../types/index.js";
 import type { QueryExecutor } from "../db/executor.js";
+import { buildTurnFilters } from "./filter-builder.js";
 
 /** Success rate details for a single tool. */
 export interface ToolSuccessRate {
@@ -52,7 +53,12 @@ export class ToolAnalyzer {
    * @param range - Time range to query
    * @returns Array of tool usage statistics
    */
-  async getToolUsage(range: TimeRange): Promise<ToolUsageStats[]> {
+  async getToolUsage(range: TimeRange, filters?: QueryFilters): Promise<ToolUsageStats[]> {
+    const f = buildTurnFilters(filters, 3);
+    // Prefix filter clauses with ct. for joined queries
+    const filterClauses = f.clauses.map((c) =>
+      c.replace(/\bAND model\b/, "AND ct.model").replace(/\bAND session_id\b/, "AND ct.session_id"),
+    );
     const sql = `
       SELECT
         tc.tool_name,
@@ -72,6 +78,7 @@ export class ToolAnalyzer {
       FROM tool_calls tc
       JOIN conversation_turns ct ON ct.turn_id = tc.turn_id AND ct.session_id = tc.session_id
       WHERE ct.timestamp >= $1 AND ct.timestamp < $2
+        ${filterClauses.join("\n        ")}
       GROUP BY tc.tool_name, tc.tool_type, tc.mcp_server
       ORDER BY call_count DESC
     `;
@@ -85,7 +92,7 @@ export class ToolAnalyzer {
       success_rate: number | null;
       avg_duration_ms: number;
       sessions_using_tool: number;
-    }>(sql, [range.start, range.end]);
+    }>(sql, [range.start, range.end, ...f.params]);
 
     return result.rows.map((row) => ({
       toolName: row.tool_name,

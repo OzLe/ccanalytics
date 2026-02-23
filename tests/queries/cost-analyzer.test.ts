@@ -3,101 +3,147 @@
  *
  * Integration tests for the CostAnalyzer class.
  * Uses DuckDB :memory: mode for fast, isolated test execution.
- *
- * These tests verify that cost queries produce correct results
- * against a known dataset inserted into the in-memory schema.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-
-// NOTE: These tests require @duckdb/node-api to be installed.
-// They are structured as integration tests that will work once the
-// implementation is complete.
+import { createTestDB, closeTestDB, seedTestData, type TestDB } from "../helpers/db-setup.js";
+import { QueryExecutor } from "../../src/db/executor.js";
+import { CostAnalyzer } from "../../src/queries/cost-analyzer.js";
+import type { TimeRange } from "../../src/types/index.js";
 
 describe("CostAnalyzer", () => {
-  // TODO: Set up DuckDB :memory: instance in beforeEach
-  // let instance: DuckDBInstance;
-  // let connection: DuckDBConnection;
-  // let executor: QueryExecutor;
-  // let analyzer: CostAnalyzer;
+  let db: TestDB;
+  let executor: QueryExecutor;
+  let analyzer: CostAnalyzer;
+
+  const testRange: TimeRange = {
+    start: new Date("2026-02-19T00:00:00Z"),
+    end: new Date("2026-02-22T00:00:00Z"),
+  };
 
   beforeEach(async () => {
-    // TODO: Implement test setup
-    // 1. Create DuckDB instance with :memory:
-    // 2. Create connection
-    // 3. Run schema.sql DDL
-    // 4. Run views.sql
-    // 5. Insert test data
-    // 6. Create QueryExecutor and CostAnalyzer
-
-    // Example test data insertion:
-    // INSERT INTO sessions VALUES ('sess-001', '2026-02-20 10:00:00', ...);
-    // INSERT INTO conversation_turns VALUES ('turn-001', 'sess-001', 'assistant', ...);
+    db = await createTestDB();
+    executor = new QueryExecutor(db.connection);
+    analyzer = new CostAnalyzer(executor);
+    await seedTestData(db.connection);
   });
 
   afterEach(async () => {
-    // TODO: Close connection and instance
+    await closeTestDB(db);
   });
 
   describe("getDailyCosts", () => {
     it("should return daily cost aggregation for a time range", async () => {
-      // TODO: Implement test
-      // 1. Insert known cost data across multiple days
-      // 2. Call getDailyCosts with a 7-day range
-      // 3. Verify row count matches expected days
-      // 4. Verify cost totals match inserted data
-      expect(true).toBe(true); // Placeholder
+      const results = await analyzer.getDailyCosts(testRange);
+      expect(results.length).toBeGreaterThan(0);
+      // We have data on 2026-02-20 and 2026-02-21
+      // DuckDB may return dates as Date objects or various string formats
+      const dateStrings = results.map((r) => {
+        const d = new Date(r.date);
+        return d.toISOString().slice(0, 10);
+      });
+      const uniqueDates = [...new Set(dateStrings)];
+      expect(uniqueDates).toContain("2026-02-20");
+      expect(uniqueDates).toContain("2026-02-21");
     });
 
     it("should break down costs by model", async () => {
-      // TODO: Implement test
-      // 1. Insert data with two different models
-      // 2. Query and verify separate rows per model
-      expect(true).toBe(true); // Placeholder
+      const results = await analyzer.getDailyCosts(testRange);
+      const models = results.map((r) => r.model);
+      expect(models).toContain("claude-sonnet-4-5");
+      expect(models).toContain("claude-opus-4");
     });
 
     it("should return empty array for a time range with no data", async () => {
-      // TODO: Implement test
-      // 1. Query a future time range with no data
-      // 2. Verify empty array returned (not null, not error)
-      expect(true).toBe(true); // Placeholder
+      const futureRange: TimeRange = {
+        start: new Date("2030-01-01"),
+        end: new Date("2030-01-02"),
+      };
+      const results = await analyzer.getDailyCosts(futureRange);
+      expect(results).toEqual([]);
+    });
+
+    it("should filter by model", async () => {
+      const results = await analyzer.getDailyCosts(testRange, { model: "opus" });
+      expect(results.length).toBeGreaterThan(0);
+      for (const row of results) {
+        expect(row.model.toLowerCase()).toContain("opus");
+      }
+    });
+
+    it("should filter by project", async () => {
+      const results = await analyzer.getDailyCosts(testRange, { project: "alpha" });
+      expect(results.length).toBeGreaterThan(0);
     });
   });
 
   describe("getCostByModel", () => {
     it("should aggregate costs per model", async () => {
-      // TODO: Implement test
-      // 1. Insert turns with different models
-      // 2. Call getCostByModel
-      // 3. Verify each model has correct token totals and cost
-      expect(true).toBe(true); // Placeholder
+      const results = await analyzer.getCostByModel(testRange);
+      expect(results.length).toBe(2);
+
+      const sonnet = results.find((r) => r.model === "claude-sonnet-4-5");
+      const opus = results.find((r) => r.model === "claude-opus-4");
+      expect(sonnet).toBeDefined();
+      expect(opus).toBeDefined();
+      expect(sonnet!.totalInputTokens).toBeGreaterThan(0);
+      expect(opus!.totalCostUSD).toBe(0.25);
     });
   });
 
   describe("getTotalCost", () => {
     it("should return correct token breakdown totals", async () => {
-      // TODO: Implement test
-      // 1. Insert known token data
-      // 2. Call getTotalCost
-      // 3. Verify input, output, cache_write, cache_read totals
-      expect(true).toBe(true); // Placeholder
+      const result = await analyzer.getTotalCost(testRange);
+      // Sum of all assistant turns: 0.02 + 0.03 + 0.25 + 0.04 + 0.04 = 0.38
+      expect(result.totalCostUSD).toBeCloseTo(0.38, 2);
+      expect(result.totalInputTokens).toBeGreaterThan(0);
+      expect(result.totalOutputTokens).toBeGreaterThan(0);
     });
 
     it("should return zero values when no data exists", async () => {
-      // TODO: Implement test
-      // 1. Query empty database
-      // 2. Verify all fields are 0
-      expect(true).toBe(true); // Placeholder
+      const futureRange: TimeRange = {
+        start: new Date("2030-01-01"),
+        end: new Date("2030-01-02"),
+      };
+      const result = await analyzer.getTotalCost(futureRange);
+      expect(result.totalCostUSD).toBe(0);
+      expect(result.totalInputTokens).toBe(0);
+      expect(result.totalOutputTokens).toBe(0);
+    });
+
+    it("should respect model filter", async () => {
+      const result = await analyzer.getTotalCost(testRange, { model: "opus" });
+      expect(result.totalCostUSD).toBe(0.25);
     });
   });
 
   describe("getCostByProject", () => {
     it("should aggregate costs per project path", async () => {
-      // TODO: Implement test
-      // 1. Insert sessions with different project_path values
-      // 2. Call getCostByProject
-      // 3. Verify per-project cost totals
-      expect(true).toBe(true); // Placeholder
+      const results = await analyzer.getCostByProject(testRange);
+      expect(results.length).toBe(2);
+
+      const alpha = results.find((r) => r.projectPath === "/projects/alpha");
+      const beta = results.find((r) => r.projectPath === "/projects/beta");
+      expect(alpha).toBeDefined();
+      expect(beta).toBeDefined();
+      expect(alpha!.sessionCount).toBe(2);
+      expect(beta!.sessionCount).toBe(1);
+    });
+  });
+
+  describe("getCostTrend", () => {
+    it("should return daily cost trend", async () => {
+      const results = await analyzer.getCostTrend(testRange, "day");
+      expect(results.length).toBeGreaterThan(0);
+      for (const point of results) {
+        expect(point.timestamp).toBeInstanceOf(Date);
+        expect(point.costUSD).toBeGreaterThanOrEqual(0);
+        expect(point.inputTokens).toBeGreaterThanOrEqual(0);
+      }
+    });
+
+    it("should reject invalid bucket", async () => {
+      await expect(analyzer.getCostTrend(testRange, "invalid" as any)).rejects.toThrow("Invalid time bucket");
     });
   });
 });

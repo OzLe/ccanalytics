@@ -10,8 +10,10 @@ import type {
   SessionDetail,
   TimeRange,
   SortOrder,
+  QueryFilters,
 } from "../types/index.js";
 import type { QueryExecutor } from "../db/executor.js";
+import { buildSessionFilters } from "./filter-builder.js";
 
 /** Aggregate statistics across all sessions in a time range. */
 export interface SessionAggregateStats {
@@ -55,6 +57,7 @@ export class SessionAnalyzer {
     order?: SortOrder;
     limit?: number;
     offset?: number;
+    filters?: QueryFilters;
   }): Promise<SessionSummary[]> {
     const sortColumnMap: Record<string, string> = {
       start_time: "start_time",
@@ -67,12 +70,15 @@ export class SessionAnalyzer {
     const limit = options.limit ?? 50;
     const offset = options.offset ?? 0;
 
+    // v_session_summary has columns from sessions (model, project_path, etc)
+    const f = buildSessionFilters(options.filters, 5, "v_session_summary");
     const sql = `
       SELECT session_id, start_time, end_time, duration_seconds, model,
              total_cost_usd, num_turns, num_tool_calls, cache_hit_rate,
              project_path
       FROM v_session_summary
       WHERE start_time >= $1 AND start_time < $2
+        ${f.clauses.join("\n        ")}
       ORDER BY ${sortColumn} ${order}
       LIMIT $3 OFFSET $4
     `;
@@ -87,7 +93,7 @@ export class SessionAnalyzer {
       num_tool_calls: number;
       cache_hit_rate: number;
       project_path: string | null;
-    }>(sql, [options.range.start, options.range.end, limit, offset]);
+    }>(sql, [options.range.start, options.range.end, limit, offset, ...f.params]);
 
     return result.rows.map((row) => ({
       sessionId: row.session_id,
@@ -243,7 +249,8 @@ export class SessionAnalyzer {
    * @param range - Time range to aggregate over
    * @returns Aggregate statistics
    */
-  async getSessionStats(range: TimeRange): Promise<SessionAggregateStats> {
+  async getSessionStats(range: TimeRange, filters?: QueryFilters): Promise<SessionAggregateStats> {
+    const f = buildSessionFilters(filters, 3, "sessions");
     const sql = `
       SELECT
         COUNT(*) AS total_sessions,
@@ -255,6 +262,7 @@ export class SessionAnalyzer {
         COALESCE(AVG(total_cost_usd), 0) AS avg_cost_per_session
       FROM sessions
       WHERE start_time >= $1 AND start_time < $2
+        ${f.clauses.join("\n        ")}
     `;
     const statsResult = await this.executor.query<{
       total_sessions: number;
@@ -264,14 +272,16 @@ export class SessionAnalyzer {
       median_duration_minutes: number;
       total_cost_usd: number;
       avg_cost_per_session: number;
-    }>(sql, [range.start, range.end]);
+    }>(sql, [range.start, range.end, ...f.params]);
 
+    const f2 = buildSessionFilters(filters, 3, "sessions");
     const modelsResult = await this.executor.query<{ model: string }>(
       `SELECT DISTINCT model
        FROM sessions
        WHERE start_time >= $1 AND start_time < $2
-         AND model IS NOT NULL`,
-      [range.start, range.end],
+         AND model IS NOT NULL
+         ${f2.clauses.join("\n         ")}`,
+      [range.start, range.end, ...f2.params],
     );
 
     const stats = statsResult.rows[0];
