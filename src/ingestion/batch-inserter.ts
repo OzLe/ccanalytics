@@ -161,7 +161,10 @@ export class BatchInserter {
         ${sqlVal(tc.tool_name)}, ${sqlVal(tc.tool_type)}, ${sqlVal(tc.mcp_server)},
         ${sqlVal(tc.duration_ms)}, ${sqlVal(tc.success)}, ${sqlVal(tc.error_message)},
         ${sqlVal(tc.parameters)}
-      ) ON CONFLICT(tool_call_id) DO NOTHING`;
+      ) ON CONFLICT(tool_call_id) DO UPDATE SET
+        success = ${sqlVal(tc.success)},
+        error_message = ${sqlVal(tc.error_message)},
+        duration_ms = COALESCE(${sqlVal(tc.duration_ms)}, tool_calls.duration_ms)`;
       await this.conn.run(sql);
       count++;
     }

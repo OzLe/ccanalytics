@@ -156,6 +156,25 @@ export class ClaudeCodeAdapter implements ISourceAdapter {
       });
     }
 
+    // Build a map of tool_use_id → result from user messages' tool_result blocks
+    const toolResultMap = new Map<string, { isError: boolean; content: string | null }>();
+    for (const msg of userMessages) {
+      const blocks = msg.content as ContentBlock[];
+      for (const block of blocks) {
+        if (block.type === "tool_result") {
+          const content = typeof block.content === "string"
+            ? block.content
+            : Array.isArray(block.content)
+              ? block.content.map((c: { text?: string }) => c.text ?? "").join("\n")
+              : null;
+          toolResultMap.set(block.tool_use_id, {
+            isError: block.is_error === true,
+            content,
+          });
+        }
+      }
+    }
+
     // Build assistant turn rows and tool call rows
     for (let idx = 0; idx < assistantMessages.length; idx++) {
       const msg = assistantMessages[idx];
@@ -208,6 +227,11 @@ export class ClaudeCodeAdapter implements ISourceAdapter {
             }
           }
 
+          // Look up tool_result in subsequent user messages to determine success
+          const result = toolResultMap.get(block.id);
+          const success = result != null ? !result.isError : null;
+          const errorMessage = result?.isError ? result.content : null;
+
           toolCalls.push({
             tool_call_id: block.id,
             session_id: msg.sessionId,
@@ -216,8 +240,8 @@ export class ClaudeCodeAdapter implements ISourceAdapter {
             tool_type: toolType,
             mcp_server: mcpServer,
             duration_ms: null,
-            success: null,
-            error_message: null,
+            success,
+            error_message: errorMessage,
             parameters: block.input ?? null,
           });
         }
