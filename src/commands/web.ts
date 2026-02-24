@@ -46,24 +46,32 @@ export function registerWebCommand(parent: Command): void {
       // -----------------------------------------------------------------------
       // Resolve dashboard directory relative to the CLI source
       // -----------------------------------------------------------------------
-      const __filename = fileURLToPath(import.meta.url);
-      const __dirname = dirname(__filename);
+      // In CJS bundles (dist/cli.cjs), import.meta.url is undefined, so fall
+      // back to the global __dirname / __filename that CJS provides.
+      let currentDir: string;
+      if (typeof import.meta.url === "string") {
+        currentDir = dirname(fileURLToPath(import.meta.url));
+      } else if (typeof __dirname !== "undefined") {
+        currentDir = __dirname;
+      } else {
+        currentDir = process.cwd();
+      }
       // In source: src/commands/web.ts -> package root is ../..
       // In dist:   dist/cli.cjs        -> package root is ..
       // We try both and pick whichever contains dashboard/
-      let packageRoot = resolve(__dirname, "../..");
+      let packageRoot = resolve(currentDir, "../..");
       let dashboardDir = resolve(packageRoot, "dashboard");
 
       if (!existsSync(dashboardDir)) {
-        packageRoot = resolve(__dirname, "..");
+        packageRoot = resolve(currentDir, "..");
         dashboardDir = resolve(packageRoot, "dashboard");
       }
 
       if (!existsSync(dashboardDir)) {
         console.error("Error: Dashboard directory not found.");
         console.error("Searched in:");
-        console.error(`  ${resolve(dirname(__filename), "../..", "dashboard")}`);
-        console.error(`  ${resolve(dirname(__filename), "..", "dashboard")}`);
+        console.error(`  ${resolve(currentDir, "../..", "dashboard")}`);
+        console.error(`  ${resolve(currentDir, "..", "dashboard")}`);
         console.error("");
         console.error("Make sure you are running ccanalytics from the project root,");
         console.error("or that the dashboard/ directory is included in the package.");
