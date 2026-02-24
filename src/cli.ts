@@ -18,6 +18,7 @@ import { registerDashboardCommand } from "./commands/dashboard.js";
 import { registerStatusCommand } from "./commands/status.js";
 import { registerExportCommand } from "./commands/export.js";
 import { registerWebCommand } from "./commands/web.js";
+import { registerInitCommand } from "./commands/init.js";
 
 /**
  * Build and return the configured Commander program.
@@ -51,6 +52,7 @@ export function createProgram(): Command {
   registerStatusCommand(program);
   registerExportCommand(program);
   registerWebCommand(program);
+  registerInitCommand(program);
 
   return program;
 }
