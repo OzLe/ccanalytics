@@ -155,7 +155,7 @@ export default function DataTable<T>({
       )}
     >
       <div className="overflow-x-auto">
-        <table className="w-full border-collapse">
+        <table className="w-full min-w-[800px] border-collapse">
           {/* ── Header ──────────────────────────────────────── */}
           <thead>
             <tr className="border-b border-[var(--border)] bg-[var(--bg-surface)]">

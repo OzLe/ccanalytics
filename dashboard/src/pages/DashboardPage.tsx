@@ -252,7 +252,7 @@ export default function DashboardPage() {
           ].map((card, index) => (
             <div
               key={index}
-              className="animate-fade-in opacity-0 [animation-fill-mode:forwards]"
+              className="animate-fade-in"
               style={{ animationDelay: `${index * 100}ms` }}
             >
               {card}

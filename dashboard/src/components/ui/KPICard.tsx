@@ -28,7 +28,7 @@ const typeIconMap: Record<KPIType, LucideIcon> = {
 /* ── Card variant system ─────────────────────────────────── */
 const cardVariants = cva(
   [
-    "group relative overflow-hidden rounded-[var(--radius-xl)]",
+    "group relative rounded-[var(--radius-xl)]",
     "border p-[var(--space-6)]",
     "transition-all duration-[var(--duration-normal)]",
     "hover:shadow-[var(--shadow-md)]",

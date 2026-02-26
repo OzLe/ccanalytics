@@ -165,12 +165,6 @@
 
 }
 
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
-
 html,
 body,
 #root {
@@ -251,7 +245,10 @@ body {
 }
 
 .animate-fade-in {
-  animation: fadeIn 0.2s ease-out;
+  animation-name: fadeIn;
+  animation-duration: 0.2s;
+  animation-timing-function: ease-out;
+  animation-fill-mode: both;
 }
 
 .animate-slide-in {
