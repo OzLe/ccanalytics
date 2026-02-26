@@ -6,6 +6,7 @@ import {
   type SankeyNode,
 } from "d3-sankey";
 import type { CostTotal } from "@/lib/types";
+import { TOOLTIP_BG, TOOLTIP_BORDER, TOOLTIP_TEXT } from "@/lib/chartTheme";
 
 interface Props {
   data: CostTotal | undefined;
@@ -22,9 +23,6 @@ interface TLink {
   value: number;
 }
 
-const TOOLTIP_BG = "#1e2235";
-const TOOLTIP_BORDER = "#2a2d3e";
-const TOOLTIP_TEXT = "#e2e8f0";
 const MIN_HEIGHT = 350;
 
 const INPUT_COLOR = "#06b6d4";

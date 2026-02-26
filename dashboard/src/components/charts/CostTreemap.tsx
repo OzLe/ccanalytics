@@ -3,6 +3,7 @@ import * as d3 from "d3";
 import type { HierarchyRectangularNode } from "d3";
 import type { CostByProject } from "@/lib/types";
 import { formatCost } from "@/lib/formatters";
+import { TOOLTIP_BG, TOOLTIP_BORDER, TOOLTIP_TEXT } from "@/lib/chartTheme";
 
 interface Props {
   data: CostByProject[] | undefined;
@@ -23,9 +24,6 @@ interface TreemapRoot {
 type TreeNode = TreemapRoot | TreemapDatum;
 type RectNode = HierarchyRectangularNode<TreeNode>;
 
-const TOOLTIP_BG = "#1e2235";
-const TOOLTIP_BORDER = "#2a2d3e";
-const TOOLTIP_TEXT = "#e2e8f0";
 const MIN_HEIGHT = 400;
 
 export default function CostTreemap({ data }: Props) {

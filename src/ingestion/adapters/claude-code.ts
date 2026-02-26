@@ -136,6 +136,7 @@ export class ClaudeCodeAdapter implements ISourceAdapter {
     for (let idx = 0; idx < userMessages.length; idx++) {
       const msg = userMessages[idx];
       const turnId = msg.uuid ?? `${msg.sessionId}-user-${idx}`;
+      const userContentBlocks = msg.content as ContentBlock[];
 
       turns.push({
         turn_id: turnId,
@@ -153,6 +154,7 @@ export class ClaudeCodeAdapter implements ISourceAdapter {
         parent_uuid: msg.parentUuid ?? null,
         has_tool_use: false,
         has_thinking: false,
+        content_text: extractContentText(userContentBlocks),
       });
     }
 
@@ -210,6 +212,7 @@ export class ClaudeCodeAdapter implements ISourceAdapter {
         parent_uuid: msg.parentUuid ?? null,
         has_tool_use: hasToolUse,
         has_thinking: hasThinking,
+        content_text: extractContentText(contentBlocks),
       });
 
       // Extract tool calls from content blocks
@@ -356,6 +359,37 @@ export class ClaudeCodeAdapter implements ISourceAdapter {
       errors: [],
     };
   }
+}
+
+/** Maximum length of content_text stored per turn. */
+const CONTENT_TEXT_MAX_LENGTH = 10000;
+
+/**
+ * Extract concatenated text from content blocks.
+ * For both user and assistant messages, only TextBlock.text values are included.
+ * ToolUseBlock, ToolResultBlock, and ThinkingBlock are skipped.
+ * Returns null if no text content is found, otherwise truncates to CONTENT_TEXT_MAX_LENGTH.
+ */
+function extractContentText(contentBlocks: string | ContentBlock[]): string | null {
+  // Handle plain string content (common for user messages in Claude Code JSONL)
+  if (typeof contentBlocks === 'string') {
+    if (contentBlocks.length === 0) return null;
+    return contentBlocks.length > CONTENT_TEXT_MAX_LENGTH
+      ? contentBlocks.slice(0, CONTENT_TEXT_MAX_LENGTH)
+      : contentBlocks;
+  }
+  if (!Array.isArray(contentBlocks)) return null;
+  const texts: string[] = [];
+  for (const block of contentBlocks) {
+    if (block.type === "text") {
+      texts.push(block.text);
+    }
+  }
+  if (texts.length === 0) return null;
+  const joined = texts.join("\n");
+  return joined.length > CONTENT_TEXT_MAX_LENGTH
+    ? joined.slice(0, CONTENT_TEXT_MAX_LENGTH)
+    : joined;
 }
 
 /**

@@ -25,17 +25,8 @@ export default function ChartTooltip({
   const formattedLabel = labelFormatter ? labelFormatter(String(label)) : String(label);
 
   return (
-    <div
-      className="rounded-lg border px-3 py-2 shadow-xl"
-      style={{
-        backgroundColor: "var(--bg-card)",
-        borderColor: "var(--border)",
-      }}
-    >
-      <p
-        className="mb-1.5 text-xs font-semibold"
-        style={{ color: "var(--text-muted)" }}
-      >
+    <div className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 shadow-[var(--shadow-xl)]">
+      <p className="mb-1.5 text-xs font-semibold text-[var(--text-tertiary)]">
         {formattedLabel}
       </p>
       <div className="space-y-1">
@@ -48,8 +39,8 @@ export default function ChartTooltip({
                 className="inline-block h-2.5 w-2.5 rounded-full"
                 style={{ backgroundColor: entry.color }}
               />
-              <span style={{ color: "var(--text-secondary)" }}>{entry.name ?? entry.dataKey}</span>
-              <span className="ml-auto font-semibold" style={{ color: "var(--text-primary)" }}>
+              <span className="text-[var(--text-secondary)]">{entry.name ?? entry.dataKey}</span>
+              <span className="ml-auto font-semibold text-[var(--text-primary)]">
                 {displayValue}
               </span>
             </div>

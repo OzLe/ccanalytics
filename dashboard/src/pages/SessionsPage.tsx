@@ -1,16 +1,17 @@
-import { useState, useMemo, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import {
-  LineChart,
-  Line,
-  ResponsiveContainer,
-} from "recharts";
+import ErrorBoundary from "@/components/ui/ErrorBoundary";
 import KPICard from "@/components/ui/KPICard";
 import Badge from "@/components/ui/Badge";
-import Skeleton from "@/components/ui/Skeleton";
-import EmptyState from "@/components/ui/EmptyState";
-import { formatCost, formatPercent, formatDuration, formatDateTime } from "@/lib/formatters";
-import { CHART_COLORS } from "@/lib/chartTheme";
+import DataTable from "@/components/ui/DataTable";
+import type { Column } from "@/components/ui/DataTable";
+import CacheRateBadge from "@/components/session/CacheRateBadge";
+import {
+  formatCost,
+  formatDuration,
+  formatDateTime,
+} from "@/lib/formatters";
+import { SectionHeader } from "@/components/ui/SectionHeader";
 import { useSessions, useSessionStats } from "@/hooks/useSessionsQuery";
 import type { SessionListItem } from "@/lib/types";
 
@@ -27,105 +28,31 @@ type SortField =
   | "cacheHitRate"
   | "totalCostUSD";
 
-interface SortState {
-  field: SortField;
-  order: "asc" | "desc";
+/** Extract last path segment as short project name. */
+function shortProject(path: string | null | undefined): string {
+  if (!path) return "Unknown";
+  return path.split("/").pop() ?? path;
 }
 
-const COLUMNS: { key: SortField; label: string; align?: "right" }[] = [
-  { key: "startTime", label: "Start Time" },
-  { key: "projectPath", label: "Project" },
-  { key: "model", label: "Model" },
-  { key: "sourceType", label: "Source" },
-  { key: "durationMinutes", label: "Duration", align: "right" },
-  { key: "numTurns", label: "Turns", align: "right" },
-  { key: "numToolCalls", label: "Tool Calls", align: "right" },
-  { key: "cacheHitRate", label: "Cache Hit Rate" },
-  { key: "totalCostUSD", label: "Cost", align: "right" },
-];
-
-/** Tiny cost-per-turn sparkline for a table row. */
-function CostSparkline({ data }: { data: number[] }) {
-  if (!data || data.length < 2) return null;
-  const points = data.map((v, i) => ({ i, v }));
-  return (
-    <div style={{ width: 80, height: 30 }}>
-      <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={points}>
-          <Line
-            type="monotone"
-            dataKey="v"
-            stroke={CHART_COLORS[0]}
-            strokeWidth={1.5}
-            dot={false}
-            isAnimationActive={false}
-          />
-        </LineChart>
-      </ResponsiveContainer>
-    </div>
-  );
-}
-
-/** Colored progress bar for cache hit rate. */
-function CacheBar({ rate }: { rate: number }) {
-  const pct = (rate || 0) * 100;
-  let barColor: string;
-  if (pct > 70) barColor = "var(--success)";
-  else if (pct >= 40) barColor = "var(--warning)";
-  else barColor = "var(--danger)";
-
-  return (
-    <div className="flex items-center gap-2">
-      <div
-        className="h-2 flex-1 rounded-full"
-        style={{ backgroundColor: "var(--bg-hover)", minWidth: 60 }}
-      >
-        <div
-          className="h-2 rounded-full transition-all"
-          style={{
-            width: `${Math.max(pct, 2)}%`,
-            backgroundColor: barColor,
-          }}
-        />
-      </div>
-      <span
-        className="text-xs tabular-nums"
-        style={{ color: "var(--text-secondary)", minWidth: 40, textAlign: "right" }}
-      >
-        {formatPercent(rate)}
-      </span>
-    </div>
-  );
-}
-
-/** Sort arrow indicator. */
-function SortArrow({ active, order }: { active: boolean; order: "asc" | "desc" }) {
-  if (!active) {
-    return (
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" opacity={0.3}>
-        <path d="M8 15l4 4 4-4M8 9l4-4 4 4" />
-      </svg>
-    );
-  }
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2.5">
-      {order === "asc" ? <path d="M8 15l4-4 4 4" /> : <path d="M8 9l4 4 4-4" />}
-    </svg>
-  );
+/** Extract model short name. */
+function shortModel(model: string | null | undefined): string {
+  if (!model) return "Unknown";
+  return model.split("/").pop() ?? model;
 }
 
 export default function SessionsPage() {
   const navigate = useNavigate();
 
-  // Sorting & pagination state
-  const [sort, setSort] = useState<SortState>({ field: "startTime", order: "desc" });
+  // Sorting & pagination
+  const [sortField, setSortField] = useState<SortField>("startTime");
+  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
   const [offset, setOffset] = useState(0);
 
-  // Data hooks
+  // Data
   const stats = useSessionStats();
   const sessions = useSessions({
-    sort: sort.field,
-    order: sort.order,
+    sort: sortField,
+    order: sortOrder,
     limit: PAGE_SIZE,
     offset,
   });
@@ -133,57 +60,156 @@ export default function SessionsPage() {
   const items: SessionListItem[] = sessions.data?.data ?? [];
   const total = sessions.data?.meta?.total ?? 0;
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   // Sort handler
-  const handleSort = useCallback(
-    (field: SortField) => {
-      setSort((prev) => ({
-        field,
-        order: prev.field === field && prev.order === "desc" ? "asc" : "desc",
-      }));
-      setOffset(0);
+  const handleSort = useCallback((field: string) => {
+    setSortField((prev) => {
+      if (prev === field) {
+        setSortOrder((o) => (o === "desc" ? "asc" : "desc"));
+        return prev;
+      }
+      setSortOrder("desc");
+      return field as SortField;
+    });
+    setOffset(0);
+  }, []);
+
+  // Row click
+  const handleRowClick = useCallback(
+    (row: SessionListItem) => {
+      navigate(`/sessions/${row.sessionId}`);
     },
-    [],
+    [navigate],
   );
 
-  // Pagination handlers
-  const goNext = useCallback(() => {
-    setOffset((prev) => Math.min(prev + PAGE_SIZE, (totalPages - 1) * PAGE_SIZE));
-  }, [totalPages]);
-
-  const goPrev = useCallback(() => {
-    setOffset((prev) => Math.max(prev - PAGE_SIZE, 0));
-  }, []);
-
-  // Format project name (last segment)
-  const shortProject = useCallback((path: string | null | undefined) => {
-    if (!path) return "Unknown";
-    return path.split("/").pop() ?? path;
-  }, []);
-
-  // Format model name (last segment)
-  const shortModel = useCallback((model: string | null | undefined) => {
-    if (!model) return "Unknown";
-    return model.split("/").pop() ?? model;
+  // Pagination
+  const handlePageChange = useCallback((page: number) => {
+    setOffset((page - 1) * PAGE_SIZE);
   }, []);
 
   // KPI values
   const kpiTotalSessions = stats.data?.totalSessions ?? 0;
   const kpiAvgCost = stats.data?.avgCostPerSession ?? 0;
   const kpiAvgDuration = stats.data?.avgDurationMinutes ?? 0;
-  const kpiMedianTurns = useMemo(() => {
-    // Derive median turns from avgTurnsPerSession since stats exposes that
-    return stats.data?.avgTurnsPerSession ?? 0;
-  }, [stats.data]);
+  const kpiAvgTurns = stats.data?.avgTurnsPerSession ?? 0;
 
-  // Loading skeleton rows
-  const skeletonRows = Array.from({ length: 5 });
+  // Column definitions
+  const columns = useMemo<Column<SessionListItem>[]>(
+    () => [
+      {
+        key: "startTime",
+        header: "Start Time",
+        sortable: true,
+        width: "180px",
+        render: (row) => (
+          <span className="whitespace-nowrap font-medium text-[var(--text-primary)]">
+            {formatDateTime(row.startTime)}
+          </span>
+        ),
+      },
+      {
+        key: "projectPath",
+        header: "Project",
+        sortable: true,
+        render: (row) => (
+          <span
+            className="block max-w-[160px] truncate text-[var(--text-secondary)]"
+            title={row.projectPath}
+          >
+            {shortProject(row.projectPath)}
+          </span>
+        ),
+      },
+      {
+        key: "model",
+        header: "Model",
+        sortable: true,
+        render: (row) => (
+          <Badge variant="accent" size="sm">
+            {shortModel(row.model)}
+          </Badge>
+        ),
+      },
+      {
+        key: "sourceType",
+        header: "Source",
+        sortable: true,
+        render: (row) => (
+          <Badge
+            variant={row.sourceType === "claude-desktop" ? "warning" : "default"}
+            size="sm"
+          >
+            {row.sourceType === "claude-desktop" ? "Desktop" : "CLI"}
+          </Badge>
+        ),
+      },
+      {
+        key: "durationMinutes",
+        header: "Duration",
+        sortable: true,
+        align: "right",
+        render: (row) => (
+          <span className="tabular-nums text-[var(--text-secondary)]">
+            {formatDuration(row.durationMinutes * 60)}
+          </span>
+        ),
+      },
+      {
+        key: "numTurns",
+        header: "Turns",
+        sortable: true,
+        align: "right",
+        render: (row) => (
+          <span className="tabular-nums text-[var(--text-secondary)]">
+            {row.numTurns}
+          </span>
+        ),
+      },
+      {
+        key: "numToolCalls",
+        header: "Tools",
+        sortable: true,
+        align: "right",
+        render: (row) => (
+          <span className="tabular-nums text-[var(--text-secondary)]">
+            {row.numToolCalls}
+          </span>
+        ),
+      },
+      {
+        key: "cacheHitRate",
+        header: "Cache Rate",
+        sortable: true,
+        width: "140px",
+        render: (row) => <CacheRateBadge rate={row.cacheHitRate} />,
+      },
+      {
+        key: "totalCostUSD",
+        header: "Cost",
+        sortable: true,
+        align: "right",
+        render: (row) => (
+          <span className="font-semibold tabular-nums text-[var(--text-primary)]">
+            {formatCost(row.totalCostUSD)}
+          </span>
+        ),
+      },
+    ],
+    [],
+  );
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-8">
-      {/* KPI Cards */}
-      <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
+    <ErrorBoundary>
+    <div className="flex min-h-0 flex-1 flex-col gap-[var(--space-8)]">
+      {/* KPI Stats Bar */}
+      <section>
+        <div className="mb-[var(--space-5)]">
+          <SectionHeader
+            title="Sessions"
+            subtitle="Browse and filter your Claude Code sessions"
+          />
+        </div>
+      <div className="grid grid-cols-1 gap-[var(--space-5)] sm:grid-cols-2 lg:grid-cols-4">
         <KPICard
           label="Total Sessions"
           value={kpiTotalSessions.toLocaleString()}
@@ -203,205 +229,32 @@ export default function SessionsPage() {
           loading={stats.isLoading}
         />
         <KPICard
-          label="Median Turns / Session"
-          value={kpiMedianTurns.toFixed(1)}
+          label="Avg Turns / Session"
+          value={kpiAvgTurns.toFixed(1)}
           type="sessions"
           loading={stats.isLoading}
         />
       </div>
+      </section>
 
-      {/* Sessions Table */}
-      <div
-        className="flex min-h-0 flex-1 flex-col overflow-hidden border"
-        style={{
-          backgroundColor: "var(--bg-card)",
-          borderColor: "var(--border)",
-          borderRadius: "var(--radius-lg)",
+      {/* Sessions DataTable */}
+      <DataTable<SessionListItem>
+        columns={columns}
+        data={items}
+        sortField={sortField}
+        sortOrder={sortOrder}
+        onSort={handleSort}
+        onRowClick={handleRowClick}
+        loading={sessions.isLoading}
+        emptyMessage="No sessions found. Try adjusting your filters or time period."
+        pagination={{
+          page: currentPage,
+          pageSize: PAGE_SIZE,
+          total,
+          onPageChange: handlePageChange,
         }}
-      >
-        <div className="flex-1 overflow-auto">
-          <table className="w-full text-left text-sm">
-            <thead className="sticky top-0 z-10">
-              <tr
-                style={{
-                  backgroundColor: "var(--bg-secondary)",
-                  borderBottom: "2px solid var(--border)",
-                }}
-              >
-                {COLUMNS.map((col) => (
-                  <th
-                    key={col.key}
-                    className={`table-header-sortable cursor-pointer select-none whitespace-nowrap px-5 py-3.5 text-[13px] font-semibold uppercase tracking-wide transition-colors ${col.align === "right" ? "text-right" : ""}`}
-                    onClick={() => handleSort(col.key)}
-                  >
-                    <span className="inline-flex items-center gap-1.5">
-                      {col.label}
-                      <SortArrow
-                        active={sort.field === col.key}
-                        order={sort.order}
-                      />
-                    </span>
-                  </th>
-                ))}
-                {/* Sparkline column header */}
-                <th
-                  className="table-header-sortable whitespace-nowrap px-5 py-3.5 text-[13px] font-semibold uppercase tracking-wide"
-                >
-                  Cost/Turn
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {sessions.isLoading ? (
-                skeletonRows.map((_, i) => (
-                  <tr
-                    key={i}
-                    className="border-b"
-                    style={{ borderColor: "var(--border)" }}
-                  >
-                    {COLUMNS.map((col) => (
-                      <td key={col.key} className="px-5 py-3">
-                        <Skeleton height="0.875rem" width={col.key === "cacheHitRate" ? "100%" : "70%"} />
-                      </td>
-                    ))}
-                    <td className="px-5 py-3">
-                      <Skeleton height="1.875rem" width="5rem" />
-                    </td>
-                  </tr>
-                ))
-              ) : items.length === 0 ? (
-                <tr>
-                  <td colSpan={COLUMNS.length + 1}>
-                    <EmptyState
-                      title="No sessions found"
-                      message="Try adjusting your filters or time period."
-                    />
-                  </td>
-                </tr>
-              ) : (
-                items.map((session) => (
-                  <tr
-                    key={session.sessionId}
-                    className="table-row-hover cursor-pointer border-b"
-                    tabIndex={0}
-                    style={{ borderColor: "var(--border)" }}
-                    onClick={() => navigate(`/sessions/${session.sessionId}`)}
-                  >
-                    {/* Start Time */}
-                    <td
-                      className="whitespace-nowrap px-5 py-3 font-medium"
-                      style={{ color: "var(--text-primary)" }}
-                    >
-                      {formatDateTime(session.startTime)}
-                    </td>
-                    {/* Project */}
-                    <td
-                      className="max-w-[180px] truncate px-5 py-3"
-                      style={{ color: "var(--text-secondary)" }}
-                      title={session.projectPath}
-                    >
-                      {shortProject(session.projectPath)}
-                    </td>
-                    {/* Model */}
-                    <td className="px-5 py-3">
-                      <Badge variant="accent">{shortModel(session.model)}</Badge>
-                    </td>
-                    {/* Source */}
-                    <td className="px-5 py-3">
-                      <Badge variant={session.sourceType === "claude-desktop" ? "warning" : "neutral"}>
-                        {session.sourceType === "claude-desktop" ? "Desktop" : "CLI"}
-                      </Badge>
-                    </td>
-                    {/* Duration */}
-                    <td
-                      className="px-5 py-3 text-right tabular-nums"
-                      style={{ color: "var(--text-secondary)" }}
-                    >
-                      {formatDuration(session.durationMinutes * 60)}
-                    </td>
-                    {/* Turns */}
-                    <td
-                      className="px-5 py-3 text-right tabular-nums"
-                      style={{ color: "var(--text-secondary)" }}
-                    >
-                      {session.numTurns}
-                    </td>
-                    {/* Tool Calls */}
-                    <td
-                      className="px-5 py-3 text-right tabular-nums"
-                      style={{ color: "var(--text-secondary)" }}
-                    >
-                      {session.numToolCalls}
-                    </td>
-                    {/* Cache Hit Rate */}
-                    <td className="px-5 py-3" style={{ minWidth: 140 }}>
-                      <CacheBar rate={session.cacheHitRate} />
-                    </td>
-                    {/* Cost */}
-                    <td
-                      className="px-5 py-3 text-right font-semibold tabular-nums"
-                      style={{ color: "var(--text-primary)" }}
-                    >
-                      {formatCost(session.totalCostUSD)}
-                    </td>
-                    {/* Sparkline */}
-                    <td className="px-5 py-3">
-                      <CostSparkline data={session.costPerTurn ?? []} />
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Pagination Controls */}
-        {!sessions.isLoading && items.length > 0 && (
-          <div
-            className="flex shrink-0 items-center justify-between px-5 py-3"
-            style={{
-              borderTop: "2px solid var(--border)",
-              backgroundColor: "var(--bg-secondary)",
-            }}
-          >
-            <p
-              className="text-sm"
-              style={{ color: "var(--text-muted)" }}
-            >
-              Showing {offset + 1}–{Math.min(offset + PAGE_SIZE, total)} of{" "}
-              {total.toLocaleString()} sessions
-            </p>
-            <div className="flex items-center gap-3">
-              <button
-                onClick={goPrev}
-                disabled={offset === 0}
-                className="pagination-btn inline-flex items-center gap-1.5 rounded-lg border px-4 py-2 text-sm font-medium transition-colors"
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M15 18l-6-6 6-6" />
-                </svg>
-                Prev
-              </button>
-              <span
-                className="text-sm tabular-nums"
-                style={{ color: "var(--text-secondary)" }}
-              >
-                Page {currentPage} of {totalPages}
-              </span>
-              <button
-                onClick={goNext}
-                disabled={currentPage >= totalPages}
-                className="pagination-btn inline-flex items-center gap-1.5 rounded-lg border px-4 py-2 text-sm font-medium transition-colors"
-              >
-                Next
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M9 18l6-6-6-6" />
-                </svg>
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
+      />
     </div>
+    </ErrorBoundary>
   );
 }

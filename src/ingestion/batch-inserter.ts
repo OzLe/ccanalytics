@@ -130,13 +130,15 @@ export class BatchInserter {
       const sql = `INSERT INTO conversation_turns (
         turn_id, session_id, role, timestamp, input_tokens, output_tokens,
         cache_creation_tokens, cache_read_tokens, cost_usd, model,
-        stop_reason, request_id, parent_uuid, has_tool_use, has_thinking
+        stop_reason, request_id, parent_uuid, has_tool_use, has_thinking,
+        content_text
       ) VALUES (
         ${sqlVal(t.turn_id)}, ${sqlVal(t.session_id)}, ${sqlVal(t.role)}, ${sqlVal(t.timestamp)},
         ${sqlVal(t.input_tokens)}, ${sqlVal(t.output_tokens)}, ${sqlVal(t.cache_creation_tokens)},
         ${sqlVal(t.cache_read_tokens)}, ${sqlVal(t.cost_usd)}, ${sqlVal(t.model)},
         ${sqlVal(t.stop_reason)}, ${sqlVal(t.request_id)}, ${sqlVal(t.parent_uuid)},
-        ${sqlVal(t.has_tool_use)}, ${sqlVal(t.has_thinking)}
+        ${sqlVal(t.has_tool_use)}, ${sqlVal(t.has_thinking)},
+        ${sqlVal(t.content_text)}
       ) ON CONFLICT DO NOTHING`;
       await this.conn.run(sql);
       count++;

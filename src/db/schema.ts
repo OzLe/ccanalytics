@@ -11,7 +11,7 @@ import * as path from "node:path";
 import { MigrationError } from "../errors.js";
 
 /** Current schema version matching sql/schema.sql */
-const CURRENT_VERSION = 2;
+const CURRENT_VERSION = 3;
 
 /**
  * Split a SQL file into individual statements.
@@ -129,8 +129,13 @@ export class SchemaManager {
       applied++;
     }
 
+    if (currentVersion < 3) {
+      await this.applyMigration3(connection);
+      applied++;
+    }
+
     // Future migrations would go here as:
-    // if (currentVersion < 3) { applyMigration3(connection); }
+    // if (currentVersion < 4) { applyMigration4(connection); }
 
     return applied;
   }
@@ -149,6 +154,23 @@ export class SchemaManager {
       );
     } catch (err) {
       throw new MigrationError(2, err as Error);
+    }
+  }
+
+  /**
+   * Migration v3: Add content_text column to conversation_turns table.
+   */
+  private async applyMigration3(connection: unknown): Promise<void> {
+    const conn = connection as { run(sql: string): Promise<unknown> };
+    try {
+      await conn.run(
+        `ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS content_text TEXT`,
+      );
+      await conn.run(
+        `INSERT INTO schema_migrations (version, description) VALUES (3, 'Add content_text column to conversation_turns') ON CONFLICT (version) DO NOTHING`,
+      );
+    } catch (err) {
+      throw new MigrationError(3, err as Error);
     }
   }
 

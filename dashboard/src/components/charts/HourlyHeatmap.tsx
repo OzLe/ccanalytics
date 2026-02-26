@@ -1,14 +1,12 @@
 import { useRef, useEffect, useCallback } from "react";
 import * as d3 from "d3";
 import type { ActivityHeatmap } from "@/lib/types";
+import { TOOLTIP_BG, TOOLTIP_BORDER, TOOLTIP_TEXT } from "@/lib/chartTheme";
 
 interface Props {
   data: ActivityHeatmap[] | undefined;
 }
 
-const TOOLTIP_BG = "#1e2235";
-const TOOLTIP_BORDER = "#2a2d3e";
-const TOOLTIP_TEXT = "#e2e8f0";
 const MIN_HEIGHT = 250;
 
 const CELL_WIDTH = 24;

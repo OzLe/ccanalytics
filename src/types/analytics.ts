@@ -262,6 +262,7 @@ export interface ConversationTurnRow {
   parent_uuid: string | null;
   has_tool_use: boolean;
   has_thinking: boolean;
+  content_text: string | null;
 }
 
 /** Row type for the tool_calls table. */

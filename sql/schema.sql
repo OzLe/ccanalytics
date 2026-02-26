@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS conversation_turns (
     request_id            VARCHAR     UNIQUE,
     parent_uuid           VARCHAR,
     has_tool_use          BOOLEAN     DEFAULT FALSE,
-    has_thinking          BOOLEAN     DEFAULT FALSE
+    has_thinking          BOOLEAN     DEFAULT FALSE,
+    content_text          TEXT
 );
 
 CREATE TABLE IF NOT EXISTS tool_calls (

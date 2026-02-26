@@ -11,3 +11,4 @@ export { CostAnalyzer } from "./cost-analyzer.js";
 export { CacheAnalyzer } from "./cache-analyzer.js";
 export { ToolAnalyzer } from "./tool-analyzer.js";
 export { TimeSeriesAnalyzer } from "./time-series.js";
+export { PromptAnalyzer } from "./prompt-analyzer.js";

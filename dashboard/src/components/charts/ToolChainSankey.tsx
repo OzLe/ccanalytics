@@ -7,7 +7,7 @@ import {
   type SankeyLink,
 } from "d3-sankey";
 import type { ToolChain } from "@/lib/types";
-import { CHART_COLORS } from "@/lib/chartTheme";
+import { CHART_COLORS, TOOLTIP_BG, TOOLTIP_BORDER, TOOLTIP_TEXT } from "@/lib/chartTheme";
 
 interface Props {
   data: ToolChain[] | undefined;
@@ -24,9 +24,6 @@ interface SLink {
   label: string;
 }
 
-const TOOLTIP_BG = "#1e2235";
-const TOOLTIP_BORDER = "#2a2d3e";
-const TOOLTIP_TEXT = "#e2e8f0";
 const MIN_HEIGHT = 400;
 
 export default function ToolChainSankey({ data }: Props) {

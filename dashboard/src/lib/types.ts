@@ -386,3 +386,100 @@ export interface SessionDetailEnvelope {
   data: SessionDetailResponse;
   meta: { timestamp: string };
 }
+
+// ---------------------------------------------------------------------------
+// Prompts API responses
+// ---------------------------------------------------------------------------
+
+/** A single bucket in a histogram distribution. */
+export interface DistributionBucket {
+  label: string;
+  min: number;
+  max: number;
+  count: number;
+}
+
+/** GET /api/prompts/ranked row — a single ranked prompt entry. */
+export interface PromptRankingRow {
+  turnId: string;
+  sessionId: string;
+  promptPreview: string;
+  responseCost: number;
+  complexityScore: number;
+  toolCallCount: number;
+  totalTokens: number;
+  multiTurnDepth: number;
+  hasThinking: boolean;
+  model: string;
+  timestamp: string;
+}
+
+/** GET /api/prompts/stats — aggregate prompt statistics. */
+export interface PromptStatsData {
+  totalPrompts: number;
+  avgCost: number;
+  maxCost: number;
+  avgComplexity: number;
+  costDistribution: DistributionBucket[];
+  complexityDistribution: DistributionBucket[];
+}
+
+/** Tool call associated with a prompt detail. */
+export interface PromptToolCall {
+  toolCallId: string;
+  toolName: string;
+  toolType: string;
+  mcpServer: string | null;
+  durationMs: number | null;
+  success: boolean | null;
+}
+
+/** GET /api/prompts/:turnId — full prompt detail. */
+export interface PromptDetailData {
+  turnId: string;
+  sessionId: string;
+  promptText: string | null;
+  responseText: string | null;
+  responseCost: number;
+  complexityScore: number;
+  toolCallCount: number;
+  totalTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+  multiTurnDepth: number;
+  hasThinking: boolean;
+  model: string;
+  timestamp: string;
+  toolCalls: PromptToolCall[];
+}
+
+/** GET /api/prompts/ranked response shape. */
+export interface PromptRankingResponse {
+  data: PromptRankingRow[];
+  meta: {
+    total: number;
+    page: number;
+    limit: number;
+    period: string;
+    timestamp: string;
+  };
+}
+
+/** GET /api/prompts/stats response shape. */
+export interface PromptStatsResponse {
+  data: PromptStatsData;
+  meta: {
+    period: string;
+    timestamp: string;
+  };
+}
+
+/** GET /api/prompts/:turnId response shape. */
+export interface PromptDetailResponse {
+  data: PromptDetailData | null;
+  meta: {
+    timestamp: string;
+  };
+}

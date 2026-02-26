@@ -1,63 +1,67 @@
+import type { ReactNode } from "react";
+import { cn } from "@/lib/utils";
+import { Inbox, type LucideIcon } from "lucide-react";
+import { Button } from "./Button";
+
 interface EmptyStateProps {
+  /** Main heading */
   title?: string;
+  /** Supporting description text */
   message?: string;
-  icon?: string;
+  /** Lucide icon component to display */
+  icon?: LucideIcon;
+  /** Optional action button */
   action?: {
     label: string;
     onClick: () => void;
   };
+  /** Optional custom content below the message */
+  children?: ReactNode;
+  className?: string;
 }
 
 export default function EmptyState({
   title = "No data available",
   message = "There is no data to display for the selected filters.",
-  icon,
+  icon: Icon = Inbox,
   action,
+  children,
+  className,
 }: EmptyStateProps) {
   return (
-    <div className="flex flex-col items-center justify-center py-12 px-4">
-      <div
-        className="mb-4 flex h-16 w-16 items-center justify-center rounded-full text-2xl"
-        style={{ backgroundColor: "var(--bg-hover)", color: "var(--text-muted)" }}
-      >
-        {icon ?? (
-          <svg
-            width="28"
-            height="28"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-            <path d="M8 10h.01" />
-            <path d="M12 10h.01" />
-            <path d="M16 10h.01" />
-          </svg>
-        )}
+    <div
+      className={cn(
+        "flex flex-col items-center justify-center px-[var(--space-4)] py-[var(--space-12)]",
+        className
+      )}
+    >
+      {/* Icon circle */}
+      <div className="mb-[var(--space-4)] flex h-16 w-16 items-center justify-center rounded-full bg-[var(--bg-hover)] text-[var(--text-tertiary)]">
+        <Icon size={28} strokeWidth={1.5} />
       </div>
-      <h3
-        className="text-base font-semibold"
-        style={{ color: "var(--text-primary)" }}
-      >
-        {title}
-      </h3>
-      <p
-        className="mt-1 max-w-sm text-center text-sm"
-        style={{ color: "var(--text-muted)" }}
-      >
+
+      {/* Title */}
+      <h3 className="text-h3 text-[var(--text-primary)]">{title}</h3>
+
+      {/* Message */}
+      <p className="mt-[var(--space-1)] max-w-sm text-center text-[var(--font-small-size)] text-[var(--text-tertiary)]">
         {message}
       </p>
+
+      {/* Action button */}
       {action && (
-        <button
+        <Button
+          variant="primary"
+          size="md"
           onClick={action.onClick}
-          className="empty-state-action mt-4 rounded-lg px-4 py-2 text-sm font-medium text-white transition-colors"
+          className="mt-[var(--space-4)]"
         >
           {action.label}
-        </button>
+        </Button>
       )}
+
+      {/* Custom children */}
+      {children && <div className="mt-[var(--space-4)]">{children}</div>}
     </div>
   );
 }

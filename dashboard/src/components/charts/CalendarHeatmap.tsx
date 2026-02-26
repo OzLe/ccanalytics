@@ -1,14 +1,12 @@
 import { useRef, useEffect, useCallback } from "react";
 import * as d3 from "d3";
 import type { ActivityDaily } from "@/lib/types";
+import { TOOLTIP_BG, TOOLTIP_BORDER, TOOLTIP_TEXT } from "@/lib/chartTheme";
 
 interface Props {
   data: ActivityDaily[] | undefined;
 }
 
-const TOOLTIP_BG = "#1e2235";
-const TOOLTIP_BORDER = "#2a2d3e";
-const TOOLTIP_TEXT = "#e2e8f0";
 const CELL_SIZE = 14;
 const CELL_GAP = 2;
 const MIN_HEIGHT = 180;

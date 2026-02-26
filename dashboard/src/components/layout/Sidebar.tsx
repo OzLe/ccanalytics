@@ -1,167 +1,306 @@
 import { NavLink } from "react-router-dom";
-import { useState } from "react";
+import { useState, useEffect, useCallback, type MutableRefObject } from "react";
+import { cn } from "@/lib/utils";
+import { pages } from "@/lib/pages";
+import {
+  BarChart3,
+  ChevronsLeft,
+  ChevronsRight,
+  Settings,
+  X,
+} from "lucide-react";
 
-interface NavItem {
-  to: string;
-  label: string;
-  icon: string;
+/* ── Constants ────────────────────────────────────────────── */
+const STORAGE_KEY = "cc-sidebar-collapsed";
+const SIDEBAR_WIDTH_EXPANDED = "w-[248px]";
+const SIDEBAR_WIDTH_COLLAPSED = "w-[68px]";
+
+/* ── Section definitions ──────────────────────────────────── */
+const mainNav = pages.slice(0, 3); // Overview, Cost, Sessions
+const insightsNav = pages.slice(3); // Prompts, Tools, Cache, Activity
+
+/* ── Helpers ──────────────────────────────────────────────── */
+function readCollapsed(): boolean {
+  try {
+    return localStorage.getItem(STORAGE_KEY) === "true";
+  } catch {
+    return false;
+  }
 }
 
-const navItems: NavItem[] = [
-  { to: "/", label: "Overview", icon: "grid" },
-  { to: "/cost", label: "Cost", icon: "dollar" },
-  { to: "/sessions", label: "Sessions", icon: "list" },
-  { to: "/tools", label: "Tools", icon: "wrench" },
-  { to: "/cache", label: "Cache", icon: "database" },
-  { to: "/activity", label: "Activity", icon: "chart" },
-];
-
-const iconPaths: Record<string, string[]> = {
-  grid: [
-    "M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z",
-  ],
-  dollar: [
-    "M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6",
-  ],
-  list: [
-    "M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01",
-  ],
-  wrench: [
-    "M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z",
-  ],
-  database: [
-    "M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3",
-    "M3 6c0 1.66 4.03 3 9 3s9-1.34 9-3",
-    "M21 6v12c0 1.66-4.03 3-9 3s-9-1.34-9-3V6",
-    "M3 6c0-1.66 4.03-3 9-3s9 1.34 9 3",
-  ],
-  chart: [
-    "M3 3v18h18",
-    "M18.7 8l-5.1 5.2-2.8-2.7L7 14.3",
-  ],
-  chevronLeft: ["M15 18l-6-6 6-6"],
-  chevronRight: ["M9 18l6-6-6-6"],
-};
-
-function NavIcon({ icon }: { icon: string }) {
-  const paths = iconPaths[icon] ?? iconPaths["grid"]!;
-  return (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="flex-shrink-0"
-    >
-      {paths.map((d, i) => (
-        <path key={i} d={d} />
-      ))}
-    </svg>
-  );
+function writeCollapsed(v: boolean) {
+  try {
+    localStorage.setItem(STORAGE_KEY, String(v));
+  } catch {
+    /* noop */
+  }
 }
 
+/* ── Component ────────────────────────────────────────────── */
 interface SidebarProps {
   mobileOpen?: boolean;
   onMobileClose?: () => void;
+  /** Mutable ref that Layout can use to trigger sidebar collapse toggle */
+  onToggleRef?: MutableRefObject<(() => void) | null>;
 }
 
-export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
-  const [collapsed, setCollapsed] = useState(false);
+export default function Sidebar({ mobileOpen, onMobileClose, onToggleRef }: SidebarProps) {
+  const [collapsed, setCollapsed] = useState(readCollapsed);
+
+  const toggleCollapse = useCallback(() => {
+    setCollapsed((prev) => {
+      const next = !prev;
+      writeCollapsed(next);
+      return next;
+    });
+  }, []);
+
+  /* Expose toggle to parent via ref */
+  useEffect(() => {
+    if (onToggleRef) {
+      onToggleRef.current = toggleCollapse;
+    }
+  }, [onToggleRef, toggleCollapse]);
+
+  /* Sync on storage change from other tabs */
+  useEffect(() => {
+    function onStorage(e: StorageEvent) {
+      if (e.key === STORAGE_KEY) {
+        setCollapsed(e.newValue === "true");
+      }
+    }
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
+  /* Close mobile sidebar on Escape */
+  useEffect(() => {
+    if (!mobileOpen) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onMobileClose?.();
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [mobileOpen, onMobileClose]);
 
   return (
     <>
-      {/* Mobile overlay */}
-      {mobileOpen && (
-        <div
-          className="fixed inset-0 z-40 bg-black/60 lg:hidden"
-          onClick={onMobileClose}
-        />
-      )}
+      {/* Mobile scrim overlay */}
+      <div
+        className={cn(
+          "fixed inset-0 z-[var(--z-overlay)] bg-[var(--bg-scrim)] lg:hidden",
+          "transition-opacity duration-[var(--duration-normal)]",
+          mobileOpen
+            ? "pointer-events-auto opacity-100"
+            : "pointer-events-none opacity-0"
+        )}
+        onClick={onMobileClose}
+        aria-hidden="true"
+      />
 
       <aside
-        className={`
-          fixed z-50 flex h-full flex-col border-r transition-all duration-300 lg:relative lg:z-auto
-          ${mobileOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}
-          ${collapsed ? "w-[68px]" : "w-60"}
-        `}
-        style={{
-          backgroundColor: "var(--bg-primary)",
-          borderColor: "var(--border)",
-        }}
+        className={cn(
+          /* Positioning & sizing */
+          "fixed z-[var(--z-sidebar)] flex h-full flex-col lg:relative lg:z-auto",
+          /* Background & border */
+          "bg-[var(--bg-raised)] border-r border-[var(--border)]",
+          /* Smooth width transition */
+          "transition-all duration-[var(--duration-slow)] ease-[var(--ease-out)]",
+          /* Mobile slide */
+          mobileOpen
+            ? "translate-x-0"
+            : "-translate-x-full lg:translate-x-0",
+          /* Width */
+          collapsed ? SIDEBAR_WIDTH_COLLAPSED : SIDEBAR_WIDTH_EXPANDED
+        )}
       >
-        {/* Logo */}
+        {/* ── Logo area ─────────────────────────────────────── */}
         <div
-          className={`flex items-center border-b ${collapsed ? "justify-center px-2" : "gap-3 px-5"} py-6`}
-          style={{ borderColor: "var(--border)" }}
+          className={cn(
+            "flex items-center border-b border-[var(--border)]",
+            "h-[60px] shrink-0",
+            collapsed ? "justify-center px-[var(--space-3)]" : "gap-[var(--space-3)] px-[var(--space-5)]"
+          )}
         >
           <div
-            className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg text-xs font-bold text-white"
-            style={{ backgroundColor: "var(--accent)" }}
+            className={cn(
+              "flex h-8 w-8 shrink-0 items-center justify-center",
+              "rounded-[var(--radius-md)] bg-[var(--accent)]"
+            )}
           >
-            CC
+            <BarChart3 size={16} className="text-white" />
           </div>
           {!collapsed && (
-            <span
-              className="text-lg font-semibold tracking-tight"
-              style={{ color: "var(--text-primary)" }}
+            <div className="flex flex-col overflow-hidden">
+              <span className="truncate text-[var(--font-body-size)] font-semibold tracking-tight text-[var(--text-primary)]">
+                CC Analytics
+              </span>
+              <span className="text-[10px] text-[var(--text-tertiary)]">
+                v0.1.0
+              </span>
+            </div>
+          )}
+          {/* Mobile close button */}
+          {mobileOpen && (
+            <button
+              onClick={onMobileClose}
+              className={cn(
+                "ml-auto flex h-7 w-7 items-center justify-center rounded-[var(--radius-md)] lg:hidden",
+                "text-[var(--text-tertiary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]",
+                "transition-colors duration-[var(--duration-fast)]"
+              )}
+              aria-label="Close sidebar"
             >
-              Analytics
+              <X size={16} />
+            </button>
+          )}
+        </div>
+
+        {/* ── Navigation ────────────────────────────────────── */}
+        <nav
+          className={cn(
+            "flex flex-1 flex-col gap-[var(--space-1)] overflow-y-auto overflow-x-hidden py-[var(--space-4)]",
+            collapsed ? "px-[var(--space-2)]" : "px-[var(--space-3)]"
+          )}
+        >
+          {/* Main section */}
+          <NavSection
+            items={mainNav}
+            collapsed={collapsed}
+            onMobileClose={onMobileClose}
+          />
+
+          {/* Divider */}
+          <div
+            className={cn(
+              "mx-auto my-[var(--space-2)] h-px bg-[var(--border-subtle)]",
+              collapsed ? "w-6" : "w-full"
+            )}
+          />
+
+          {/* Section label */}
+          {!collapsed && (
+            <span className="mb-[var(--space-1)] px-[var(--space-3)] text-overline text-[var(--text-tertiary)]">
+              Insights
             </span>
           )}
-        </div>
 
-        {/* Navigation */}
-        <nav className={`mt-4 flex flex-1 flex-col gap-1.5 ${collapsed ? "px-2" : "px-3"}`}>
-          {navItems.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.to === "/"}
-              onClick={onMobileClose}
-              className={({ isActive }) =>
-                `sidebar-nav-link group flex items-center rounded-lg text-sm font-medium transition-all duration-150 ${
-                  collapsed ? "sidebar-nav-link--collapsed justify-center px-2 py-2.5" : "gap-3 px-3 py-2.5"
-                }${isActive ? " sidebar-nav-link--active" : ""}`
-              }
-              title={collapsed ? item.label : undefined}
-            >
-              <NavIcon icon={item.icon} />
-              {!collapsed && <span>{item.label}</span>}
-            </NavLink>
-          ))}
+          {/* Insights section */}
+          <NavSection
+            items={insightsNav}
+            collapsed={collapsed}
+            onMobileClose={onMobileClose}
+          />
         </nav>
 
-        {/* Bottom section */}
+        {/* ── Bottom area ───────────────────────────────────── */}
         <div
-          className={`border-t ${collapsed ? "px-2" : "px-3"} py-4`}
-          style={{ borderColor: "var(--border)" }}
-        >
-          {/* Collapse toggle (hidden on mobile) */}
-          <button
-            onClick={() => setCollapsed(!collapsed)}
-            className={`sidebar-bottom-btn hidden w-full items-center rounded-lg text-xs font-medium transition-colors lg:flex ${
-              collapsed ? "justify-center px-2 py-2" : "gap-3 px-3 py-2"
-            }`}
-          >
-            <NavIcon icon={collapsed ? "chevronRight" : "chevronLeft"} />
-            {!collapsed && <span>Collapse</span>}
-          </button>
-
-          {/* Version */}
-          {!collapsed && (
-            <p
-              className="mt-2 px-3 text-[10px]"
-              style={{ color: "var(--text-muted)" }}
-            >
-              CC Analytics v0.1.0
-            </p>
+          className={cn(
+            "flex shrink-0 flex-col gap-[var(--space-1)] border-t border-[var(--border)]",
+            collapsed ? "px-[var(--space-2)]" : "px-[var(--space-3)]",
+            "py-[var(--space-3)]"
           )}
+        >
+          {/* Settings link — routed to /settings */}
+          <NavLink
+            to="/settings"
+            onClick={onMobileClose}
+            className={cn(
+              "flex items-center rounded-[var(--radius-md)]",
+              "text-[var(--font-small-size)] font-medium text-[var(--text-tertiary)]",
+              "hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]",
+              "transition-colors duration-[var(--duration-fast)]",
+              collapsed
+                ? "justify-center px-[var(--space-2)] py-[var(--space-2)]"
+                : "gap-[var(--space-3)] px-[var(--space-3)] py-[var(--space-2)]"
+            )}
+            title={collapsed ? "Settings" : undefined}
+          >
+            <Settings size={18} className="shrink-0" />
+            {!collapsed && <span>Settings</span>}
+          </NavLink>
+
+          {/* Collapse toggle (desktop only) */}
+          <button
+            onClick={toggleCollapse}
+            className={cn(
+              "hidden items-center rounded-[var(--radius-md)] lg:flex",
+              "text-[var(--font-small-size)] font-medium text-[var(--text-tertiary)]",
+              "hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]",
+              "transition-colors duration-[var(--duration-fast)]",
+              collapsed
+                ? "justify-center px-[var(--space-2)] py-[var(--space-2)]"
+                : "gap-[var(--space-3)] px-[var(--space-3)] py-[var(--space-2)]"
+            )}
+            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          >
+            {collapsed ? (
+              <ChevronsRight size={18} className="shrink-0" />
+            ) : (
+              <>
+                <ChevronsLeft size={18} className="shrink-0" />
+                <span>Collapse</span>
+              </>
+            )}
+          </button>
         </div>
       </aside>
+    </>
+  );
+}
+
+/* ── Nav section sub-component ────────────────────────────── */
+function NavSection({
+  items,
+  collapsed,
+  onMobileClose,
+}: {
+  items: typeof pages;
+  collapsed: boolean;
+  onMobileClose?: () => void;
+}) {
+  return (
+    <>
+      {items.map((page) => {
+        const Icon = page.icon;
+        return (
+          <NavLink
+            key={page.path}
+            to={page.path}
+            end={page.path === "/"}
+            onClick={onMobileClose}
+            className={({ isActive }) =>
+              cn(
+                "group relative flex items-center rounded-[var(--radius-md)]",
+                "text-[var(--font-small-size)] font-medium",
+                "transition-all duration-[var(--duration-normal)]",
+                collapsed
+                  ? "justify-center px-[var(--space-2)] py-[var(--space-2)]"
+                  : "gap-[var(--space-3)] px-[var(--space-3)] py-[var(--space-2)]",
+                isActive
+                  ? cn(
+                      "bg-[var(--bg-elevated)] text-[var(--text-primary)]",
+                      !collapsed && "border-l-[3px] border-l-[var(--accent)]"
+                    )
+                  : cn(
+                      "text-[var(--text-secondary)]",
+                      "hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]",
+                      !collapsed && "border-l-[3px] border-l-transparent"
+                    ),
+                /* Collapsed active state */
+                isActive && collapsed && "bg-[var(--accent-muted)] text-[var(--accent-hover)]"
+              )
+            }
+            title={collapsed ? page.label : undefined}
+          >
+            <Icon size={18} className="shrink-0" />
+            {!collapsed && (
+              <span className="truncate">{page.label}</span>
+            )}
+          </NavLink>
+        );
+      })}
     </>
   );
 }

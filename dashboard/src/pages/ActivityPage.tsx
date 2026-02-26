@@ -14,6 +14,7 @@ import ChartCard from "@/components/ui/ChartCard";
 import ChartTooltip from "@/components/charts/ChartTooltip";
 import CalendarHeatmap from "@/components/charts/CalendarHeatmap";
 import HourlyHeatmap from "@/components/charts/HourlyHeatmap";
+import ErrorBoundary from "@/components/ui/ErrorBoundary";
 import { useActivityHourly, useActivityDaily, useActivityHeatmap } from "@/hooks/useActivityData";
 import { formatDate } from "@/lib/formatters";
 import {
@@ -22,6 +23,7 @@ import {
   X_AXIS_PROPS,
   Y_AXIS_PROPS,
 } from "@/lib/chartTheme";
+import { SectionHeader } from "@/components/ui/SectionHeader";
 
 /** Format hour number to readable label. */
 function formatHour(hour: number): string {
@@ -68,7 +70,6 @@ export default function ActivityPage() {
   // Sessions today (from daily data - last entry)
   const sessionsToday = useMemo(() => {
     if (!daily.data || daily.data.length === 0) return 0;
-    // Today's date as ISO prefix
     const today = new Date().toISOString().slice(0, 10);
     const todayEntry = daily.data.find((d) => d.timestamp.startsWith(today));
     return todayEntry?.value ?? 0;
@@ -90,118 +91,143 @@ export default function ActivityPage() {
   );
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto space-y-8">
-      {/* KPI Cards */}
-      <div className="grid grid-cols-1 gap-5 sm:grid-cols-3">
-        <KPICard
-          label="Peak Hour"
-          value={peakHour}
-          type="duration"
-          loading={hourly.isLoading}
-        />
-        <KPICard
-          label="Total Messages"
-          value={totalMessages.toLocaleString()}
-          type="sessions"
-          loading={hourly.isLoading}
-        />
-        <KPICard
-          label="Turns Today"
-          value={sessionsToday.toLocaleString()}
-          type="sessions"
-          loading={daily.isLoading}
-        />
-      </div>
+    <ErrorBoundary onRetry={() => window.location.reload()}>
+    <div className="min-h-0 flex-1 space-y-[var(--space-8)] overflow-y-auto">
+      {/* ── KPI Cards ──────────────────────────────────────────── */}
+      <section>
+        <div className="mb-[var(--space-5)]">
+          <SectionHeader
+            title="Activity Overview"
+            subtitle="Message volume and session patterns for the selected period"
+          />
+        </div>
+        <div className="grid grid-cols-1 gap-[var(--space-5)] sm:grid-cols-3">
+          <KPICard
+            label="Peak Hour"
+            value={peakHour}
+            type="duration"
+            loading={hourly.isLoading}
+          />
+          <KPICard
+            label="Total Messages"
+            value={totalMessages.toLocaleString()}
+            type="sessions"
+            loading={hourly.isLoading}
+          />
+          <KPICard
+            label="Turns Today"
+            value={sessionsToday.toLocaleString()}
+            type="sessions"
+            loading={daily.isLoading}
+          />
+        </div>
+      </section>
 
-      {/* Hourly Activity Distribution */}
-      <ChartCard
-        title="Hourly Activity Distribution"
-        subtitle="Messages per hour of day"
-        loading={hourly.isLoading}
-        empty={hourlyData.every((h) => h.messages === 0)}
-      >
-        <ResponsiveContainer width="100%" height={300}>
-          <BarChart data={hourlyData}>
-            <CartesianGrid {...GRID_PROPS} />
-            <XAxis dataKey="hour" {...X_AXIS_PROPS} interval={1} />
-            <YAxis {...Y_AXIS_PROPS} />
-            <Tooltip
-              content={
-                <ChartTooltip
-                  valueFormatter={(v) => `${v.toLocaleString()}`}
-                  labelFormatter={(l) => `${l}`}
-                />
-              }
-            />
-            <Bar dataKey="messages" name="Messages" maxBarSize={28} radius={[4, 4, 0, 0]}>
-              {hourlyData.map((entry, index) => {
-                // Intensity-based coloring
-                const intensity = maxMessages > 0 ? entry.messages / maxMessages : 0;
-                const baseColor = CHART_COLORS[0]; // indigo
-                const opacity = Math.max(0.15, intensity);
-                return (
-                  <Cell
-                    key={`cell-${index}`}
-                    fill={baseColor}
-                    fillOpacity={opacity}
+      {/* ── Hourly & Daily Charts ───────────────────────────────── */}
+      <section className="space-y-[var(--space-3)]">
+        <SectionHeader
+          title="Usage Distribution"
+          subtitle="How activity is distributed throughout the day and over time"
+        />
+
+        {/* Hourly Activity Distribution */}
+        <ChartCard
+          title="Hourly Activity Distribution"
+          subtitle="Messages per hour of day"
+          loading={hourly.isLoading}
+          empty={hourlyData.every((h) => h.messages === 0)}
+        >
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart data={hourlyData}>
+              <CartesianGrid {...GRID_PROPS} />
+              <XAxis dataKey="hour" {...X_AXIS_PROPS} interval={1} />
+              <YAxis {...Y_AXIS_PROPS} />
+              <Tooltip
+                content={
+                  <ChartTooltip
+                    valueFormatter={(v) => `${v.toLocaleString()}`}
+                    labelFormatter={(l) => `${l}`}
                   />
-                );
-              })}
-            </Bar>
-          </BarChart>
-        </ResponsiveContainer>
-      </ChartCard>
+                }
+              />
+              <Bar dataKey="messages" name="Messages" maxBarSize={28} radius={[4, 4, 0, 0]}>
+                {hourlyData.map((entry, index) => {
+                  const intensity = maxMessages > 0 ? entry.messages / maxMessages : 0;
+                  const baseColor = CHART_COLORS[0];
+                  const opacity = Math.max(0.15, intensity);
+                  return (
+                    <Cell
+                      key={`cell-${index}`}
+                      fill={baseColor}
+                      fillOpacity={opacity}
+                    />
+                  );
+                })}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </ChartCard>
 
-      {/* Daily Activity */}
-      <ChartCard
-        title="Daily Activity"
-        subtitle="Assistant turns per day"
-        loading={daily.isLoading}
-        empty={dailyData.length === 0}
-      >
-        <ResponsiveContainer width="100%" height={300}>
-          <BarChart data={dailyData}>
-            <CartesianGrid {...GRID_PROPS} />
-            <XAxis dataKey="date" {...X_AXIS_PROPS} />
-            <YAxis {...Y_AXIS_PROPS} />
-            <Tooltip
-              content={
-                <ChartTooltip
-                  valueFormatter={(v) => `${v.toLocaleString()} turns`}
-                  labelFormatter={(l) => l}
-                />
-              }
-            />
-            <Bar
-              dataKey="turns"
-              name="Turns"
-              fill={CHART_COLORS[5]}
-              maxBarSize={32}
-              radius={[4, 4, 0, 0]}
-            />
-          </BarChart>
-        </ResponsiveContainer>
-      </ChartCard>
+        {/* Daily Activity */}
+        <ChartCard
+          title="Daily Activity"
+          subtitle="Assistant turns per day"
+          loading={daily.isLoading}
+          empty={dailyData.length === 0}
+        >
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart data={dailyData}>
+              <CartesianGrid {...GRID_PROPS} />
+              <XAxis dataKey="date" {...X_AXIS_PROPS} />
+              <YAxis {...Y_AXIS_PROPS} />
+              <Tooltip
+                content={
+                  <ChartTooltip
+                    valueFormatter={(v) => `${v.toLocaleString()} turns`}
+                    labelFormatter={(l) => l}
+                  />
+                }
+              />
+              <Bar
+                dataKey="turns"
+                name="Turns"
+                fill={CHART_COLORS[5]}
+                maxBarSize={32}
+                radius={[4, 4, 0, 0]}
+              />
+            </BarChart>
+          </ResponsiveContainer>
+        </ChartCard>
+      </section>
 
-      {/* Calendar Heatmap */}
-      <ChartCard
-        title="Activity Calendar"
-        subtitle="Daily coding activity over the past year"
-        loading={daily.isLoading}
-        empty={!daily.data || daily.data.length === 0}
-      >
-        <CalendarHeatmap data={daily.data} />
-      </ChartCard>
+      {/* ── Heatmaps ────────────────────────────────────────────── */}
+      <section className="space-y-[var(--space-3)]">
+        <SectionHeader
+          title="Patterns & Heatmaps"
+          subtitle="Visualize coding patterns across days and weeks"
+        />
 
-      {/* Hourly Heatmap */}
-      <ChartCard
-        title="Weekly Usage Patterns"
-        subtitle="Message volume by day of week and hour"
-        loading={heatmap.isLoading}
-        empty={!heatmap.data || heatmap.data.length === 0}
-      >
-        <HourlyHeatmap data={heatmap.data} />
-      </ChartCard>
+        {/* Calendar Heatmap */}
+        <ChartCard
+          title="Activity Calendar"
+          subtitle="Daily coding activity over the past year"
+          loading={daily.isLoading}
+          empty={!daily.data || daily.data.length === 0}
+        >
+          <CalendarHeatmap data={daily.data} />
+        </ChartCard>
+
+        {/* Hourly Heatmap */}
+        <ChartCard
+          title="Weekly Usage Patterns"
+          subtitle="Message volume by day of week and hour"
+          loading={heatmap.isLoading}
+          empty={!heatmap.data || heatmap.data.length === 0}
+        >
+          <HourlyHeatmap data={heatmap.data} />
+        </ChartCard>
+      </section>
     </div>
+    </ErrorBoundary>
   );
 }

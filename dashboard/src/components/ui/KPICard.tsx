@@ -1,8 +1,94 @@
+import { cn } from "@/lib/utils";
+import { cva, type VariantProps } from "class-variance-authority";
+import {
+  TrendingUp,
+  TrendingDown,
+  DollarSign,
+  Database,
+  Users,
+  Wrench,
+  Coins,
+  Timer,
+  type LucideIcon,
+} from "lucide-react";
 import Skeleton from "./Skeleton";
 
+/* ── KPI types and their icon mappings ───────────────────── */
 type KPIType = "cost" | "cache" | "sessions" | "tools" | "tokens" | "duration";
 
-interface KPICardProps {
+const typeIconMap: Record<KPIType, LucideIcon> = {
+  cost: DollarSign,
+  cache: Database,
+  sessions: Users,
+  tools: Wrench,
+  tokens: Coins,
+  duration: Timer,
+};
+
+/* ── Card variant system ─────────────────────────────────── */
+const cardVariants = cva(
+  [
+    "group relative overflow-hidden rounded-[var(--radius-xl)]",
+    "border p-[var(--space-6)]",
+    "transition-all duration-[var(--duration-normal)]",
+    "hover:shadow-[var(--shadow-md)]",
+  ].join(" "),
+  {
+    variants: {
+      variant: {
+        default:
+          "bg-[var(--bg-surface)] border-[var(--border)] hover:border-[var(--border-hover)]",
+        accent:
+          "bg-[var(--accent-subtle)] border-[var(--accent-muted)] hover:border-[var(--accent)] hover:shadow-[var(--shadow-glow-accent)]",
+        success:
+          "bg-[var(--success-subtle)] border-[var(--success-muted)] hover:border-[var(--success)]",
+        warning:
+          "bg-[var(--warning-subtle)] border-[var(--warning-muted)] hover:border-[var(--warning)]",
+      },
+    },
+    defaultVariants: {
+      variant: "default",
+    },
+  }
+);
+
+/* ── Icon accent color lookup ────────────────────────────── */
+const typeIconColor: Record<KPIType, string> = {
+  cost: "text-[var(--accent)]",
+  cache: "text-[var(--success)]",
+  sessions: "text-[var(--purple)]",
+  tools: "text-[var(--orange)]",
+  tokens: "text-[var(--info)]",
+  duration: "text-[var(--warning)]",
+};
+
+/* ── Trend Indicator ─────────────────────────────────────── */
+function TrendIndicator({ value, label }: { value: number; label?: string }) {
+  const isPositive = value >= 0;
+  const Icon = isPositive ? TrendingUp : TrendingDown;
+  const color = isPositive ? "text-[var(--success)]" : "text-[var(--danger)]";
+  const bg = isPositive ? "bg-[var(--success-subtle)]" : "bg-[var(--danger-subtle)]";
+
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 rounded-[var(--radius-full)] px-2 py-0.5",
+        "text-xs font-medium",
+        color,
+        bg
+      )}
+    >
+      <Icon size={12} strokeWidth={2.5} />
+      {Math.abs(value).toFixed(1)}%
+      {label && (
+        <span className="text-[var(--text-tertiary)]">{label}</span>
+      )}
+    </span>
+  );
+}
+
+/* ── Main KPICard Component ──────────────────────────────── */
+interface KPICardProps extends VariantProps<typeof cardVariants> {
   label: string;
   value: string;
   type?: KPIType;
@@ -11,107 +97,65 @@ interface KPICardProps {
     label?: string;
   };
   loading?: boolean;
-}
-
-const typeBg: Record<KPIType, string> = {
-  cost: "var(--accent-subtle)",
-  cache: "var(--success-subtle)",
-  sessions: "var(--purple-subtle)",
-  tools: "var(--orange-subtle)",
-  tokens: "var(--info-subtle)",
-  duration: "var(--warning-subtle)",
-};
-
-const typeBorder: Record<KPIType, string> = {
-  cost: "var(--accent-muted)",
-  cache: "var(--success-muted)",
-  sessions: "var(--purple-muted)",
-  tools: "var(--orange-muted)",
-  tokens: "var(--info-muted)",
-  duration: "var(--warning-muted)",
-};
-
-function TrendIndicator({ value, label }: { value: number; label?: string }) {
-  const isPositive = value >= 0;
-  return (
-    <span
-      className="inline-flex items-center gap-0.5 text-xs font-medium"
-      style={{
-        color: isPositive ? "var(--success)" : "var(--danger)",
-      }}
-    >
-      <svg
-        width="12"
-        height="12"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        style={{
-          transform: isPositive ? "none" : "rotate(180deg)",
-        }}
-      >
-        <path d="M18 15l-6-6-6 6" />
-      </svg>
-      {Math.abs(value).toFixed(1)}%
-      {label && (
-        <span style={{ color: "var(--text-muted)" }}>{label}</span>
-      )}
-    </span>
-  );
+  className?: string;
 }
 
 export default function KPICard({
   label,
   value,
   type = "sessions",
+  variant = "default",
   trend,
   loading = false,
+  className,
 }: KPICardProps) {
   if (loading) {
     return (
       <div
-        className="rounded-xl border p-6"
-        style={{
-          backgroundColor: "var(--bg-card)",
-          borderColor: "var(--border)",
-        }}
+        className={cn(
+          "rounded-[var(--radius-xl)] border border-[var(--border)] bg-[var(--bg-elevated)] p-[var(--space-6)]",
+          className
+        )}
       >
-        <Skeleton height="0.75rem" width="40%" className="mb-3" />
-        <Skeleton height="2rem" width="60%" className="mb-2" />
-        <Skeleton height="0.75rem" width="30%" />
+        <Skeleton shape="text" className="mb-3 h-3 w-2/5" />
+        <Skeleton shape="text" className="mb-2 h-9 w-3/5" />
+        <Skeleton shape="text" className="h-3 w-1/4" />
       </div>
     );
   }
 
+  const TypeIcon = typeIconMap[type];
+
   return (
-    <div
-      className="rounded-xl border p-6 transition-all duration-200 hover:border-[var(--border-hover)]"
-      style={{
-        backgroundColor: typeBg[type],
-        borderColor: typeBorder[type],
-        boxShadow: "var(--shadow-sm)",
-      }}
-    >
-      <p
-        className="text-[11px] font-semibold uppercase"
-        style={{ color: "var(--text-secondary)", letterSpacing: "0.05em" }}
-      >
-        {label}
-      </p>
-      <p
-        className="mt-3 text-[30px] font-bold tracking-tight leading-tight"
-        style={{ color: "var(--text-primary)" }}
-      >
+    <div className={cn(cardVariants({ variant }), className)}>
+      {/* Top row: label + icon */}
+      <div className="flex items-start justify-between">
+        <p className="text-overline text-[var(--text-secondary)]">{label}</p>
+        <div
+          className={cn(
+            "flex h-8 w-8 items-center justify-center rounded-[var(--radius-md)]",
+            "bg-[var(--bg-overlay)] transition-colors duration-[var(--duration-fast)]",
+            "group-hover:bg-[var(--bg-muted-bg)]",
+            typeIconColor[type]
+          )}
+        >
+          <TypeIcon size={16} strokeWidth={2} />
+        </div>
+      </div>
+
+      {/* Display value */}
+      <p className="text-display mt-[var(--space-3)] text-[var(--text-primary)]">
         {value}
       </p>
+
+      {/* Trend indicator */}
       {trend && (
-        <div className="mt-2">
+        <div className="mt-[var(--space-2)]">
           <TrendIndicator value={trend.value} label={trend.label} />
         </div>
       )}
     </div>
   );
 }
+
+export type { KPICardProps, KPIType };

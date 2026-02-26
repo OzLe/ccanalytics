@@ -81,7 +81,7 @@ export interface UserMessage extends BaseMessage {
   type: "user";
   message: {
     role: "user";
-    content: ContentBlock[];
+    content: string | ContentBlock[];
   };
   parentUuid?: string;
   uuid?: string;

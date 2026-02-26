@@ -2,8 +2,13 @@ import { useLocation } from "react-router-dom";
 import { useFilters, type Period } from "@/hooks/useFilters";
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "@/lib/api";
-import { useState, useRef, useEffect } from "react";
+import { useEffect, useCallback } from "react";
+import { cn } from "@/lib/utils";
+import { pages } from "@/lib/pages";
+import { Menu, Command } from "lucide-react";
+import Dropdown from "@/components/ui/Dropdown";
 
+/* ── Period options ───────────────────────────────────────── */
 const periodOptions: { value: Period; label: string }[] = [
   { value: "today", label: "Today" },
   { value: "7d", label: "7d" },
@@ -12,218 +17,57 @@ const periodOptions: { value: Period; label: string }[] = [
   { value: "all", label: "All" },
 ];
 
-const routeTitles: Record<string, { title: string; subtitle: string }> = {
-  "/": {
-    title: "Overview",
-    subtitle: "Key metrics and trends at a glance",
-  },
-  "/cost": {
-    title: "Cost Analysis",
-    subtitle: "Spending patterns across models and projects",
-  },
-  "/sessions": {
-    title: "Sessions",
-    subtitle: "Browse and filter your Claude Code sessions",
-  },
-  "/tools": {
-    title: "Tools",
-    subtitle: "Tool usage patterns and frequency",
-  },
-  "/cache": {
-    title: "Cache",
-    subtitle: "Cache hit rates and token savings",
-  },
-  "/activity": {
-    title: "Activity",
-    subtitle: "Timeline of coding activity",
-  },
+/* ── Route title lookup (fallback to PAGE_CONFIG) ─────────── */
+const routeSubtitles: Record<string, string> = {
+  "/": "Key metrics and trends at a glance",
+  "/cost": "Spending patterns across models and projects",
+  "/sessions": "Browse and filter your Claude Code sessions",
+  "/prompts": "Prompt patterns and message analysis",
+  "/tools": "Tool usage patterns and frequency",
+  "/cache": "Cache hit rates and token savings",
+  "/activity": "Timeline of coding activity",
 };
 
-interface FilterOption {
-  value: string;
-  label: string;
+function getPageInfo(pathname: string): { title: string; subtitle: string } {
+  /* Handle session detail */
+  if (pathname.startsWith("/sessions/")) {
+    const id = pathname.split("/").pop();
+    return { title: "Session Detail", subtitle: `Session ${id}` };
+  }
+
+  /* Look up from PAGE_CONFIG first */
+  const pageConfig = pages.find((p) => p.path === pathname);
+  const title = pageConfig?.label ?? "Dashboard";
+  const subtitle = routeSubtitles[pathname] ?? "";
+
+  return { title, subtitle };
 }
 
-function FilterDropdown({
-  label,
-  value,
-  options,
-  onChange,
-  loading,
-}: {
-  label: string;
-  value: string | null;
-  options: FilterOption[];
-  onChange: (value: string | null) => void;
-  loading?: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    function handleClick(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, []);
-
-  const isActive = value !== null;
-
-  const chipClasses = [
-    "filter-chip",
-    isActive && "filter-chip--active",
-    open && "filter-chip--open",
-  ]
-    .filter(Boolean)
-    .join(" ");
-
-  const chevronClasses = [
-    "filter-chip__chevron",
-    open && "filter-chip__chevron--open",
-  ]
-    .filter(Boolean)
-    .join(" ");
-
-  return (
-    <div ref={ref} className="relative">
-      <button onClick={() => setOpen(!open)} className={chipClasses}>
-        {isActive && <span className="filter-dot" />}
-        <span>{label}</span>
-        {isActive && (
-          <span className="max-w-[100px] truncate opacity-70">
-            {value}
-          </span>
-        )}
-        <svg
-          width="10"
-          height="10"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          className={chevronClasses}
-        >
-          <path d="M6 9l6 6 6-6" />
-        </svg>
-      </button>
-
-      {open && (
-        <div className="filter-dropdown">
-          {/* "All" option */}
-          <button
-            onClick={() => {
-              onChange(null);
-              setOpen(false);
-            }}
-            className={`filter-dropdown__item ${
-              !value ? "filter-dropdown__item--selected" : ""
-            }`}
-          >
-            {!value && <CheckIcon />}
-            <span>All</span>
-          </button>
-
-          <div className="filter-dropdown__separator" />
-
-          {loading ? (
-            <div className="filter-dropdown__item" style={{ cursor: "default" }}>
-              <LoadingDots />
-            </div>
-          ) : (
-            options.map((opt) => (
-              <button
-                key={opt.value}
-                onClick={() => {
-                  onChange(opt.value);
-                  setOpen(false);
-                }}
-                className={`filter-dropdown__item ${
-                  value === opt.value
-                    ? "filter-dropdown__item--selected"
-                    : ""
-                }`}
-              >
-                {value === opt.value && <CheckIcon />}
-                <span className="truncate">{opt.label}</span>
-              </button>
-            ))
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function CheckIcon() {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="var(--accent)"
-      strokeWidth="2.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="flex-shrink-0"
-    >
-      <path d="M20 6L9 17l-5-5" />
-    </svg>
-  );
-}
-
-function LoadingDots() {
-  return (
-    <div className="flex items-center gap-1">
-      <span
-        className="inline-block h-1 w-1 animate-pulse rounded-full"
-        style={{ background: "var(--text-muted)", animationDelay: "0ms" }}
-      />
-      <span
-        className="inline-block h-1 w-1 animate-pulse rounded-full"
-        style={{
-          background: "var(--text-muted)",
-          animationDelay: "150ms",
-        }}
-      />
-      <span
-        className="inline-block h-1 w-1 animate-pulse rounded-full"
-        style={{
-          background: "var(--text-muted)",
-          animationDelay: "300ms",
-        }}
-      />
-    </div>
-  );
-}
-
+/* ── TopBar Component ────────────────────────────────────── */
 interface TopBarProps {
   onMenuClick?: () => void;
 }
 
 export default function TopBar({ onMenuClick }: TopBarProps) {
   const location = useLocation();
-  const { filters, setPeriod, setModel, setProject, setSource } = useFilters();
+  const { filters, setPeriod, setModel, setProject, setSource, resetFilters } =
+    useFilters();
 
   const pathKey =
     location.pathname.replace(/\/[^/]+$/, "") || location.pathname;
-  const pageInfo = routeTitles[pathKey] ??
-    routeTitles[location.pathname] ?? {
-      title: "Dashboard",
-      subtitle: "",
-    };
+  const pageInfo =
+    getPageInfo(pathKey) ?? getPageInfo(location.pathname);
 
-  // Handle session detail page title
-  const isSessionDetail = location.pathname.startsWith("/sessions/");
-  const title = isSessionDetail ? "Session Detail" : pageInfo.title;
-  const subtitle = isSessionDetail
-    ? `Session ${location.pathname.split("/").pop()}`
-    : pageInfo.subtitle;
+  /* ── Listen for reset-filters custom event from command palette ── */
+  const handleResetFilters = useCallback(() => {
+    resetFilters();
+  }, [resetFilters]);
+
+  useEffect(() => {
+    document.addEventListener("reset-filters", handleResetFilters);
+    return () =>
+      document.removeEventListener("reset-filters", handleResetFilters);
+  }, [handleResetFilters]);
 
   const { data: modelsData, isLoading: modelsLoading } = useQuery({
     queryKey: ["filters", "models", filters.period],
@@ -247,78 +91,88 @@ export default function TopBar({ onMenuClick }: TopBarProps) {
       }>(`/filters/sources?period=${filters.period}`),
   });
 
-  const modelOptions: FilterOption[] = (modelsData?.data ?? []).map((m) => ({
+  const modelOptions = (modelsData?.data ?? []).map((m) => ({
     value: m,
     label: m,
   }));
 
-  const projectOptions: FilterOption[] = (projectsData?.data ?? []).map(
-    (p) => ({
-      value: p.projectPath,
-      label: p.projectPath.split("/").pop() ?? p.projectPath,
-    }),
-  );
+  const projectOptions = (projectsData?.data ?? []).map((p) => ({
+    value: p.projectPath,
+    label: p.projectPath.split("/").pop() ?? p.projectPath,
+  }));
 
-  const sourceOptions: FilterOption[] = (sourcesData?.data ?? []).map(
-    (s) => ({
-      value: s.sourceType,
-      label: s.sourceType === "claude-desktop" ? "Desktop" : s.sourceType === "claude-code" ? "CLI" : s.sourceType,
-    }),
-  );
+  const sourceOptions = (sourcesData?.data ?? []).map((s) => ({
+    value: s.sourceType,
+    label:
+      s.sourceType === "claude-desktop"
+        ? "Desktop"
+        : s.sourceType === "claude-code"
+          ? "CLI"
+          : s.sourceType,
+  }));
 
   return (
     <header
-      className="flex flex-col gap-3 border-b px-6 py-5 sm:flex-row sm:items-center sm:justify-between"
-      style={{
-        backgroundColor: "var(--bg-primary)",
-        borderColor: "var(--border)",
-      }}
+      className={cn(
+        "sticky top-0 z-10",
+        "flex flex-col gap-[var(--space-3)] sm:flex-row sm:items-center sm:justify-between",
+        "border-b border-[var(--border)]",
+        "bg-[var(--bg-raised)]",
+        "px-[var(--space-6)] py-[var(--space-5)]",
+      )}
     >
-      <div className="flex items-center gap-3">
+      {/* Left: menu + title */}
+      <div className="flex items-center gap-[var(--space-3)]">
         {/* Mobile menu button */}
         <button
           onClick={onMenuClick}
-          className="mobile-menu-btn lg:hidden"
+          className={cn(
+            "flex h-8 w-8 items-center justify-center rounded-[var(--radius-md)] lg:hidden",
+            "text-[var(--text-secondary)] bg-transparent border-none cursor-pointer",
+            "hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]",
+            "transition-colors duration-[var(--duration-fast)]",
+          )}
+          aria-label="Open menu"
         >
-          <svg
-            width="20"
-            height="20"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M3 12h18M3 6h18M3 18h18" />
-          </svg>
+          <Menu size={20} />
         </button>
 
         <div>
-          <h1
-            className="text-2xl font-semibold tracking-tight"
-            style={{ color: "var(--text-primary)" }}
-          >
-            {title}
+          <h1 className="text-h2 text-[var(--text-primary)]">
+            {pageInfo.title}
           </h1>
-          {subtitle && (
-            <p className="text-sm" style={{ color: "var(--text-muted)" }}>
-              {subtitle}
+          {pageInfo.subtitle && (
+            <p className="text-small text-[var(--text-tertiary)]">
+              {pageInfo.subtitle}
             </p>
           )}
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2.5">
-        {/* Period selector - pill segmented control */}
-        <div className="period-seg">
+      {/* Right: period + filters + cmd-k */}
+      <div className="flex flex-wrap items-center gap-[var(--space-2)]">
+        {/* Period segmented control */}
+        <div
+          className={cn(
+            "inline-flex gap-[2px] rounded-[var(--radius-full)]",
+            "border border-[var(--border)] bg-[var(--bg-surface)]",
+            "p-[3px]",
+          )}
+        >
           {periodOptions.map((opt) => (
             <button
               key={opt.value}
               onClick={() => setPeriod(opt.value)}
-              className={`period-btn ${
-                filters.period === opt.value ? "period-btn--active" : ""
-              }`}
+              className={cn(
+                "rounded-[var(--radius-full)]",
+                "px-[14px] py-[5px]",
+                "text-[12px] font-medium leading-[1.25] whitespace-nowrap",
+                "border border-transparent cursor-pointer",
+                "transition-all duration-[var(--duration-normal)]",
+                filters.period === opt.value
+                  ? "bg-[var(--bg-elevated)] border-[var(--border-pill-active)] text-[var(--text-primary)]"
+                  : "bg-transparent text-[var(--text-secondary)] hover:bg-[var(--bg-pill-hover)] hover:text-[var(--text-primary)]",
+              )}
             >
               {opt.label}
             </button>
@@ -326,30 +180,66 @@ export default function TopBar({ onMenuClick }: TopBarProps) {
         </div>
 
         {/* Divider */}
-        <div className="filter-divider hidden sm:block" />
+        <div className="hidden h-6 w-px shrink-0 bg-[var(--border-subtle)] sm:block" />
 
-        {/* Filter chips */}
-        <FilterDropdown
+        {/* Filter chips — using reusable Dropdown */}
+        <Dropdown
           label="Model"
-          value={filters.model}
           options={modelOptions}
-          onChange={setModel}
+          selected={filters.model ? [filters.model] : []}
+          onToggle={(value) =>
+            setModel(filters.model === value ? null : value)
+          }
           loading={modelsLoading}
         />
-        <FilterDropdown
+        <Dropdown
           label="Project"
-          value={filters.project}
           options={projectOptions}
-          onChange={setProject}
+          selected={filters.project ? [filters.project] : []}
+          onToggle={(value) =>
+            setProject(filters.project === value ? null : value)
+          }
           loading={projectsLoading}
         />
-        <FilterDropdown
+        <Dropdown
           label="Source"
-          value={filters.source}
           options={sourceOptions}
-          onChange={setSource}
+          selected={filters.source ? [filters.source] : []}
+          onToggle={(value) =>
+            setSource(filters.source === value ? null : value)
+          }
           loading={sourcesLoading}
         />
+
+        {/* Divider */}
+        <div className="hidden h-6 w-px shrink-0 bg-[var(--border-subtle)] sm:block" />
+
+        {/* Cmd+K hint */}
+        <button
+          onClick={() => {
+            /* Dispatch keyboard event to trigger CommandPalette */
+            document.dispatchEvent(
+              new KeyboardEvent("keydown", {
+                key: "k",
+                metaKey: true,
+                bubbles: true,
+              }),
+            );
+          }}
+          className={cn(
+            "hidden items-center gap-1 rounded-[var(--radius-full)] sm:inline-flex",
+            "border border-[var(--border)] bg-[var(--bg-surface)]",
+            "px-[10px] py-[4px]",
+            "text-[11px] font-medium text-[var(--text-tertiary)]",
+            "cursor-pointer",
+            "hover:border-[var(--border-hover)] hover:text-[var(--text-secondary)]",
+            "transition-all duration-[var(--duration-fast)]",
+          )}
+          aria-label="Open command palette"
+        >
+          <Command size={11} className="shrink-0" />
+          <span>K</span>
+        </button>
       </div>
     </header>
   );

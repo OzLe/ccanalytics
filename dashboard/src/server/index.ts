@@ -21,6 +21,7 @@ import toolsRoutes from "./routes/tools.js";
 import cacheRoutes from "./routes/cache.js";
 import activityRoutes from "./routes/activity.js";
 import filtersRoutes from "./routes/filters.js";
+import promptsRoutes from "./routes/prompts.js";
 import { closeDb } from "./helpers/db.js";
 
 /**
@@ -65,6 +66,7 @@ function createApp(): express.Application {
   app.use("/api/cache", cacheRoutes);
   app.use("/api/activity", activityRoutes);
   app.use("/api/filters", filtersRoutes);
+  app.use("/api/prompts", promptsRoutes);
 
   // ---------------------------------------------------------------------------
   // 404 handler for unmatched /api routes
@@ -146,6 +148,9 @@ const server = app.listen(PORT, () => {
   console.log(`  GET /api/activity/heatmap`);
   console.log(`  GET /api/filters/models`);
   console.log(`  GET /api/filters/projects`);
+  console.log(`  GET /api/prompts/ranked`);
+  console.log(`  GET /api/prompts/stats`);
+  console.log(`  GET /api/prompts/:turnId`);
 });
 
 // Graceful shutdown

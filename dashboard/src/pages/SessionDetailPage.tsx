@@ -12,12 +12,16 @@ import {
   ResponsiveContainer,
   Legend,
 } from "recharts";
+import { cn } from "@/lib/utils";
 import KPICard from "@/components/ui/KPICard";
 import ChartCard from "@/components/ui/ChartCard";
 import ChartTooltip from "@/components/charts/ChartTooltip";
 import Badge from "@/components/ui/Badge";
 import Skeleton from "@/components/ui/Skeleton";
 import EmptyState from "@/components/ui/EmptyState";
+import TurnCard from "@/components/session/TurnCard";
+import ToolCallsSummary from "@/components/session/ToolCallsSummary";
+import ErrorPanel from "@/components/session/ErrorPanel";
 import {
   formatCost,
   formatPercent,
@@ -29,27 +33,18 @@ import {
   GRID_PROPS,
   X_AXIS_PROPS,
   Y_AXIS_PROPS,
+  AXIS_TICK_FILL,
 } from "@/lib/chartTheme";
 import { useSessionDetail } from "@/hooks/useSessionsQuery";
+import {
+  ArrowLeft,
+  Calendar,
+  Clock,
+  Folder,
+  MessageSquare,
+} from "lucide-react";
+import ErrorBoundary from "@/components/ui/ErrorBoundary";
 import type { SessionTurn, SessionToolCall, SessionError } from "@/lib/types";
-
-/** Back arrow SVG icon. */
-function BackArrow() {
-  return (
-    <svg
-      width="20"
-      height="20"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M19 12H5M12 19l-7-7 7-7" />
-    </svg>
-  );
-}
 
 /** Cumulative cost data point for the cost accumulation chart. */
 interface CostAccumPoint {
@@ -94,37 +89,56 @@ export default function SessionDetailPage() {
     }));
   }, [session?.turns]);
 
+  // Map tool calls to their turns for nested display
+  const toolCallsByTurn = useMemo(() => {
+    if (!session?.toolCalls) return new Map<string, SessionToolCall[]>();
+    const map = new Map<string, SessionToolCall[]>();
+    for (const tc of session.toolCalls) {
+      const existing = map.get(tc.turnId);
+      if (existing) existing.push(tc);
+      else map.set(tc.turnId, [tc]);
+    }
+    return map;
+  }, [session?.toolCalls]);
+
+  /* ── Loading state ─────────────────────────────────────── */
   if (isLoading) {
     return (
-      <div className="min-h-0 flex-1 overflow-y-auto space-y-6">
-        <Skeleton height="2rem" width="12rem" />
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+      <div className="min-h-0 flex-1 space-y-[var(--space-6)] overflow-y-auto">
+        {/* Back link skeleton */}
+        <Skeleton shape="text" className="h-5 w-32" />
+        {/* Header skeleton */}
+        <div className="flex items-center gap-[var(--space-3)]">
+          <Skeleton shape="text" className="h-8 w-64" />
+          <Skeleton shape="text" className="h-6 w-20" />
+        </div>
+        {/* KPIs skeleton */}
+        <div className="grid grid-cols-1 gap-[var(--space-4)] sm:grid-cols-3 lg:grid-cols-5">
           {Array.from({ length: 5 }).map((_, i) => (
             <KPICard key={i} label="" value="" loading />
           ))}
         </div>
-        <Skeleton height="20rem" />
+        <Skeleton shape="chart" />
       </div>
     );
   }
 
+  /* ── Error / Not found state ───────────────────────────── */
   if (isError || !session) {
     return (
-      <div className="min-h-0 flex-1 overflow-y-auto space-y-6">
+      <div className="min-h-0 flex-1 space-y-[var(--space-6)] overflow-y-auto">
         <button
           onClick={() => navigate("/sessions")}
-          className="inline-flex items-center gap-1.5 text-sm font-medium transition-colors"
-          style={{ color: "var(--text-secondary)" }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.color = "var(--accent)";
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.color = "var(--text-secondary)";
-          }}
+          className={cn(
+            "inline-flex items-center gap-[var(--space-2)] text-small font-medium",
+            "text-[var(--text-secondary)] transition-colors duration-[var(--duration-fast)]",
+            "hover:text-[var(--accent)]"
+          )}
         >
-          <BackArrow /> Back to Sessions
+          <ArrowLeft size={16} /> Back to Sessions
         </button>
         <EmptyState
+          icon={MessageSquare}
           title="Session not found"
           message={`Could not load session ${id ?? "unknown"}.`}
         />
@@ -135,44 +149,60 @@ export default function SessionDetailPage() {
   const turns: SessionTurn[] = session.turns ?? [];
   const toolCalls: SessionToolCall[] = session.toolCalls ?? [];
   const errors: SessionError[] = session.errors ?? [];
+  const shortProject = session.projectPath.split("/").pop() ?? session.projectPath;
+  const shortModel = session.model.split("/").pop() ?? session.model;
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto space-y-6">
-      {/* Back Button & Header */}
+    <ErrorBoundary onRetry={() => window.location.reload()}>
+    <div className="min-h-0 flex-1 space-y-[var(--space-8)] overflow-y-auto">
+      {/* ── Header ────────────────────────────────────────────── */}
       <div>
+        {/* Back link */}
         <button
           onClick={() => navigate("/sessions")}
-          className="mb-3 inline-flex items-center gap-1.5 text-sm font-medium transition-colors"
-          style={{ color: "var(--text-secondary)" }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.color = "var(--accent)";
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.color = "var(--text-secondary)";
-          }}
+          className={cn(
+            "mb-[var(--space-4)] inline-flex items-center gap-[var(--space-2)]",
+            "text-small font-medium text-[var(--text-secondary)]",
+            "transition-colors duration-[var(--duration-fast)]",
+            "hover:text-[var(--accent)]"
+          )}
         >
-          <BackArrow /> Back to Sessions
+          <ArrowLeft size={16} /> Back to Sessions
         </button>
-        <div className="flex flex-wrap items-center gap-3">
-          <p className="text-sm" style={{ color: "var(--text-secondary)" }}>
+
+        {/* Title row */}
+        <div className="flex flex-wrap items-center gap-[var(--space-3)]">
+          <h1 className="text-h1 text-[var(--text-primary)]">
+            Session Detail
+          </h1>
+          <Badge variant="accent" dot>
+            {shortModel}
+          </Badge>
+          <Badge variant="default" dot>
+            <Folder size={12} className="shrink-0" />
+            {shortProject}
+          </Badge>
+        </div>
+
+        {/* Meta row */}
+        <div className="mt-[var(--space-2)] flex flex-wrap items-center gap-[var(--space-4)]">
+          <span className="inline-flex items-center gap-[var(--space-1)] text-small text-[var(--text-tertiary)]">
+            <Calendar size={13} />
             {formatDateTime(session.startTime)}
             {session.endTime ? ` - ${formatDateTime(session.endTime)}` : ""}
-          </p>
-          <Badge variant="accent">
-            {session.model.split("/").pop() ?? session.model}
-          </Badge>
-          <span
-            className="text-sm"
-            style={{ color: "var(--text-muted)" }}
-            title={session.projectPath}
-          >
-            {session.projectPath.split("/").pop() ?? session.projectPath}
           </span>
+          <span className="inline-flex items-center gap-[var(--space-1)] text-small text-[var(--text-tertiary)]">
+            <Clock size={13} />
+            {formatDuration(session.durationMinutes * 60)}
+          </span>
+          <Badge variant="default" size="sm">
+            {session.sourceType === "claude-desktop" ? "Desktop" : "CLI"}
+          </Badge>
         </div>
       </div>
 
-      {/* KPI Cards */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+      {/* ── KPI Cards ─────────────────────────────────────────── */}
+      <div className="grid grid-cols-1 gap-[var(--space-4)] sm:grid-cols-3 lg:grid-cols-5">
         <KPICard
           label="Total Cost"
           value={formatCost(session.totalCostUSD)}
@@ -200,8 +230,8 @@ export default function SessionDetailPage() {
         />
       </div>
 
-      {/* Charts Row */}
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+      {/* ── Charts Row ────────────────────────────────────────── */}
+      <div className="grid grid-cols-1 gap-[var(--space-6)] lg:grid-cols-2">
         {/* Cost Accumulation Line Chart */}
         <ChartCard
           title="Cost Accumulation"
@@ -218,7 +248,7 @@ export default function SessionDetailPage() {
                   value: "Turn",
                   position: "insideBottom",
                   offset: -5,
-                  fill: "#94a3b8",
+                  fill: AXIS_TICK_FILL,
                   fontSize: 12,
                 }}
               />
@@ -247,7 +277,7 @@ export default function SessionDetailPage() {
           </ResponsiveContainer>
         </ChartCard>
 
-        {/* Token Waterfall Stacked Bar Chart */}
+        {/* Token Waterfall */}
         <ChartCard
           title="Token Waterfall"
           subtitle="Token breakdown per turn"
@@ -263,7 +293,7 @@ export default function SessionDetailPage() {
                   value: "Turn",
                   position: "insideBottom",
                   offset: -5,
-                  fill: "#94a3b8",
+                  fill: AXIS_TICK_FILL,
                   fontSize: 12,
                 }}
               />
@@ -284,7 +314,7 @@ export default function SessionDetailPage() {
                 }
               />
               <Legend
-                wrapperStyle={{ color: "#94a3b8", fontSize: 12 }}
+                wrapperStyle={{ color: "var(--text-secondary)", fontSize: 12 }}
               />
               <Bar
                 dataKey="inputTokens"
@@ -319,228 +349,46 @@ export default function SessionDetailPage() {
         </ChartCard>
       </div>
 
-      {/* Turn-by-Turn Timeline */}
+      {/* ── Conversation Timeline ─────────────────────────────── */}
       <ChartCard
-        title="Turn-by-Turn Timeline"
+        title="Conversation Timeline"
         subtitle={`${turns.length} turns in this session`}
         empty={turns.length === 0}
         emptyMessage="No turn data available for this session."
       >
-        <div className="space-y-0">
+        <div>
           {turns.map((turn, idx) => (
-            <div
+            <TurnCard
               key={turn.turnId}
-              className="relative flex gap-4"
-              style={{ paddingBottom: idx < turns.length - 1 ? 0 : undefined }}
-            >
-              {/* Vertical line */}
-              <div className="flex flex-col items-center" style={{ width: 24 }}>
-                <div
-                  className="h-3 w-3 rounded-full border-2 flex-shrink-0"
-                  style={{
-                    borderColor:
-                      turn.role === "user" ? "var(--accent)" : "var(--success)",
-                    backgroundColor:
-                      turn.role === "user"
-                        ? "rgba(99, 102, 241, 0.3)"
-                        : "rgba(34, 197, 94, 0.3)",
-                    marginTop: 4,
-                  }}
-                />
-                {idx < turns.length - 1 && (
-                  <div
-                    className="flex-1"
-                    style={{
-                      width: 1,
-                      backgroundColor: "var(--border)",
-                      minHeight: 24,
-                    }}
-                  />
-                )}
-              </div>
-
-              {/* Turn content */}
-              <div
-                className="flex-1 rounded-lg border p-3 mb-3"
-                style={{
-                  borderColor: "var(--border)",
-                  backgroundColor: "var(--bg-secondary)",
-                }}
-              >
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge
-                    variant={turn.role === "user" ? "accent" : "success"}
-                  >
-                    {turn.role}
-                  </Badge>
-                  <span
-                    className="text-xs"
-                    style={{ color: "var(--text-muted)" }}
-                  >
-                    {formatDateTime(turn.timestamp)}
-                  </span>
-                  <span
-                    className="ml-auto text-xs font-semibold tabular-nums"
-                    style={{ color: "var(--text-primary)" }}
-                  >
-                    {formatCost(turn.costUSD)}
-                  </span>
-                </div>
-                <div
-                  className="mt-2 flex flex-wrap gap-3 text-xs"
-                  style={{ color: "var(--text-secondary)" }}
-                >
-                  <span>
-                    In: {turn.inputTokens.toLocaleString()}
-                  </span>
-                  <span>
-                    Out: {turn.outputTokens.toLocaleString()}
-                  </span>
-                  {turn.cacheReadTokens > 0 && (
-                    <span>
-                      Cache Read: {turn.cacheReadTokens.toLocaleString()}
-                    </span>
-                  )}
-                  {turn.cacheWriteTokens > 0 && (
-                    <span>
-                      Cache Write: {turn.cacheWriteTokens.toLocaleString()}
-                    </span>
-                  )}
-                  {turn.stopReason && (
-                    <span style={{ color: "var(--text-muted)" }}>
-                      Stop: {turn.stopReason}
-                    </span>
-                  )}
-                </div>
-              </div>
-            </div>
+              turn={turn}
+              index={idx}
+              isLast={idx === turns.length - 1}
+              toolCalls={toolCallsByTurn.get(turn.turnId)}
+            />
           ))}
         </div>
       </ChartCard>
 
-      {/* Tool Calls Table */}
-      <ChartCard
-        title="Tool Calls"
-        subtitle={`${toolCalls.length} tool invocations`}
-        empty={toolCalls.length === 0}
-        emptyMessage="No tool calls recorded in this session."
-      >
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm">
-            <thead>
-              <tr
-                className="border-b text-xs uppercase tracking-wider"
-                style={{
-                  borderColor: "var(--border)",
-                  color: "var(--text-muted)",
-                }}
-              >
-                <th className="py-2 pr-4">Name</th>
-                <th className="py-2 pr-4">Type</th>
-                <th className="py-2 pr-4 text-right">Duration</th>
-                <th className="py-2 pr-4">Status</th>
-                <th className="py-2">Error</th>
-              </tr>
-            </thead>
-            <tbody>
-              {toolCalls.map((tc) => (
-                <tr
-                  key={tc.toolCallId}
-                  className="border-b"
-                  style={{ borderColor: "var(--border)" }}
-                >
-                  <td
-                    className="py-2.5 pr-4 font-medium"
-                    style={{ color: "var(--text-primary)" }}
-                  >
-                    {tc.toolName}
-                  </td>
-                  <td
-                    className="py-2.5 pr-4"
-                    style={{ color: "var(--text-secondary)" }}
-                  >
-                    {tc.toolType}
-                    {tc.mcpServer && (
-                      <span style={{ color: "var(--text-muted)" }}>
-                        {" "}
-                        ({tc.mcpServer})
-                      </span>
-                    )}
-                  </td>
-                  <td
-                    className="py-2.5 pr-4 text-right tabular-nums"
-                    style={{ color: "var(--text-secondary)" }}
-                  >
-                    {tc.durationMs != null
-                      ? `${tc.durationMs.toLocaleString()}ms`
-                      : "--"}
-                  </td>
-                  <td className="py-2.5 pr-4">
-                    <Badge variant={tc.success ? "success" : "danger"}>
-                      {tc.success ? "success" : "fail"}
-                    </Badge>
-                  </td>
-                  <td
-                    className="max-w-[300px] truncate py-2.5 text-xs"
-                    style={{ color: "var(--text-muted)" }}
-                    title={tc.errorMessage ?? undefined}
-                  >
-                    {tc.errorMessage ?? "--"}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </ChartCard>
+      {/* ── Tool Calls Summary ────────────────────────────────── */}
+      {toolCalls.length > 0 && (
+        <ChartCard
+          title="Tool Calls Summary"
+          subtitle={`${toolCalls.length} tool invocations across ${new Set(toolCalls.map((tc) => tc.toolName)).size} unique tools`}
+        >
+          <ToolCallsSummary toolCalls={toolCalls} />
+        </ChartCard>
+      )}
 
-      {/* Errors Panel */}
+      {/* ── Errors Panel ──────────────────────────────────────── */}
       {errors.length > 0 && (
         <ChartCard
           title="Errors"
           subtitle={`${errors.length} error${errors.length !== 1 ? "s" : ""} recorded`}
         >
-          <div className="space-y-3">
-            {errors.map((err) => (
-              <div
-                key={err.errorId}
-                className="rounded-lg border p-4"
-                style={{
-                  borderColor: "rgba(239, 68, 68, 0.3)",
-                  backgroundColor: "rgba(239, 68, 68, 0.05)",
-                }}
-              >
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant="danger">{err.errorType}</Badge>
-                  <Badge variant={err.isRetryable ? "warning" : "neutral"}>
-                    {err.isRetryable ? "retryable" : "not retryable"}
-                  </Badge>
-                  {err.retryCount > 0 && (
-                    <span
-                      className="text-xs"
-                      style={{ color: "var(--text-muted)" }}
-                    >
-                      {err.retryCount} retries
-                    </span>
-                  )}
-                  <span
-                    className="ml-auto text-xs"
-                    style={{ color: "var(--text-muted)" }}
-                  >
-                    {formatDateTime(err.timestamp)}
-                  </span>
-                </div>
-                <p
-                  className="mt-2 text-sm"
-                  style={{ color: "var(--text-secondary)" }}
-                >
-                  {err.message}
-                </p>
-              </div>
-            ))}
-          </div>
+          <ErrorPanel errors={errors} />
         </ChartCard>
       )}
     </div>
+    </ErrorBoundary>
   );
 }
