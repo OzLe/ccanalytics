@@ -41,7 +41,7 @@ export default function ChartCard({
         <div>
           <h3 className="text-h3 text-[var(--text-primary)]">{title}</h3>
           {subtitle && (
-            <p className="mt-0.5 text-[var(--font-small-size)] text-[var(--text-tertiary)]">
+            <p className="mt-0.5 text-[var(--font-small-size)] text-[var(--text-secondary)]">
               {subtitle}
             </p>
           )}

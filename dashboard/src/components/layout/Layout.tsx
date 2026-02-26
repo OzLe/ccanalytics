@@ -68,7 +68,7 @@ export default function Layout() {
           className={cn(
             "flex min-h-0 flex-1 flex-col overflow-auto",
             "bg-[var(--bg-base)]",
-            "px-[var(--space-5)] py-[var(--space-5)] sm:px-[var(--space-6)] sm:py-[var(--space-6)] lg:px-[var(--space-8)] lg:py-[var(--space-8)]",
+            "px-[var(--space-5)] py-[var(--space-6)] sm:px-[var(--space-6)] sm:py-[var(--space-8)] lg:px-[var(--space-8)] lg:py-[var(--space-8)] xl:px-[var(--space-10)]",
             "animate-fade-in"
           )}
         >

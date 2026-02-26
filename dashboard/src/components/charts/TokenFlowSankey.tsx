@@ -25,10 +25,6 @@ interface TLink {
 
 const MIN_HEIGHT = 350;
 
-const INPUT_COLOR = "#06b6d4";
-const CACHE_COLOR = "#22c55e";
-const OUTPUT_COLOR = "#6366f1";
-
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
@@ -42,6 +38,12 @@ export default function TokenFlowSankey({ data }: Props) {
 
   const render = useCallback(() => {
     if (!data || !svgRef.current || !containerRef.current) return;
+
+    const style = getComputedStyle(document.documentElement);
+    const INPUT_COLOR = style.getPropertyValue("--info").trim();
+    const CACHE_COLOR = style.getPropertyValue("--success").trim();
+    const OUTPUT_COLOR = style.getPropertyValue("--accent").trim();
+    const NODE_LABEL_COLOR = style.getPropertyValue("--text-primary").trim();
 
     const width = containerRef.current.clientWidth;
     const height = Math.max(MIN_HEIGHT, width * 0.45);
@@ -201,7 +203,7 @@ export default function TokenFlowSankey({ data }: Props) {
       .attr("y", (d) => ((d.y0 ?? 0) + (d.y1 ?? 0)) / 2)
       .attr("dy", "0.35em")
       .attr("text-anchor", (d) => ((d.x0 ?? 0) < width / 2 ? "start" : "end"))
-      .attr("fill", "#e2e8f0")
+      .attr("fill", NODE_LABEL_COLOR)
       .attr("font-size", 12)
       .attr("font-weight", 500)
       .attr("font-family", "'Inter', sans-serif")

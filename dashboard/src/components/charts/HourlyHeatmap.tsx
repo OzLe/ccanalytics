@@ -39,6 +39,13 @@ export default function HourlyHeatmap({ data }: Props) {
   const render = useCallback(() => {
     if (!data || !svgRef.current || !containerRef.current) return;
 
+    const style = getComputedStyle(document.documentElement);
+    const colorLow = style.getPropertyValue("--heatmap-hourly-low").trim();
+    const colorHigh = style.getPropertyValue("--heatmap-hourly-high").trim();
+    const colorHoverStroke = style.getPropertyValue("--heatmap-hover-stroke").trim();
+    const colorLabel = style.getPropertyValue("--heatmap-label").trim();
+    const colorLabelAlt = style.getPropertyValue("--heatmap-label-alt").trim();
+
     // Build value lookup: dayOfWeek (0=Mon..6=Sun) x hourOfDay (0..23)
     const valueMap = new Map<string, number>();
     for (const d of data) {
@@ -48,7 +55,7 @@ export default function HourlyHeatmap({ data }: Props) {
     const maxValue = d3.max(data, (d) => d.value) ?? 1;
 
     const colorScale = d3
-      .scaleSequential(d3.interpolate("#1e2235", "#facc15"))
+      .scaleSequential(d3.interpolate(colorLow, colorHigh))
       .domain([0, maxValue]);
 
     const marginLeft = 48;
@@ -75,7 +82,7 @@ export default function HourlyHeatmap({ data }: Props) {
       .attr("y", (_, i) => marginTop + i * (CELL_HEIGHT + CELL_GAP) + CELL_HEIGHT / 2)
       .attr("dy", "0.35em")
       .attr("text-anchor", "end")
-      .attr("fill", "#94a3b8")
+      .attr("fill", colorLabelAlt)
       .attr("font-size", 11)
       .attr("font-family", "'Inter', sans-serif")
       .text((d) => d);
@@ -92,7 +99,7 @@ export default function HourlyHeatmap({ data }: Props) {
       )
       .attr("y", marginTop - 8)
       .attr("text-anchor", "middle")
-      .attr("fill", "#7c8aa3")
+      .attr("fill", colorLabel)
       .attr("font-size", 10)
       .attr("font-family", "'Inter', sans-serif")
       .text((d) => d.label);
@@ -123,7 +130,7 @@ export default function HourlyHeatmap({ data }: Props) {
       .attr("fill", (d) => colorScale(d.value))
       .style("cursor", "pointer")
       .on("mouseenter", function (event, d) {
-        d3.select(this).attr("stroke", "#e2e8f0").attr("stroke-width", 1.5);
+        d3.select(this).attr("stroke", colorHoverStroke).attr("stroke-width", 1.5);
         const dayName = DAY_LABELS[d.day] ?? "";
         const hourLabel = formatHour(d.hour);
         tooltip

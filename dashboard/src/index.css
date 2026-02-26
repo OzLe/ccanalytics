@@ -155,6 +155,17 @@
   --z-modal: 70;
   --z-command-palette: 80;
 
+  /* ── Heatmap colors ──────────────────────── */
+  --treemap-color-low: #2a2d5e;
+  --heatmap-empty: #1a1d2e;
+  --heatmap-calendar-low: #1a3a2a;
+  --heatmap-calendar-high: #22c55e;
+  --heatmap-hourly-low: #1e2235;
+  --heatmap-hourly-high: #facc15;
+  --heatmap-hover-stroke: #e2e8f0;
+  --heatmap-label: #7c8aa3;
+  --heatmap-label-alt: #94a3b8;
+
   /* ── Animation tokens ──────────────────────────────────── */
   --duration-fast: 150ms;
   --duration-normal: 200ms;
@@ -492,9 +503,21 @@ body {
   color: var(--text-secondary);
 }
 
+/* ── Table scroll container — right-edge shadow scroll hint ── */
+.table-scroll-container {
+  position: relative;
+  background:
+    linear-gradient(to right, var(--bg-elevated) 30%, transparent) left center / 24px 100% no-repeat,
+    linear-gradient(to left, var(--bg-elevated) 30%, transparent) right center / 24px 100% no-repeat,
+    linear-gradient(to right, var(--border), transparent) left center / 8px 100% no-repeat,
+    linear-gradient(to left, var(--border), transparent) right center / 8px 100% no-repeat;
+  background-attachment: local, local, scroll, scroll;
+}
+
 /* ── Table row hover ───────────────────────────────────────── */
 .table-row-hover {
   transition: background-color 150ms ease;
+  height: 44px;
 }
 
 .table-row-hover:hover {
@@ -533,7 +556,7 @@ body {
 }
 
 .pagination-btn:disabled {
-  opacity: 0.3;
+  opacity: 0.5;
   cursor: not-allowed;
 }
 

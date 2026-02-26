@@ -78,7 +78,7 @@ function CostTrendLegend({
   models: string[];
 }) {
   return (
-    <div className="flex flex-wrap items-center justify-center gap-x-5 gap-y-2 pt-2">
+    <div className="flex flex-wrap items-center justify-center gap-x-[var(--space-5)] gap-y-[var(--space-2)] pt-[var(--space-2)]">
       {models.map((model, i) => (
         <div key={model} className="flex items-center gap-[var(--space-2)]">
           <span
@@ -218,6 +218,7 @@ export default function CostAnalysisPage() {
       {
         key: "model",
         header: "Model",
+        width: "9rem",
         render: (row) => (
           <span className="whitespace-nowrap font-medium text-[var(--text-primary)]">
             {row.model}
@@ -313,7 +314,7 @@ export default function CostAnalysisPage() {
             subtitle="Aggregate spending metrics for the selected period"
           />
         </div>
-        <div className="grid grid-cols-1 gap-[var(--space-5)] sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid grid-cols-2 gap-[var(--space-5)] lg:grid-cols-4">
         <KPICard
           label="Total Cost"
           value={formatCost(totalCost)}
@@ -371,7 +372,7 @@ export default function CostAnalysisPage() {
           <ResponsiveContainer width="100%" height={360}>
             <AreaChart
               data={formattedStackedData}
-              margin={{ top: 8, right: 8, bottom: 0, left: 0 }}
+              margin={{ top: 8, right: 20, bottom: 0, left: 0 }}
             >
               <defs>
                 {models.map((model, i) => {
@@ -401,7 +402,7 @@ export default function CostAnalysisPage() {
                 })}
               </defs>
               <CartesianGrid {...GRID_PROPS} />
-              <XAxis dataKey="date" {...X_AXIS_PROPS} />
+              <XAxis dataKey="date" {...X_AXIS_PROPS} interval="preserveStartEnd" />
               <YAxis
                 {...Y_AXIS_PROPS}
                 tickFormatter={(v: number) => `$${v.toFixed(2)}`}
@@ -478,7 +479,7 @@ export default function CostAnalysisPage() {
               </PieChart>
             </ResponsiveContainer>
             {/* Legend underneath donut */}
-            <div className="flex flex-wrap justify-center gap-x-4 gap-y-1.5 pt-1">
+            <div className="flex flex-wrap justify-center gap-x-[var(--space-4)] gap-y-[var(--space-1\.5)] pt-[var(--space-1\.5)]">
               {donutData.map((d, i) => (
                 <div
                   key={d.name}
@@ -540,7 +541,7 @@ export default function CostAnalysisPage() {
               <BarChart
                 data={projectData}
                 layout="vertical"
-                margin={{ left: 120, right: 16 }}
+                margin={{ left: 10, right: 20, top: 0, bottom: 0 }}
               >
                 <CartesianGrid
                   {...GRID_PROPS}
@@ -556,8 +557,9 @@ export default function CostAnalysisPage() {
                   type="category"
                   dataKey="name"
                   {...Y_AXIS_PROPS}
-                  width={110}
+                  width={130}
                   tick={{ fill: AXIS_TICK_FILL, fontSize: 11 }}
+                  tickFormatter={(v: string) => v.length > 20 ? `${v.slice(0, 18)}…` : v}
                 />
                 <Tooltip
                   content={

@@ -154,7 +154,7 @@ export default function DataTable<T>({
         className
       )}
     >
-      <div className="overflow-x-auto">
+      <div className="table-scroll-container overflow-x-auto">
         <table className="w-full min-w-[800px] border-collapse">
           {/* ── Header ──────────────────────────────────────── */}
           <thead>
@@ -163,8 +163,8 @@ export default function DataTable<T>({
                 <th
                   key={col.key}
                   className={cn(
-                    "px-[var(--space-4)] py-[var(--space-3)]",
-                    "text-overline",
+                    "px-[var(--space-4)] pt-[var(--space-4)] pb-[var(--space-3)]",
+                    "text-overline text-[var(--text-secondary)]",
                     alignClass[col.align ?? "left"],
                     col.sortable && "table-header-sortable cursor-pointer select-none",
                     col.sortable && "group"

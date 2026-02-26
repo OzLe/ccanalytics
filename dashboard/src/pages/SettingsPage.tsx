@@ -1,13 +1,13 @@
 import { cn } from "@/lib/utils";
 import { SectionHeader } from "@/components/ui/SectionHeader";
-import KPICard from "@/components/ui/KPICard";
 import { Button } from "@/components/ui/Button";
 import ErrorBoundary from "@/components/ui/ErrorBoundary";
+import { Moon } from "lucide-react";
 
 export default function SettingsPage() {
   return (
     <ErrorBoundary onRetry={() => window.location.reload()}>
-      <div className="min-h-0 flex-1 space-y-[var(--space-8)] overflow-y-auto">
+      <div className="space-y-[var(--space-8)]">
         {/* ── General ──────────────────────────────────────────── */}
         <section className="space-y-[var(--space-5)]">
           <SectionHeader
@@ -22,22 +22,37 @@ export default function SettingsPage() {
               "bg-[var(--bg-surface)] p-[var(--space-6)]"
             )}
           >
-            <label className="text-overline text-[var(--text-secondary)]">
+            <label className="text-overline text-[var(--text-primary)]">
               Database Path
             </label>
-            <p className="mt-[var(--space-2)] rounded-[var(--radius-md)] bg-[var(--bg-elevated)] px-[var(--space-3)] py-[var(--space-2)] text-small text-[var(--text-primary)] border border-[var(--border)]">
+            <p className="mt-[var(--space-2)] rounded-[var(--radius-md)] bg-[var(--bg-elevated)] px-[var(--space-3)] py-[var(--space-2)] text-body text-[var(--text-primary)] border border-[var(--border)] font-mono">
               ~/.ccanalytics/ccanalytics.db
             </p>
           </div>
 
-          {/* Theme card */}
-          <div className="grid grid-cols-1 gap-[var(--space-5)] sm:grid-cols-2">
-            <KPICard
-              label="Theme"
-              value="Dark"
-              type="sessions"
-              trend={{ value: 0, label: "(Only dark mode available)" }}
-            />
+          {/* Theme info card */}
+          <div
+            className={cn(
+              "rounded-[var(--radius-xl)] border border-[var(--border)]",
+              "bg-[var(--bg-surface)] p-[var(--space-6)]"
+            )}
+          >
+            <div className="flex items-center gap-[var(--space-3)]">
+              <div
+                className={cn(
+                  "flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--radius-md)]",
+                  "bg-[var(--bg-overlay)] text-[var(--accent)]"
+                )}
+              >
+                <Moon size={16} strokeWidth={2} />
+              </div>
+              <div>
+                <p className="text-overline text-[var(--text-primary)]">Theme</p>
+                <p className="text-small text-[var(--text-secondary)]">
+                  Dark — only dark mode is available
+                </p>
+              </div>
+            </div>
           </div>
         </section>
 
@@ -56,7 +71,7 @@ export default function SettingsPage() {
           >
             <div className="flex flex-wrap items-center gap-[var(--space-4)]">
               <Button
-                variant="secondary"
+                variant="primary"
                 onClick={() => alert("Export coming soon")}
               >
                 Export Data

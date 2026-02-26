@@ -128,14 +128,14 @@ export default function Sidebar({ mobileOpen, onMobileClose, onToggleRef }: Side
               "rounded-[var(--radius-md)] bg-[var(--accent)]"
             )}
           >
-            <BarChart3 size={16} className="text-white" />
+            <BarChart3 size={16} className="text-[var(--text-primary)]" />
           </div>
           {!collapsed && (
             <div className="flex flex-col overflow-hidden">
               <span className="truncate text-[var(--font-body-size)] font-semibold tracking-tight text-[var(--text-primary)]">
                 CC Analytics
               </span>
-              <span className="text-[10px] text-[var(--text-tertiary)]">
+              <span className="text-[length:var(--font-overline-size)] text-[var(--text-tertiary)]">
                 v0.1.0
               </span>
             </div>

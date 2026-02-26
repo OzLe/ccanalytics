@@ -35,6 +35,12 @@ export default function CostTreemap({ data }: Props) {
     if (!data || data.length === 0 || !svgRef.current || !containerRef.current)
       return;
 
+    const style = getComputedStyle(document.documentElement);
+    const colorLow = style.getPropertyValue("--treemap-color-low").trim();
+    const colorHigh = style.getPropertyValue("--accent").trim();
+    const colorLabelPrimary = style.getPropertyValue("--text-primary").trim();
+    const colorLabelSecondary = style.getPropertyValue("--text-secondary").trim();
+
     const width = containerRef.current.clientWidth;
     const height = Math.max(MIN_HEIGHT, width * 0.5);
 
@@ -67,7 +73,7 @@ export default function CostTreemap({ data }: Props) {
 
     const maxCost = d3.max(data, (d) => d.totalCostUSD) ?? 1;
     const colorScale = d3
-      .scaleSequential(d3.interpolate("#2a2d5e", "#6366f1"))
+      .scaleSequential(d3.interpolate(colorLow, colorHigh))
       .domain([0, maxCost]);
 
     const tooltip = d3.select(tooltipRef.current);
@@ -88,7 +94,7 @@ export default function CostTreemap({ data }: Props) {
       .attr("height", (d) => Math.max(0, d.y1 - d.y0))
       .attr("fill", (d) => colorScale(d.value ?? 0))
       .attr("rx", 4)
-      .attr("stroke", "#1a1d2e")
+      .attr("stroke", "var(--bg-overlay)")
       .attr("stroke-width", 1)
       .style("cursor", "pointer")
       .attr("opacity", 0)
@@ -99,7 +105,7 @@ export default function CostTreemap({ data }: Props) {
     // Hover
     cell
       .on("mouseenter", function (event, d) {
-        d3.select(this).select("rect").attr("stroke", "#6366f1").attr("stroke-width", 2);
+        d3.select(this).select("rect").attr("stroke", colorHigh).attr("stroke-width", 2);
         const datum = d.data as TreemapDatum;
         tooltip
           .style("opacity", "1")
@@ -117,7 +123,7 @@ export default function CostTreemap({ data }: Props) {
           .style("top", `${event.offsetY - 28}px`);
       })
       .on("mouseleave", function () {
-        d3.select(this).select("rect").attr("stroke", "#1a1d2e").attr("stroke-width", 1);
+        d3.select(this).select("rect").attr("stroke", "var(--bg-overlay)").attr("stroke-width", 1);
         tooltip.style("opacity", "0");
       });
 
@@ -126,7 +132,7 @@ export default function CostTreemap({ data }: Props) {
       .append("text")
       .attr("x", 6)
       .attr("y", 18)
-      .attr("fill", "#e2e8f0")
+      .attr("fill", colorLabelPrimary)
       .attr("font-size", 12)
       .attr("font-weight", 600)
       .attr("font-family", "'Inter', sans-serif")
@@ -143,7 +149,7 @@ export default function CostTreemap({ data }: Props) {
       .append("text")
       .attr("x", 6)
       .attr("y", 34)
-      .attr("fill", "#94a3b8")
+      .attr("fill", colorLabelSecondary)
       .attr("font-size", 11)
       .attr("font-family", "'Inter', sans-serif")
       .text((d) => {

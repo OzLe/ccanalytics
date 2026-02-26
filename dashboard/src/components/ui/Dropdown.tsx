@@ -124,7 +124,7 @@ export default function Dropdown({
         aria-haspopup="listbox"
         className={cn(
           "inline-flex items-center gap-[6px] rounded-[var(--radius-full)]",
-          "px-[14px] py-[5px]",
+          "px-[14px] py-[5px] min-h-[44px] sm:min-h-0",
           "text-[12px] font-medium leading-[1.25] whitespace-nowrap",
           "transition-all duration-[var(--duration-fast)]",
           "border cursor-pointer",

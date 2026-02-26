@@ -26,6 +26,7 @@ const routeSubtitles: Record<string, string> = {
   "/tools": "Tool usage patterns and frequency",
   "/cache": "Cache hit rates and token savings",
   "/activity": "Timeline of coding activity",
+  "/settings": "Application preferences and configuration",
 };
 
 function getPageInfo(pathname: string): { title: string; subtitle: string } {
@@ -114,20 +115,20 @@ export default function TopBar({ onMenuClick }: TopBarProps) {
   return (
     <header
       className={cn(
-        "sticky top-0 z-10",
+        "sticky top-0 z-[var(--z-dropdown)]",
         "flex flex-col gap-[var(--space-3)] sm:flex-row sm:items-center sm:justify-between",
         "border-b border-[var(--border)]",
         "bg-[var(--bg-raised)]",
-        "px-[var(--space-6)] py-[var(--space-5)]",
+        "px-[var(--space-5)] py-[var(--space-4)] sm:px-[var(--space-6)] sm:py-[var(--space-5)]",
       )}
     >
       {/* Left: menu + title */}
-      <div className="flex items-center gap-[var(--space-3)]">
+      <div className="flex min-w-0 items-center gap-[var(--space-4)]">
         {/* Mobile menu button */}
         <button
           onClick={onMenuClick}
           className={cn(
-            "flex h-8 w-8 items-center justify-center rounded-[var(--radius-md)] lg:hidden",
+            "flex h-11 w-11 shrink-0 items-center justify-center rounded-[var(--radius-md)] lg:hidden",
             "text-[var(--text-secondary)] bg-transparent border-none cursor-pointer",
             "hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]",
             "transition-colors duration-[var(--duration-fast)]",
@@ -137,7 +138,7 @@ export default function TopBar({ onMenuClick }: TopBarProps) {
           <Menu size={20} />
         </button>
 
-        <div>
+        <div className="min-w-0">
           <h1 className="text-h2 text-[var(--text-primary)]">
             {pageInfo.title}
           </h1>
@@ -150,7 +151,7 @@ export default function TopBar({ onMenuClick }: TopBarProps) {
       </div>
 
       {/* Right: period + filters + cmd-k */}
-      <div className="flex flex-wrap items-center gap-[var(--space-2)]">
+      <div className="flex flex-wrap items-center gap-[var(--space-2)] overflow-hidden">
         {/* Period segmented control */}
         <div
           className={cn(
@@ -165,8 +166,8 @@ export default function TopBar({ onMenuClick }: TopBarProps) {
               onClick={() => setPeriod(opt.value)}
               className={cn(
                 "rounded-[var(--radius-full)]",
-                "px-[14px] py-[5px]",
-                "text-[12px] font-medium leading-[1.25] whitespace-nowrap",
+                "px-[14px] py-[5px] min-h-[44px] sm:min-h-0 sm:py-[5px]",
+                "text-caption whitespace-nowrap",
                 "border border-transparent cursor-pointer",
                 "transition-all duration-[var(--duration-normal)]",
                 filters.period === opt.value
@@ -217,7 +218,6 @@ export default function TopBar({ onMenuClick }: TopBarProps) {
         {/* Cmd+K hint */}
         <button
           onClick={() => {
-            /* Dispatch keyboard event to trigger CommandPalette */
             document.dispatchEvent(
               new KeyboardEvent("keydown", {
                 key: "k",
@@ -227,11 +227,11 @@ export default function TopBar({ onMenuClick }: TopBarProps) {
             );
           }}
           className={cn(
-            "hidden items-center gap-1 rounded-[var(--radius-full)] sm:inline-flex",
+            "hidden shrink-0 items-center gap-1 rounded-[var(--radius-full)] sm:inline-flex",
             "border border-[var(--border)] bg-[var(--bg-surface)]",
             "px-[10px] py-[4px]",
-            "text-[11px] font-medium text-[var(--text-tertiary)]",
-            "cursor-pointer",
+            "text-[length:var(--font-overline-size)] font-medium text-[var(--text-tertiary)]",
+            "cursor-pointer whitespace-nowrap",
             "hover:border-[var(--border-hover)] hover:text-[var(--text-secondary)]",
             "transition-all duration-[var(--duration-fast)]",
           )}

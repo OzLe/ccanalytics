@@ -103,7 +103,7 @@ function ScatterTooltipContent({ active, payload }: ScatterTooltipProps) {
     <div
       className={cn(
         "max-w-xs rounded-[var(--radius-lg)] border border-[var(--border)]",
-        "bg-[var(--bg-elevated)] px-3 py-2 shadow-[var(--shadow-xl)]"
+        "bg-[var(--bg-elevated)] px-[var(--space-3)] py-[var(--space-2)] shadow-[var(--shadow-xl)]"
       )}
     >
       <p className="mb-1 text-xs font-medium text-[var(--text-primary)]">
@@ -216,7 +216,7 @@ export default function PromptsPage() {
           : row.promptPreview;
         const isExpanded = expandedRow === row.turnId;
         return (
-          <div className="flex items-center gap-2 max-w-[280px]">
+          <div className="flex min-w-0 items-center gap-2">
             <ChevronRight
               size={14}
               className={cn(
@@ -319,7 +319,7 @@ export default function PromptsPage() {
 
   return (
     <ErrorBoundary onRetry={() => window.location.reload()}>
-    <div className="min-h-0 flex-1 space-y-[var(--space-8)] overflow-y-auto">
+    <div className="min-h-0 flex-1 space-y-[var(--space-8)] overflow-y-auto pb-[var(--space-8)]">
       {/* ════════════════════════════════════════════════════════ */}
       {/* Section 1: KPI Cards                                    */}
       {/* ════════════════════════════════════════════════════════ */}
@@ -330,7 +330,7 @@ export default function PromptsPage() {
             subtitle="Cost, complexity, and usage statistics for analyzed prompts"
           />
         </div>
-        <div className="grid grid-cols-1 gap-[var(--space-5)] sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid grid-cols-2 gap-[var(--space-5)] lg:grid-cols-4">
           <KPICard
             label="Total Prompts Analyzed"
             value={statsData ? statsData.totalPrompts.toLocaleString() : "--"}
@@ -394,11 +394,11 @@ export default function PromptsPage() {
                 "bg-[var(--bg-surface)] p-[var(--space-6)]"
               )}
             >
-              <p className="text-overline mb-[var(--space-2)] text-[var(--text-tertiary)]">
+              <p className="text-overline mb-[var(--space-2)] text-[var(--text-secondary)]">
                 Full Prompt
               </p>
-              <div className="max-h-64 overflow-y-auto">
-                <pre className="whitespace-pre-wrap text-sm leading-relaxed text-[var(--text-primary)]">
+              <div className="max-h-96 overflow-y-auto overflow-x-hidden">
+                <pre className="whitespace-pre-wrap break-words text-small leading-relaxed text-[var(--text-primary)]">
                   {row.promptPreview}
                 </pre>
               </div>

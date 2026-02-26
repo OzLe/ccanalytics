@@ -198,7 +198,7 @@ export default function DashboardPage() {
             subtitle="Key metrics for the selected period"
           />
         </div>
-        <div className="grid grid-cols-1 gap-[var(--space-5)] sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid grid-cols-2 gap-[var(--space-5)] lg:grid-cols-4">
           {[
             <KPICard
               key="total-cost"
@@ -271,7 +271,7 @@ export default function DashboardPage() {
             subtitle="How your usage is changing over time"
           />
         </div>
-        <div className="grid grid-cols-1 gap-[var(--space-6)] lg:grid-cols-2">
+        <div className="grid grid-cols-1 gap-[var(--space-6)] md:grid-cols-2">
 
           {/* ── Cost Trend Area Chart ──────────────────────────── */}
           <ChartCard
@@ -282,14 +282,14 @@ export default function DashboardPage() {
             action={
               <Link
                 to="/cost"
-                className="text-xs font-medium text-[var(--accent)] transition-colors hover:text-[var(--accent-hover)]"
+                className="text-xs font-medium text-[var(--accent-hover)] transition-colors hover:text-[var(--text-primary)]"
               >
                 View details
               </Link>
             }
           >
             <ResponsiveContainer width="100%" height={280}>
-              <AreaChart data={trendData}>
+              <AreaChart data={trendData} margin={{ top: 4, right: 20, bottom: 0, left: 0 }}>
                 <defs>
                   <linearGradient id="costAreaGradient" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="0%" stopColor={CHART_COLORS[0]} stopOpacity={0.25} />
@@ -297,7 +297,7 @@ export default function DashboardPage() {
                   </linearGradient>
                 </defs>
                 <CartesianGrid {...GRID_PROPS} />
-                <XAxis dataKey="date" {...X_AXIS_PROPS} />
+                <XAxis dataKey="date" {...X_AXIS_PROPS} interval="preserveStartEnd" />
                 <YAxis
                   {...Y_AXIS_PROPS}
                   tickFormatter={(v: number) => `$${v.toFixed(2)}`}
@@ -338,13 +338,13 @@ export default function DashboardPage() {
             action={
               <Link
                 to="/cost"
-                className="text-xs font-medium text-[var(--accent)] transition-colors hover:text-[var(--accent-hover)]"
+                className="text-xs font-medium text-[var(--accent-hover)] transition-colors hover:text-[var(--text-primary)]"
               >
                 View details
               </Link>
             }
           >
-            <div className="flex flex-col items-center">
+            <div className="flex flex-col items-center md:flex-row md:items-center md:gap-[var(--space-4)]">
               <ResponsiveContainer width="100%" height={220}>
                 <PieChart>
                   <Pie
@@ -376,11 +376,11 @@ export default function DashboardPage() {
               </ResponsiveContainer>
 
               {/* Legend */}
-              <div className="mt-[var(--space-3)] flex flex-wrap justify-center gap-x-[var(--space-4)] gap-y-[var(--space-2)]">
+              <div className="mt-[var(--space-3)] flex shrink-0 flex-col gap-y-[var(--space-2)] md:mt-0">
                 {modelPieData.map((entry, i) => (
                   <div key={entry.name} className="flex items-center gap-1.5 text-xs">
                     <span
-                      className="inline-block h-2.5 w-2.5 rounded-full"
+                      className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
                       style={{
                         backgroundColor: CHART_COLORS[i % CHART_COLORS.length],
                       }}
@@ -404,22 +404,23 @@ export default function DashboardPage() {
             action={
               <Link
                 to="/tools"
-                className="text-xs font-medium text-[var(--accent)] transition-colors hover:text-[var(--accent-hover)]"
+                className="text-xs font-medium text-[var(--accent-hover)] transition-colors hover:text-[var(--text-primary)]"
               >
                 View all
               </Link>
             }
           >
             <ResponsiveContainer width="100%" height={Math.max(260, topToolsData.length * 30)}>
-              <BarChart data={topToolsData} layout="vertical" margin={{ left: 100, right: 16 }}>
+              <BarChart data={topToolsData} layout="vertical" margin={{ left: 10, right: 20, top: 0, bottom: 0 }}>
                 <CartesianGrid {...GRID_PROPS} horizontal={false} vertical />
                 <XAxis type="number" {...X_AXIS_PROPS} />
                 <YAxis
                   type="category"
                   dataKey="name"
                   {...Y_AXIS_PROPS}
-                  width={95}
+                  width={120}
                   tick={{ fill: AXIS_TICK_FILL, fontSize: 11 }}
+                  tickFormatter={(v: string) => v.length > 18 ? `…${v.slice(-16)}` : v}
                 />
                 <Tooltip
                   content={
@@ -448,19 +449,19 @@ export default function DashboardPage() {
             action={
               <Link
                 to="/activity"
-                className="text-xs font-medium text-[var(--accent)] transition-colors hover:text-[var(--accent-hover)]"
+                className="text-xs font-medium text-[var(--accent-hover)] transition-colors hover:text-[var(--text-primary)]"
               >
                 View heatmap
               </Link>
             }
           >
             <ResponsiveContainer width="100%" height={260}>
-              <BarChart data={hourlyChartData}>
+              <BarChart data={hourlyChartData} margin={{ top: 4, right: 20, bottom: 0, left: 0 }}>
                 <CartesianGrid {...GRID_PROPS} />
                 <XAxis
                   dataKey="hour"
                   {...X_AXIS_PROPS}
-                  interval={2}
+                  interval={3}
                 />
                 <YAxis {...Y_AXIS_PROPS} />
                 <Tooltip
@@ -487,14 +488,14 @@ export default function DashboardPage() {
       {/* ================================================================ */}
       {/*  Quick Insights                                                  */}
       {/* ================================================================ */}
-      <section className="pb-4">
+      <section className="pb-[var(--space-4)]">
         <div className="mb-[var(--space-5)]">
           <SectionHeader
             title="Quick Insights"
             subtitle="Auto-generated observations from your data"
           />
         </div>
-        <div className="grid grid-cols-1 gap-[var(--space-5)] md:grid-cols-2 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-[var(--space-5)] lg:grid-cols-3">
 
           {/* Insight: Most expensive model */}
           {mostExpensiveModel && (

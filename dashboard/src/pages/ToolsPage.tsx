@@ -204,6 +204,7 @@ export default function ToolsPage() {
       key: "avgDurationMs",
       header: "Avg Time",
       align: "right" as const,
+      width: "120px",
       render: (row) => (
         <span className="tabular-nums text-[var(--text-secondary)]">
           {formatDuration(row.avgDurationMs / 1000)}
@@ -223,7 +224,7 @@ export default function ToolsPage() {
             subtitle="Aggregate tool call metrics for the selected period"
           />
         </div>
-        <div className="grid grid-cols-1 gap-[var(--space-5)] sm:grid-cols-3">
+        <div className="grid grid-cols-2 gap-[var(--space-5)] lg:grid-cols-3">
           <KPICard
             label="Total Tool Calls"
             value={totalToolCalls.toLocaleString()}
@@ -264,7 +265,7 @@ export default function ToolsPage() {
             <BarChart
               data={topToolsData}
               layout="vertical"
-              margin={{ left: 140 }}
+              margin={{ left: 10, right: 20, top: 0, bottom: 0 }}
             >
               <CartesianGrid {...GRID_PROPS} horizontal={false} vertical />
               <XAxis type="number" {...X_AXIS_PROPS} />
@@ -272,8 +273,9 @@ export default function ToolsPage() {
                 type="category"
                 dataKey="name"
                 {...Y_AXIS_PROPS}
-                width={130}
+                width={150}
                 tick={{ fill: AXIS_TICK_FILL, fontSize: 11 }}
+                tickFormatter={(v: string) => v.length > 22 ? `…${v.slice(-20)}` : v}
               />
               <Tooltip
                 content={
@@ -295,7 +297,7 @@ export default function ToolsPage() {
       </section>
 
       {/* ── Success Rates & Tool Chains ─────────────────────────── */}
-      <section className="space-y-[var(--space-3)]">
+      <section className="space-y-[var(--space-3)] pt-[var(--space-4)] border-t border-[var(--border-subtle)]">
         <SectionHeader
           title="Reliability & Patterns"
           subtitle="Tool success rates and common call chain patterns"

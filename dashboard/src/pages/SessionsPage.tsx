@@ -11,7 +11,6 @@ import {
   formatDuration,
   formatDateTime,
 } from "@/lib/formatters";
-import { SectionHeader } from "@/components/ui/SectionHeader";
 import { useSessions, useSessionStats } from "@/hooks/useSessionsQuery";
 import type { SessionListItem } from "@/lib/types";
 
@@ -100,7 +99,6 @@ export default function SessionsPage() {
         key: "startTime",
         header: "Start Time",
         sortable: true,
-        width: "180px",
         render: (row) => (
           <span className="whitespace-nowrap font-medium text-[var(--text-primary)]">
             {formatDateTime(row.startTime)}
@@ -113,7 +111,7 @@ export default function SessionsPage() {
         sortable: true,
         render: (row) => (
           <span
-            className="block max-w-[160px] truncate text-[var(--text-secondary)]"
+            className="block max-w-[200px] truncate text-[var(--text-primary)]"
             title={row.projectPath}
           >
             {shortProject(row.projectPath)}
@@ -203,13 +201,7 @@ export default function SessionsPage() {
     <div className="flex min-h-0 flex-1 flex-col gap-[var(--space-8)]">
       {/* KPI Stats Bar */}
       <section>
-        <div className="mb-[var(--space-5)]">
-          <SectionHeader
-            title="Sessions"
-            subtitle="Browse and filter your Claude Code sessions"
-          />
-        </div>
-      <div className="grid grid-cols-1 gap-[var(--space-5)] sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-[var(--space-5)] lg:grid-cols-4">
         <KPICard
           label="Total Sessions"
           value={kpiTotalSessions.toLocaleString()}

@@ -98,10 +98,10 @@ export default function ActivityPage() {
         <div className="mb-[var(--space-5)]">
           <SectionHeader
             title="Activity Overview"
-            subtitle="Message volume and session patterns for the selected period"
+            subtitle="Message volume and session patterns"
           />
         </div>
-        <div className="grid grid-cols-1 gap-[var(--space-5)] sm:grid-cols-3">
+        <div className="grid grid-cols-2 gap-[var(--space-5)] lg:grid-cols-3">
           <KPICard
             label="Peak Hour"
             value={peakHour}
@@ -124,7 +124,7 @@ export default function ActivityPage() {
       </section>
 
       {/* ── Hourly & Daily Charts ───────────────────────────────── */}
-      <section className="space-y-[var(--space-3)]">
+      <section className="space-y-[var(--space-4)]">
         <SectionHeader
           title="Usage Distribution"
           subtitle="How activity is distributed throughout the day and over time"
@@ -138,9 +138,9 @@ export default function ActivityPage() {
           empty={hourlyData.every((h) => h.messages === 0)}
         >
           <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={hourlyData}>
+            <BarChart data={hourlyData} margin={{ top: 4, right: 20, bottom: 0, left: 0 }}>
               <CartesianGrid {...GRID_PROPS} />
-              <XAxis dataKey="hour" {...X_AXIS_PROPS} interval={1} />
+              <XAxis dataKey="hour" {...X_AXIS_PROPS} interval={2} />
               <YAxis {...Y_AXIS_PROPS} />
               <Tooltip
                 content={
@@ -176,9 +176,9 @@ export default function ActivityPage() {
           empty={dailyData.length === 0}
         >
           <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={dailyData}>
+            <BarChart data={dailyData} margin={{ top: 4, right: 20, bottom: 0, left: 0 }}>
               <CartesianGrid {...GRID_PROPS} />
-              <XAxis dataKey="date" {...X_AXIS_PROPS} />
+              <XAxis dataKey="date" {...X_AXIS_PROPS} interval="preserveStartEnd" />
               <YAxis {...Y_AXIS_PROPS} />
               <Tooltip
                 content={

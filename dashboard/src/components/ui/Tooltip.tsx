@@ -47,7 +47,7 @@ export function Tooltip({ content, children, position = 'top', delay = 150, clas
           id={tooltipId}
           role="tooltip"
           className={cn(
-            'absolute px-[var(--space-2)] py-[var(--space-1)] rounded-[var(--radius-sm)] bg-[var(--bg-overlay)] text-[var(--text-primary)] text-xs whitespace-nowrap z-[var(--z-modal)] animate-fade-in pointer-events-none',
+            'absolute px-[var(--space-2)] py-[var(--space-1)] rounded-[var(--radius-sm)] bg-[var(--bg-overlay)] text-[var(--text-primary)] text-xs whitespace-nowrap z-[var(--z-command-palette)] animate-fade-in pointer-events-none',
             positionClasses[position],
             className
           )}

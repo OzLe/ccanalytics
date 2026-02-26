@@ -99,7 +99,7 @@ export default function TurnCard({
             </span>
           )}
           {turn.stopReason && (
-            <Badge variant="default" size="sm">
+            <Badge variant="default" size="md">
               {turn.stopReason}
             </Badge>
           )}

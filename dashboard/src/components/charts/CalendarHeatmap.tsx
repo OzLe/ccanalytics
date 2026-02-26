@@ -25,6 +25,13 @@ export default function CalendarHeatmap({ data }: Props) {
   const render = useCallback(() => {
     if (!data || !svgRef.current || !containerRef.current) return;
 
+    const style = getComputedStyle(document.documentElement);
+    const colorEmpty = style.getPropertyValue("--heatmap-empty").trim();
+    const colorLow = style.getPropertyValue("--heatmap-calendar-low").trim();
+    const colorHigh = style.getPropertyValue("--heatmap-calendar-high").trim();
+    const colorHoverStroke = style.getPropertyValue("--heatmap-hover-stroke").trim();
+    const colorLabel = style.getPropertyValue("--heatmap-label").trim();
+
     // Build a map of date string -> value
     const valueByDate = new Map<string, number>();
     for (const d of data) {
@@ -56,8 +63,8 @@ export default function CalendarHeatmap({ data }: Props) {
 
     const colorScale = d3
       .scaleSequential((t) => {
-        if (t === 0) return "#1a1d2e";
-        return d3.interpolate("#1a3a2a", "#22c55e")(t);
+        if (t === 0) return colorEmpty;
+        return d3.interpolate(colorLow, colorHigh)(t);
       })
       .domain([0, maxValue]);
 
@@ -87,7 +94,7 @@ export default function CalendarHeatmap({ data }: Props) {
       .attr("y", (_, i) => marginTop + i * (CELL_SIZE + CELL_GAP) + CELL_SIZE / 2)
       .attr("dy", "0.35em")
       .attr("text-anchor", "end")
-      .attr("fill", "#7c8aa3")
+      .attr("fill", colorLabel)
       .attr("font-size", 10)
       .attr("font-family", "'Inter', sans-serif")
       .text((d) => d);
@@ -115,7 +122,7 @@ export default function CalendarHeatmap({ data }: Props) {
       .join("text")
       .attr("x", (d) => d.x)
       .attr("y", marginTop - 6)
-      .attr("fill", "#7c8aa3")
+      .attr("fill", colorLabel)
       .attr("font-size", 10)
       .attr("font-family", "'Inter', sans-serif")
       .text((d) => d.label);
@@ -134,7 +141,7 @@ export default function CalendarHeatmap({ data }: Props) {
       .attr("fill", (d) => colorScale(d.value))
       .style("cursor", "pointer")
       .on("mouseenter", function (event, d) {
-        d3.select(this).attr("stroke", "#e2e8f0").attr("stroke-width", 1.5);
+        d3.select(this).attr("stroke", colorHoverStroke).attr("stroke-width", 1.5);
         const dateFormatted = d.date.toLocaleDateString("en-US", {
           weekday: "short",
           month: "short",

@@ -100,7 +100,7 @@ export default function CachePage() {
             subtitle="Token caching metrics and estimated savings"
           />
         </div>
-        <div className="grid grid-cols-1 gap-[var(--space-5)] sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid grid-cols-2 gap-[var(--space-5)] lg:grid-cols-4">
           <KPICard
             label="Cache Hit Rate"
             value={
@@ -153,7 +153,7 @@ export default function CachePage() {
       </section>
 
       {/* ── Cache Efficiency Trend ──────────────────────────────── */}
-      <section className="space-y-[var(--space-3)]">
+      <section className="space-y-[var(--space-3)] pt-[var(--space-4)] border-t border-[var(--border-subtle)]">
         <SectionHeader
           title="Efficiency Trend"
           subtitle="How cache hit rate changes over time"
@@ -165,7 +165,7 @@ export default function CachePage() {
           empty={trendData.length === 0}
         >
           <ResponsiveContainer width="100%" height={300}>
-            <AreaChart data={trendData}>
+            <AreaChart data={trendData} margin={{ top: 4, right: 20, bottom: 0, left: 0 }}>
               <defs>
                 <linearGradient id="cacheGradient" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%" stopColor={CHART_COLORS[4]} stopOpacity={0.3} />
@@ -173,10 +173,13 @@ export default function CachePage() {
                 </linearGradient>
               </defs>
               <CartesianGrid {...GRID_PROPS} />
-              <XAxis dataKey="date" {...X_AXIS_PROPS} />
+              <XAxis dataKey="date" {...X_AXIS_PROPS} interval="preserveStartEnd" />
               <YAxis
                 {...Y_AXIS_PROPS}
-                domain={[0, 100]}
+                domain={([dataMin, _dataMax]: [number, number]) => {
+                  const floor = Math.max(0, Math.floor(dataMin / 10) * 10 - 10);
+                  return [floor, 100];
+                }}
                 tickFormatter={(v: number) => `${v}%`}
               />
               <Tooltip
@@ -201,7 +204,7 @@ export default function CachePage() {
       </section>
 
       {/* ── Token Breakdown ─────────────────────────────────────── */}
-      <section className="space-y-[var(--space-3)]">
+      <section className="space-y-[var(--space-3)] pt-[var(--space-4)] border-t border-[var(--border-subtle)]">
         <SectionHeader
           title="Token Breakdown"
           subtitle="How input tokens are distributed across cache layers"
@@ -229,7 +232,7 @@ export default function CachePage() {
                     />
                   }
                 />
-                <Legend wrapperStyle={{ color: "var(--text-secondary)", fontSize: 12 }} />
+                <Legend wrapperStyle={{ color: "var(--text-secondary)", fontSize: 13 }} />
                 <Bar
                   dataKey="cacheRead"
                   name="Cache Read"
@@ -262,7 +265,7 @@ export default function CachePage() {
                     Cache Read
                   </p>
                   <p
-                    className="text-sm font-semibold"
+                    className="text-small font-semibold"
                     style={{ color: CHART_COLORS[4] }}
                   >
                     {formatTokens(metrics.data.cacheReadTokens)}
@@ -273,7 +276,7 @@ export default function CachePage() {
                     Cache Write
                   </p>
                   <p
-                    className="text-sm font-semibold"
+                    className="text-small font-semibold"
                     style={{ color: CHART_COLORS[1] }}
                   >
                     {formatTokens(metrics.data.cacheWriteTokens)}
@@ -284,7 +287,7 @@ export default function CachePage() {
                     Uncached
                   </p>
                   <p
-                    className="text-sm font-semibold"
+                    className="text-small font-semibold"
                     style={{ color: CHART_COLORS[3] }}
                   >
                     {formatTokens(metrics.data.uncachedInputTokens)}
@@ -302,9 +305,9 @@ export default function CachePage() {
             empty={dailyTokenData.length === 0}
           >
             <ResponsiveContainer width="100%" height={280}>
-              <BarChart data={dailyTokenData}>
+              <BarChart data={dailyTokenData} margin={{ top: 4, right: 20, bottom: 0, left: 0 }}>
                 <CartesianGrid {...GRID_PROPS} />
-                <XAxis dataKey="date" {...X_AXIS_PROPS} />
+                <XAxis dataKey="date" {...X_AXIS_PROPS} interval="preserveStartEnd" />
                 <YAxis
                   {...Y_AXIS_PROPS}
                   tickFormatter={(v: number) => formatTokens(v)}
@@ -317,7 +320,7 @@ export default function CachePage() {
                     />
                   }
                 />
-                <Legend wrapperStyle={{ color: "var(--text-secondary)", fontSize: 12 }} />
+                <Legend wrapperStyle={{ color: "var(--text-secondary)", fontSize: 13 }} />
                 <Bar
                   dataKey="Cache Read"
                   fill={CHART_COLORS[4]}

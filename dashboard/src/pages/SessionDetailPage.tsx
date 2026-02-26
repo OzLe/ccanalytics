@@ -113,7 +113,7 @@ export default function SessionDetailPage() {
           <Skeleton shape="text" className="h-6 w-20" />
         </div>
         {/* KPIs skeleton */}
-        <div className="grid grid-cols-1 gap-[var(--space-4)] sm:grid-cols-3 lg:grid-cols-5">
+        <div className="grid grid-cols-2 gap-[var(--space-5)] lg:grid-cols-4">
           {Array.from({ length: 5 }).map((_, i) => (
             <KPICard key={i} label="" value="" loading />
           ))}
@@ -130,7 +130,7 @@ export default function SessionDetailPage() {
         <button
           onClick={() => navigate("/sessions")}
           className={cn(
-            "inline-flex items-center gap-[var(--space-2)] text-small font-medium",
+            "inline-flex min-h-[44px] items-center gap-[var(--space-2)] text-small font-medium",
             "text-[var(--text-secondary)] transition-colors duration-[var(--duration-fast)]",
             "hover:text-[var(--accent)]"
           )}
@@ -161,7 +161,7 @@ export default function SessionDetailPage() {
         <button
           onClick={() => navigate("/sessions")}
           className={cn(
-            "mb-[var(--space-4)] inline-flex items-center gap-[var(--space-2)]",
+            "mb-[var(--space-5)] inline-flex min-h-[44px] items-center gap-[var(--space-2)]",
             "text-small font-medium text-[var(--text-secondary)]",
             "transition-colors duration-[var(--duration-fast)]",
             "hover:text-[var(--accent)]"
@@ -175,24 +175,24 @@ export default function SessionDetailPage() {
           <h1 className="text-h1 text-[var(--text-primary)]">
             Session Detail
           </h1>
-          <Badge variant="accent" dot>
+          <Badge variant="accent" size="md" dot>
             {shortModel}
           </Badge>
-          <Badge variant="default" dot>
-            <Folder size={12} className="shrink-0" />
+          <Badge variant="default" size="md" dot>
+            <Folder size={13} className="shrink-0" />
             {shortProject}
           </Badge>
         </div>
 
         {/* Meta row */}
-        <div className="mt-[var(--space-2)] flex flex-wrap items-center gap-[var(--space-4)]">
-          <span className="inline-flex items-center gap-[var(--space-1)] text-small text-[var(--text-tertiary)]">
-            <Calendar size={13} />
+        <div className="mt-[var(--space-3)] flex flex-wrap items-center gap-[var(--space-5)]">
+          <span className="inline-flex items-center gap-[var(--space-2)] text-small text-[var(--text-secondary)]">
+            <Calendar size={14} />
             {formatDateTime(session.startTime)}
-            {session.endTime ? ` - ${formatDateTime(session.endTime)}` : ""}
+            {session.endTime ? ` – ${formatDateTime(session.endTime)}` : ""}
           </span>
-          <span className="inline-flex items-center gap-[var(--space-1)] text-small text-[var(--text-tertiary)]">
-            <Clock size={13} />
+          <span className="inline-flex items-center gap-[var(--space-2)] text-small text-[var(--text-secondary)]">
+            <Clock size={14} />
             {formatDuration(session.durationMinutes * 60)}
           </span>
           <Badge variant="default" size="sm">
@@ -202,7 +202,7 @@ export default function SessionDetailPage() {
       </div>
 
       {/* ── KPI Cards ─────────────────────────────────────────── */}
-      <div className="grid grid-cols-1 gap-[var(--space-4)] sm:grid-cols-3 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-[var(--space-5)] lg:grid-cols-5">
         <KPICard
           label="Total Cost"
           value={formatCost(session.totalCostUSD)}
@@ -239,11 +239,12 @@ export default function SessionDetailPage() {
           empty={costAccumData.length === 0}
         >
           <ResponsiveContainer width="100%" height={300}>
-            <LineChart data={costAccumData}>
+            <LineChart data={costAccumData} margin={{ top: 4, right: 20, bottom: 4, left: 0 }}>
               <CartesianGrid {...GRID_PROPS} />
               <XAxis
                 dataKey="turn"
                 {...X_AXIS_PROPS}
+                interval="preserveStartEnd"
                 label={{
                   value: "Turn",
                   position: "insideBottom",
@@ -284,11 +285,12 @@ export default function SessionDetailPage() {
           empty={tokenWaterfallData.length === 0}
         >
           <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={tokenWaterfallData}>
+            <BarChart data={tokenWaterfallData} margin={{ top: 4, right: 20, bottom: 4, left: 0 }}>
               <CartesianGrid {...GRID_PROPS} />
               <XAxis
                 dataKey="turn"
                 {...X_AXIS_PROPS}
+                interval="preserveStartEnd"
                 label={{
                   value: "Turn",
                   position: "insideBottom",
@@ -314,7 +316,7 @@ export default function SessionDetailPage() {
                 }
               />
               <Legend
-                wrapperStyle={{ color: "var(--text-secondary)", fontSize: 12 }}
+                wrapperStyle={{ color: "var(--text-secondary)", fontSize: 13 }}
               />
               <Bar
                 dataKey="inputTokens"

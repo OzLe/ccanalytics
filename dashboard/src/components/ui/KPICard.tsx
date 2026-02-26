@@ -72,8 +72,8 @@ function TrendIndicator({ value, label }: { value: number; label?: string }) {
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1 rounded-[var(--radius-full)] px-2 py-0.5",
-        "text-xs font-medium",
+        "inline-flex items-center gap-[var(--space-1)] rounded-[var(--radius-full)] px-[var(--space-2)] py-px",
+        "text-caption font-medium",
         color,
         bg
       )}
@@ -81,7 +81,7 @@ function TrendIndicator({ value, label }: { value: number; label?: string }) {
       <Icon size={12} strokeWidth={2.5} />
       {Math.abs(value).toFixed(1)}%
       {label && (
-        <span className="text-[var(--text-tertiary)]">{label}</span>
+        <span className="text-[var(--text-secondary)]">{label}</span>
       )}
     </span>
   );
@@ -117,8 +117,8 @@ export default function KPICard({
           className
         )}
       >
-        <Skeleton shape="text" className="mb-3 h-3 w-2/5" />
-        <Skeleton shape="text" className="mb-2 h-9 w-3/5" />
+        <Skeleton shape="text" className="mb-[var(--space-3)] h-3 w-2/5" />
+        <Skeleton shape="text" className="mb-[var(--space-2)] h-9 w-3/5" />
         <Skeleton shape="text" className="h-3 w-1/4" />
       </div>
     );
@@ -144,7 +144,10 @@ export default function KPICard({
       </div>
 
       {/* Display value */}
-      <p className="text-display mt-[var(--space-3)] text-[var(--text-primary)]">
+      <p className={cn(
+        "mt-[var(--space-3)] text-[var(--text-primary)]",
+        value.length > 12 ? "text-h1" : "text-display"
+      )}>
         {value}
       </p>
 

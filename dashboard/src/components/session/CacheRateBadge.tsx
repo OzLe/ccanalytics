@@ -31,13 +31,13 @@ export default function CacheRateBadge({ rate }: CacheRateBadgeProps) {
       {/* Mini progress bar */}
       <div
         className={cn(
-          "h-1.5 flex-1 rounded-[var(--radius-full)] min-w-[48px]",
+          "h-2 flex-1 rounded-[var(--radius-full)] min-w-[48px]",
           bgClass
         )}
       >
         <div
           className={cn(
-            "h-1.5 rounded-[var(--radius-full)] transition-all duration-[var(--duration-normal)]",
+            "h-2 rounded-[var(--radius-full)] transition-all duration-[var(--duration-normal)]",
             colorClass
           )}
           style={{ width: `${Math.max(pct, 2)}%` }}
