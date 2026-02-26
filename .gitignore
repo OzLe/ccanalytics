@@ -10,4 +10,5 @@ coverage/
 .env.local
 *.log
 tmp/
+src/version.ts
 .claude/

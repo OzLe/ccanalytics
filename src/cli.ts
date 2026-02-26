@@ -19,6 +19,7 @@ import { registerStatusCommand } from "./commands/status.js";
 import { registerExportCommand } from "./commands/export.js";
 import { registerWebCommand } from "./commands/web.js";
 import { registerInitCommand } from "./commands/init.js";
+import { FULL_VERSION } from "./version.js";
 
 /**
  * Build and return the configured Commander program.
@@ -34,7 +35,7 @@ export function createProgram(): Command {
     .description(
       "Local-first analytics for Claude Code sessions — cost tracking, cache efficiency, tool usage patterns",
     )
-    .version("0.1.0")
+    .version(FULL_VERSION)
     .option("--db <path>", "Path to DuckDB database file")
     .option("--claude-dir <path>", "Path to Claude data directory")
     .option(
