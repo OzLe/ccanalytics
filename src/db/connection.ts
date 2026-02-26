@@ -6,6 +6,7 @@
  * All other modules access the database through this class.
  */
 
+import { unlinkSync, existsSync } from "node:fs";
 import type { DuckDBInstance, DuckDBConnection } from "@duckdb/node-api";
 import { DatabaseError, ConnectionError } from "../errors.js";
 
@@ -26,17 +27,36 @@ export class ConnectionManager {
    * @throws ConnectionError if the connection cannot be established
    */
   async open(dbPath: string): Promise<void> {
-    // TODO: Implement DuckDB connection
-    // 1. Ensure parent directory exists (if not :memory:)
-    // 2. Create DuckDBInstance via @duckdb/node-api
-    // 3. Create DuckDBConnection from instance
-    // 4. Store references for later access
     try {
       const { DuckDBInstance: DuckDB } = await import("@duckdb/node-api");
       this.instance = await DuckDB.create(dbPath);
       this.connection = await this.instance.connect();
       this.dbPath = dbPath;
     } catch (err) {
+      const msg = (err as Error).message ?? "";
+      const walPath = `${dbPath}.wal`;
+      if (
+        dbPath !== ":memory:" &&
+        msg.includes("replaying WAL") &&
+        existsSync(walPath)
+      ) {
+        console.warn(
+          `[db] Corrupt WAL detected — removing ${walPath} and retrying`,
+        );
+        unlinkSync(walPath);
+        try {
+          const { DuckDBInstance: DuckDB } = await import("@duckdb/node-api");
+          this.instance = await DuckDB.create(dbPath);
+          this.connection = await this.instance.connect();
+          this.dbPath = dbPath;
+          return;
+        } catch (retryErr) {
+          throw new ConnectionError(
+            `Failed to connect to DuckDB at ${dbPath} after WAL recovery`,
+            retryErr as Error,
+          );
+        }
+      }
       throw new ConnectionError(
         `Failed to connect to DuckDB at ${dbPath}`,
         err as Error,
