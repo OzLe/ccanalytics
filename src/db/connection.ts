@@ -16,6 +16,7 @@ const CORRUPTION_PATTERNS = [
   "Corrupt database",
   "INTERNAL Error",
   "IO Error: Could not read",
+  "not a valid DuckDB database file",
   "Deserialization Error",
   "invalid file header",
 ];
