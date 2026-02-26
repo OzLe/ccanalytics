@@ -126,11 +126,16 @@ async function initViews(
     return;
   }
 
-  // Split on semicolons and execute each statement
-  const statements = viewsSql
+  // Strip comments before splitting so semicolons inside comments
+  // (e.g. "-- rates above 80%; effective") don't cause incorrect splits
+  const stripped = viewsSql
+    .replace(/--.*$/gm, "")
+    .replace(/\/\*[\s\S]*?\*\//g, "");
+
+  const statements = stripped
     .split(";")
     .map((s) => s.trim())
-    .filter((s) => s.length > 0 && !s.startsWith("--"));
+    .filter((s) => s.length > 0);
 
   for (const stmt of statements) {
     try {
