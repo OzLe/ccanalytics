@@ -10,6 +10,16 @@ import { unlinkSync, existsSync } from "node:fs";
 import type { DuckDBInstance, DuckDBConnection } from "@duckdb/node-api";
 import { DatabaseError, ConnectionError } from "../errors.js";
 
+/** Error messages that indicate an unrecoverable corrupt database file. */
+const CORRUPTION_PATTERNS = [
+  "Failed to load metadata pointer",
+  "Corrupt database",
+  "INTERNAL Error",
+  "IO Error: Could not read",
+  "Deserialization Error",
+  "invalid file header",
+];
+
 /**
  * Manages the DuckDB instance and connection lifecycle.
  * Enforces single-writer pattern: one instance, one connection per process.
@@ -33,13 +43,18 @@ export class ConnectionManager {
       this.connection = await this.instance.connect();
       this.dbPath = dbPath;
     } catch (err) {
+      if (dbPath === ":memory:") {
+        throw new ConnectionError(
+          `Failed to connect to DuckDB at ${dbPath}`,
+          err as Error,
+        );
+      }
+
       const msg = (err as Error).message ?? "";
       const walPath = `${dbPath}.wal`;
-      if (
-        dbPath !== ":memory:" &&
-        msg.includes("replaying WAL") &&
-        existsSync(walPath)
-      ) {
+
+      // --- Corrupt WAL recovery ---
+      if (msg.includes("replaying WAL") && existsSync(walPath)) {
         console.warn(
           `[db] Corrupt WAL detected — removing ${walPath} and retrying`,
         );
@@ -51,17 +66,52 @@ export class ConnectionManager {
           this.dbPath = dbPath;
           return;
         } catch (retryErr) {
+          // WAL removal wasn't enough — fall through to corruption recovery
+          const retryMsg = (retryErr as Error).message ?? "";
+          if (!this.looksCorrupt(retryMsg)) {
+            throw new ConnectionError(
+              `Failed to connect to DuckDB at ${dbPath} after WAL recovery`,
+              retryErr as Error,
+            );
+          }
+        }
+      }
+
+      // --- Corrupt database file recovery ---
+      if (this.looksCorrupt(msg) && existsSync(dbPath)) {
+        console.warn(
+          `[db] Corrupt database detected — removing ${dbPath} and recreating`,
+        );
+        unlinkSync(dbPath);
+        if (existsSync(walPath)) {
+          unlinkSync(walPath);
+        }
+        try {
+          const { DuckDBInstance: DuckDB } = await import("@duckdb/node-api");
+          this.instance = await DuckDB.create(dbPath);
+          this.connection = await this.instance.connect();
+          this.dbPath = dbPath;
+          return;
+        } catch (retryErr) {
           throw new ConnectionError(
-            `Failed to connect to DuckDB at ${dbPath} after WAL recovery`,
+            `Failed to connect to DuckDB at ${dbPath} after removing corrupt database`,
             retryErr as Error,
           );
         }
       }
+
       throw new ConnectionError(
         `Failed to connect to DuckDB at ${dbPath}`,
         err as Error,
       );
     }
+  }
+
+  /**
+   * Check whether an error message indicates database file corruption.
+   */
+  private looksCorrupt(msg: string): boolean {
+    return CORRUPTION_PATTERNS.some((p) => msg.includes(p));
   }
 
   /**
