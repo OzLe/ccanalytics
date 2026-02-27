@@ -157,11 +157,11 @@
 
   /* ── Heatmap colors ──────────────────────── */
   --treemap-color-low: #2a2d5e;
-  --heatmap-empty: #1a1d2e;
-  --heatmap-calendar-low: #1a3a2a;
+  --heatmap-empty: #252a3e;
+  --heatmap-calendar-low: #1e4d32;
   --heatmap-calendar-high: #22c55e;
-  --heatmap-hourly-low: #1e2235;
-  --heatmap-hourly-high: #facc15;
+  --heatmap-hourly-low: #1a3a4a;
+  --heatmap-hourly-high: #06b6d4;
   --heatmap-hover-stroke: #e2e8f0;
   --heatmap-label: #7c8aa3;
   --heatmap-label-alt: #94a3b8;
