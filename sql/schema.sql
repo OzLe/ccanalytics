@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     git_branch            VARCHAR,
     claude_version        VARCHAR,
     project_path          VARCHAR,
+    project_name          VARCHAR,
     source_type           VARCHAR     DEFAULT 'claude-code'
 );
 

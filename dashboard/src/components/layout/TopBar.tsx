@@ -80,7 +80,7 @@ export default function TopBar({ onMenuClick }: TopBarProps) {
     queryKey: ["filters", "projects", filters.period],
     queryFn: () =>
       apiGet<{
-        data: { projectPath: string; sessionCount: number }[];
+        data: { projectPath: string; projectName?: string; sessionCount: number }[];
       }>(`/filters/projects?period=${filters.period}`),
   });
 
@@ -99,7 +99,7 @@ export default function TopBar({ onMenuClick }: TopBarProps) {
 
   const projectOptions = (projectsData?.data ?? []).map((p) => ({
     value: p.projectPath,
-    label: p.projectPath.split("/").pop() ?? p.projectPath,
+    label: p.projectName ?? p.projectPath.split("/").pop() ?? p.projectPath,
   }));
 
   const sourceOptions = (sourcesData?.data ?? []).map((s) => ({

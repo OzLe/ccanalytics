@@ -50,7 +50,8 @@ router.get("/projects", async (req, res, next) => {
     const filters = parseFilters(req);
 
     const sql = `
-      SELECT DISTINCT project_path,
+      SELECT project_path,
+             COALESCE(MAX(project_name), project_path) AS project_name,
              COUNT(*) AS session_count,
              MAX(start_time) AS last_active
       FROM sessions
@@ -64,6 +65,7 @@ router.get("/projects", async (req, res, next) => {
 
     const projects = result.rows.map((row: Record<string, unknown>) => ({
       projectPath: row.project_path as string,
+      projectName: row.project_name as string,
       sessionCount: Number(row.session_count),
       lastActive: row.last_active
         ? new Date(row.last_active as string).toISOString()

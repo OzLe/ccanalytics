@@ -149,7 +149,7 @@ export default function SessionDetailPage() {
   const turns: SessionTurn[] = session.turns ?? [];
   const toolCalls: SessionToolCall[] = session.toolCalls ?? [];
   const errors: SessionError[] = session.errors ?? [];
-  const shortProject = session.projectPath.split("/").pop() ?? session.projectPath;
+  const shortProject = session.projectName ?? session.projectPath.split("/").pop() ?? session.projectPath;
   const shortModel = session.model.split("/").pop() ?? session.model;
 
   return (

@@ -15,7 +15,7 @@
  * Skipped types: system:init, system:permission_*, system:compact_boundary,
  *   system:status, tool_use_summary
  *
- * Companion metadata: <session-dir>/<session-id>.json with title, cwd, model
+ * Companion metadata: <parent-dir>/<session-id>.json with title, cwd, userSelectedFolders, model
  */
 
 import * as fs from "node:fs/promises";
@@ -150,9 +150,34 @@ export class ClaudeDesktopAdapter implements ISourceAdapter {
       const sessionDirName = path.basename(dir);
       const metadata = await this.loadSessionMetadata(dir, sessionDirName);
 
+      // Resolve project_path with priority:
+      // 1. metadata.title — friendly name for local_ project directories
+      // 2. metadata.userSelectedFolders[0] — real FS path the user selected
+      // 3. metadata.cwd — only if it looks like a real path (not /sessions/...)
+      // 4. sessionDirName — last resort fallback
+      let projectPath = sessionDirName;
+      const metaCwd = metadata?.cwd as string | undefined;
+      const metaTitle = metadata?.title as string | undefined;
+      const userSelectedFolders = metadata?.userSelectedFolders as string[] | undefined;
+
+      if (metaCwd && !metaCwd.startsWith("/sessions/")) {
+        projectPath = metaCwd;
+      }
+      if (userSelectedFolders && userSelectedFolders.length > 0 && userSelectedFolders[0]) {
+        projectPath = userSelectedFolders[0];
+      }
+      if (metaTitle && sessionDirName.startsWith("local_")) {
+        projectPath = metaTitle;
+      }
+
+      // Store the title in metadata so buildInsertionBatch can use it
+      if (metadata && metaTitle) {
+        metadata.title = metaTitle;
+      }
+
       results.push({
         absolutePath: auditPath,
-        projectPath: (metadata?.cwd as string) ?? sessionDirName,
+        projectPath,
         sessionId: sessionDirName,
         isSidechain: false,
         sizeBytes: stat.size,
@@ -534,7 +559,8 @@ export class ClaudeDesktopAdapter implements ISourceAdapter {
         source_file: file.absolutePath,
         git_branch: first?.metadata.gitBranch ?? null,
         claude_version: first?.metadata.version ?? null,
-        project_path: (file.metadata?.cwd as string) ?? file.projectPath,
+        project_path: file.projectPath,
+        project_name: (file.metadata?.title as string) ?? file.projectPath.split("/").pop() ?? file.projectPath,
         source_type: this.sourceType,
       });
     }
@@ -549,15 +575,27 @@ export class ClaudeDesktopAdapter implements ISourceAdapter {
 
   /**
    * Try to load companion session metadata JSON.
-   * Looks for <session-id>.json in the session directory.
+   * Desktop stores the JSON in the PARENT directory of the session dir:
+   *   <orgId>/<accountId>/<projectId>.json  (companion to <projectId>/ dir)
+   * Falls back to looking inside the session directory for backwards compat.
    */
   private async loadSessionMetadata(
     sessionDir: string,
     sessionId: string,
   ): Promise<Record<string, unknown> | null> {
-    const metadataPath = path.join(sessionDir, `${sessionId}.json`);
+    // Primary: companion JSON lives in the parent directory
+    const parentPath = path.join(path.dirname(sessionDir), `${sessionId}.json`);
     try {
-      const raw = await fs.readFile(metadataPath, "utf-8");
+      const raw = await fs.readFile(parentPath, "utf-8");
+      return JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      // Fall through to legacy lookup inside the session dir
+    }
+
+    // Fallback: look inside the session directory itself
+    const legacyPath = path.join(sessionDir, `${sessionId}.json`);
+    try {
+      const raw = await fs.readFile(legacyPath, "utf-8");
       return JSON.parse(raw) as Record<string, unknown>;
     } catch {
       return null;

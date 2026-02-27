@@ -303,7 +303,7 @@ export default function CostAnalysisPage() {
     return costByProject.data
       .slice(0, 10)
       .map((p) => ({
-        name: p.projectPath.split("/").pop() ?? p.projectPath,
+        name: p.projectName ?? p.projectPath.split("/").pop() ?? p.projectPath,
         cost: p.totalCostUSD,
         sessions: p.sessionCount,
         fullPath: p.projectPath,

@@ -27,10 +27,14 @@ type SortField =
   | "cacheHitRate"
   | "totalCostUSD";
 
-/** Extract last path segment as short project name. */
-function shortProject(path: string | null | undefined): string {
-  if (!path) return "Unknown";
-  return path.split("/").pop() ?? path;
+/** Return human-readable project name, preferring the API-provided projectName. */
+function shortProject(
+  projectName: string | null | undefined,
+  projectPath: string | null | undefined,
+): string {
+  if (projectName) return projectName;
+  if (!projectPath) return "Unknown";
+  return projectPath.split("/").pop() ?? projectPath;
 }
 
 /** Extract model short name. */
@@ -114,7 +118,7 @@ export default function SessionsPage() {
             className="block max-w-[200px] truncate text-[var(--text-primary)]"
             title={row.projectPath}
           >
-            {shortProject(row.projectPath)}
+            {shortProject(row.projectName, row.projectPath)}
           </span>
         ),
       },

@@ -245,6 +245,7 @@ export interface SessionRow {
   git_branch: string | null;
   claude_version: string | null;
   project_path: string | null;
+  project_name: string | null;
   source_type: string | null;
 }
 

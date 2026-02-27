@@ -301,6 +301,7 @@ router.get("/by-project", async (req, res, next) => {
     const sql = `
       SELECT
         COALESCE(s.project_path, 'unknown') AS project_path,
+        COALESCE(MAX(s.project_name), COALESCE(s.project_path, 'unknown')) AS project_name,
         COUNT(DISTINCT s.session_id) AS session_count,
         COALESCE(SUM(ct.input_tokens), 0) AS total_input_tokens,
         COALESCE(SUM(ct.output_tokens), 0) AS total_output_tokens,
@@ -333,6 +334,7 @@ router.get("/by-project", async (req, res, next) => {
 
       return {
         projectPath: row.project_path,
+        projectName: row.project_name as string,
         totalCostUSD,
         sessionCount: Number(row.session_count),
         tokenBreakdown: {

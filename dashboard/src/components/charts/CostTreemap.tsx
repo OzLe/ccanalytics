@@ -54,7 +54,7 @@ export default function CostTreemap({ data }: Props) {
     const treemapData: TreemapRoot = {
       name: "root",
       children: data.map((p) => ({
-        name: p.projectPath.split("/").pop() ?? p.projectPath,
+        name: p.projectName ?? p.projectPath.split("/").pop() ?? p.projectPath,
         fullPath: p.projectPath,
         cost: p.totalCostUSD,
         sessions: p.sessionCount,

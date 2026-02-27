@@ -348,6 +348,7 @@ export class ClaudeCodeAdapter implements ISourceAdapter {
         git_branch: first?.metadata.gitBranch ?? null,
         claude_version: first?.metadata.version ?? null,
         project_path: file.projectPath,
+        project_name: file.projectPath.split("/").pop() ?? file.projectPath,
         source_type: this.sourceType,
       });
     }

@@ -175,6 +175,7 @@ export interface CostByModel {
 /** GET /api/cost/by-project row */
 export interface CostByProject {
   projectPath: string;
+  projectName?: string;
   totalCostUSD: number;
   sessionCount: number;
   tokenBreakdown: {
@@ -307,6 +308,7 @@ export interface SessionListItem {
   numToolCalls: number;
   cacheHitRate: number;
   projectPath: string;
+  projectName?: string;
   sourceType: string;
   /** Per-turn cost values used for sparkline rendering. */
   costPerTurn?: number[];
@@ -360,6 +362,7 @@ export interface SessionDetailResponse {
   numToolCalls: number;
   cacheHitRate: number;
   projectPath: string;
+  projectName?: string;
   sourceType: string;
   turns: SessionTurn[];
   toolCalls: SessionToolCall[];

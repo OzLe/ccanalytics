@@ -52,6 +52,7 @@ SELECT
     s.num_turns,
     s.num_tool_calls,
     s.project_path,
+    s.project_name,
     s.git_branch,
     s.claude_version,
     s.cwd,
