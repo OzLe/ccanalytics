@@ -17,6 +17,7 @@ import type {
 } from "../types/index.js";
 import type { QueryExecutor } from "../db/executor.js";
 import { buildTurnFilters, buildSessionFilters } from "./filter-builder.js";
+import { getPricing } from "../utils/pricing.js";
 
 /** Cost breakdown for a specific project. */
 export interface ProjectCostBreakdown {
@@ -58,6 +59,7 @@ export class CostAnalyzer {
         SUM(cost_usd) AS total_cost,
         SUM(input_tokens) AS input_tokens,
         SUM(output_tokens) AS output_tokens,
+        SUM(cache_creation_tokens) AS cache_creation_tokens,
         SUM(cache_read_tokens) AS cache_read_tokens,
         COUNT(*) AS turn_count,
         COUNT(DISTINCT session_id) AS session_count
@@ -75,6 +77,7 @@ export class CostAnalyzer {
       total_cost: number;
       input_tokens: number;
       output_tokens: number;
+      cache_creation_tokens: number;
       cache_read_tokens: number;
       turn_count: number;
       session_count: number;
@@ -86,6 +89,7 @@ export class CostAnalyzer {
       totalCost: Number(row.total_cost),
       inputTokens: Number(row.input_tokens),
       outputTokens: Number(row.output_tokens),
+      cacheCreationTokens: Number(row.cache_creation_tokens),
       cacheReadTokens: Number(row.cache_read_tokens),
       turnCount: Number(row.turn_count),
       sessionCount: Number(row.session_count),
@@ -128,21 +132,27 @@ export class CostAnalyzer {
     }>(sql, [range.start, range.end, ...f.params]);
 
     return result.rows.map((row) => {
-      const totalCostUSD = Number(row.total_cost_usd);
       const totalInputTokens = Number(row.total_input_tokens);
       const totalOutputTokens = Number(row.total_output_tokens);
       const totalCacheWriteTokens = Number(row.total_cache_write_tokens);
       const totalCacheReadTokens = Number(row.total_cache_read_tokens);
-      const totalTokens = totalInputTokens + totalOutputTokens + totalCacheWriteTokens + totalCacheReadTokens;
+
+      // Compute per-category costs using actual model rates
+      const p = getPricing(row.model);
+      const inputCostUSD = (totalInputTokens * p.inputPerM) / 1_000_000;
+      const outputCostUSD = (totalOutputTokens * p.outputPerM) / 1_000_000;
+      const cacheWriteCostUSD = (totalCacheWriteTokens * p.cacheCreationPerM) / 1_000_000;
+      const cacheReadCostUSD = (totalCacheReadTokens * p.cacheReadPerM) / 1_000_000;
+      const totalCostUSD = inputCostUSD + outputCostUSD + cacheWriteCostUSD + cacheReadCostUSD;
 
       return {
         model: row.model,
         sessionCount: Number(row.session_count),
         totalCostUSD,
-        inputCostUSD: totalTokens > 0 ? totalCostUSD * (totalInputTokens / totalTokens) : 0,
-        outputCostUSD: totalTokens > 0 ? totalCostUSD * (totalOutputTokens / totalTokens) : 0,
-        cacheWriteCostUSD: totalTokens > 0 ? totalCostUSD * (totalCacheWriteTokens / totalTokens) : 0,
-        cacheReadCostUSD: totalTokens > 0 ? totalCostUSD * (totalCacheReadTokens / totalTokens) : 0,
+        inputCostUSD,
+        outputCostUSD,
+        cacheWriteCostUSD,
+        cacheReadCostUSD,
         totalInputTokens,
         totalOutputTokens,
         totalCacheWriteTokens,
@@ -160,24 +170,26 @@ export class CostAnalyzer {
    */
   async getCostByProject(range: TimeRange, filters?: QueryFilters): Promise<ProjectCostBreakdown[]> {
     const f = buildSessionFilters(filters, 3);
+    // Query tokens grouped by project and model so we can apply correct per-model rates
     const sql = `
       SELECT
         COALESCE(s.project_path, 'unknown') AS project_path,
-        COALESCE(SUM(s.total_cost_usd), 0) AS total_cost_usd,
-        COUNT(*) AS session_count,
-        COALESCE(SUM(s.input_tokens), 0) AS total_input_tokens,
-        COALESCE(SUM(s.output_tokens), 0) AS total_output_tokens,
-        COALESCE(SUM(s.cache_creation_tokens), 0) AS total_cache_write_tokens,
-        COALESCE(SUM(s.cache_read_tokens), 0) AS total_cache_read_tokens
+        ct.model,
+        COUNT(DISTINCT s.session_id) AS session_count,
+        COALESCE(SUM(ct.input_tokens), 0) AS total_input_tokens,
+        COALESCE(SUM(ct.output_tokens), 0) AS total_output_tokens,
+        COALESCE(SUM(ct.cache_creation_tokens), 0) AS total_cache_write_tokens,
+        COALESCE(SUM(ct.cache_read_tokens), 0) AS total_cache_read_tokens
       FROM sessions s
+      JOIN conversation_turns ct ON ct.session_id = s.session_id AND ct.role = 'assistant'
       WHERE s.start_time >= $1 AND s.start_time < $2
         ${f.clauses.join("\n        ")}
-      GROUP BY s.project_path
-      ORDER BY total_cost_usd DESC
+      GROUP BY s.project_path, ct.model
+      ORDER BY project_path
     `;
     const result = await this.executor.query<{
       project_path: string;
-      total_cost_usd: number;
+      model: string;
       session_count: number;
       total_input_tokens: number;
       total_output_tokens: number;
@@ -185,31 +197,104 @@ export class CostAnalyzer {
       total_cache_read_tokens: number;
     }>(sql, [range.start, range.end, ...f.params]);
 
-    return result.rows.map((row) => {
-      const totalCostUSD = Number(row.total_cost_usd);
-      const totalInputTokens = Number(row.total_input_tokens);
-      const totalOutputTokens = Number(row.total_output_tokens);
-      const totalCacheWriteTokens = Number(row.total_cache_write_tokens);
-      const totalCacheReadTokens = Number(row.total_cache_read_tokens);
-      const totalTokens = totalInputTokens + totalOutputTokens + totalCacheWriteTokens + totalCacheReadTokens;
+    // Aggregate per-model rows into per-project breakdowns
+    const projectMap = new Map<string, {
+      sessionIds: Set<string>;
+      sessionCount: number;
+      inputCostUSD: number;
+      outputCostUSD: number;
+      cacheWriteCostUSD: number;
+      cacheReadCostUSD: number;
+      totalInputTokens: number;
+      totalOutputTokens: number;
+      totalCacheWriteTokens: number;
+      totalCacheReadTokens: number;
+    }>();
 
-      return {
-        projectPath: row.project_path,
+    for (const row of result.rows) {
+      const pp = row.project_path;
+      let agg = projectMap.get(pp);
+      if (!agg) {
+        agg = {
+          sessionIds: new Set(),
+          sessionCount: 0,
+          inputCostUSD: 0,
+          outputCostUSD: 0,
+          cacheWriteCostUSD: 0,
+          cacheReadCostUSD: 0,
+          totalInputTokens: 0,
+          totalOutputTokens: 0,
+          totalCacheWriteTokens: 0,
+          totalCacheReadTokens: 0,
+        };
+        projectMap.set(pp, agg);
+      }
+
+      const inTok = Number(row.total_input_tokens);
+      const outTok = Number(row.total_output_tokens);
+      const cwTok = Number(row.total_cache_write_tokens);
+      const crTok = Number(row.total_cache_read_tokens);
+
+      const p = getPricing(row.model);
+      agg.inputCostUSD += (inTok * p.inputPerM) / 1_000_000;
+      agg.outputCostUSD += (outTok * p.outputPerM) / 1_000_000;
+      agg.cacheWriteCostUSD += (cwTok * p.cacheCreationPerM) / 1_000_000;
+      agg.cacheReadCostUSD += (crTok * p.cacheReadPerM) / 1_000_000;
+      agg.totalInputTokens += inTok;
+      agg.totalOutputTokens += outTok;
+      agg.totalCacheWriteTokens += cwTok;
+      agg.totalCacheReadTokens += crTok;
+      // session_count from SQL is already per group; accumulate max across model rows
+      agg.sessionCount += Number(row.session_count);
+    }
+
+    // Deduplicate session counts: re-query distinct sessions per project
+    // The sessionCount from grouped rows may double-count sessions using multiple models.
+    // Use a simpler sub-query for accurate count.
+    const sessionCountSql = `
+      SELECT
+        COALESCE(s.project_path, 'unknown') AS project_path,
+        COUNT(*) AS session_count
+      FROM sessions s
+      WHERE s.start_time >= $1 AND s.start_time < $2
+        ${f.clauses.join("\n        ")}
+      GROUP BY s.project_path
+    `;
+    const sessionCountResult = await this.executor.query<{
+      project_path: string;
+      session_count: number;
+    }>(sessionCountSql, [range.start, range.end, ...f.params]);
+
+    const sessionCountMap = new Map<string, number>();
+    for (const row of sessionCountResult.rows) {
+      sessionCountMap.set(row.project_path, Number(row.session_count));
+    }
+
+    const projects: ProjectCostBreakdown[] = [];
+    for (const [projectPath, agg] of projectMap) {
+      const totalCostUSD = agg.inputCostUSD + agg.outputCostUSD + agg.cacheWriteCostUSD + agg.cacheReadCostUSD;
+      projects.push({
+        projectPath,
         totalCostUSD,
-        sessionCount: Number(row.session_count),
+        sessionCount: sessionCountMap.get(projectPath) ?? 0,
         tokenBreakdown: {
           totalCostUSD,
-          inputCostUSD: totalTokens > 0 ? totalCostUSD * (totalInputTokens / totalTokens) : 0,
-          outputCostUSD: totalTokens > 0 ? totalCostUSD * (totalOutputTokens / totalTokens) : 0,
-          cacheWriteCostUSD: totalTokens > 0 ? totalCostUSD * (totalCacheWriteTokens / totalTokens) : 0,
-          cacheReadCostUSD: totalTokens > 0 ? totalCostUSD * (totalCacheReadTokens / totalTokens) : 0,
-          totalInputTokens,
-          totalOutputTokens,
-          totalCacheWriteTokens,
-          totalCacheReadTokens,
+          inputCostUSD: agg.inputCostUSD,
+          outputCostUSD: agg.outputCostUSD,
+          cacheWriteCostUSD: agg.cacheWriteCostUSD,
+          cacheReadCostUSD: agg.cacheReadCostUSD,
+          totalInputTokens: agg.totalInputTokens,
+          totalOutputTokens: agg.totalOutputTokens,
+          totalCacheWriteTokens: agg.totalCacheWriteTokens,
+          totalCacheReadTokens: agg.totalCacheReadTokens,
         },
-      };
-    });
+      });
+    }
+
+    // Sort by cost descending
+    projects.sort((a, b) => b.totalCostUSD - a.totalCostUSD);
+
+    return projects;
   }
 
   /**
@@ -238,7 +323,9 @@ export class CostAnalyzer {
         DATE_TRUNC('${duckBucket}', timestamp) AS ts,
         COALESCE(SUM(cost_usd), 0) AS cost_usd,
         COALESCE(SUM(input_tokens), 0) AS input_tokens,
-        COALESCE(SUM(output_tokens), 0) AS output_tokens
+        COALESCE(SUM(output_tokens), 0) AS output_tokens,
+        COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens,
+        COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens
       FROM conversation_turns
       WHERE role = 'assistant'
         AND timestamp >= $1 AND timestamp < $2
@@ -251,6 +338,8 @@ export class CostAnalyzer {
       cost_usd: number;
       input_tokens: number;
       output_tokens: number;
+      cache_creation_tokens: number;
+      cache_read_tokens: number;
     }>(sql, [range.start, range.end, ...f.params]);
 
     return result.rows.map((row) => ({
@@ -258,6 +347,8 @@ export class CostAnalyzer {
       costUSD: Number(row.cost_usd),
       inputTokens: Number(row.input_tokens),
       outputTokens: Number(row.output_tokens),
+      cacheCreationTokens: Number(row.cache_creation_tokens),
+      cacheReadTokens: Number(row.cache_read_tokens),
     }));
   }
 
@@ -270,9 +361,10 @@ export class CostAnalyzer {
    */
   async getTotalCost(range: TimeRange, filters?: QueryFilters): Promise<CostBreakdown> {
     const f = buildTurnFilters(filters, 3);
+    // Group by model so we can apply correct per-model rates
     const sql = `
       SELECT
-        COALESCE(SUM(cost_usd), 0) AS total_cost_usd,
+        model,
         COALESCE(SUM(input_tokens), 0) AS total_input_tokens,
         COALESCE(SUM(output_tokens), 0) AS total_output_tokens,
         COALESCE(SUM(cache_creation_tokens), 0) AS total_cache_write_tokens,
@@ -281,17 +373,17 @@ export class CostAnalyzer {
       WHERE role = 'assistant'
         AND timestamp >= $1 AND timestamp < $2
         ${f.clauses.join("\n        ")}
+      GROUP BY model
     `;
     const result = await this.executor.query<{
-      total_cost_usd: number;
+      model: string;
       total_input_tokens: number;
       total_output_tokens: number;
       total_cache_write_tokens: number;
       total_cache_read_tokens: number;
     }>(sql, [range.start, range.end, ...f.params]);
 
-    const row = result.rows[0];
-    if (!row) {
+    if (result.rows.length === 0) {
       return {
         totalCostUSD: 0,
         inputCostUSD: 0,
@@ -305,19 +397,39 @@ export class CostAnalyzer {
       };
     }
 
-    const totalCostUSD = Number(row.total_cost_usd);
-    const totalInputTokens = Number(row.total_input_tokens);
-    const totalOutputTokens = Number(row.total_output_tokens);
-    const totalCacheWriteTokens = Number(row.total_cache_write_tokens);
-    const totalCacheReadTokens = Number(row.total_cache_read_tokens);
-    const totalTokens = totalInputTokens + totalOutputTokens + totalCacheWriteTokens + totalCacheReadTokens;
+    let totalInputTokens = 0;
+    let totalOutputTokens = 0;
+    let totalCacheWriteTokens = 0;
+    let totalCacheReadTokens = 0;
+    let inputCostUSD = 0;
+    let outputCostUSD = 0;
+    let cacheWriteCostUSD = 0;
+    let cacheReadCostUSD = 0;
+
+    for (const row of result.rows) {
+      const inTok = Number(row.total_input_tokens);
+      const outTok = Number(row.total_output_tokens);
+      const cwTok = Number(row.total_cache_write_tokens);
+      const crTok = Number(row.total_cache_read_tokens);
+
+      totalInputTokens += inTok;
+      totalOutputTokens += outTok;
+      totalCacheWriteTokens += cwTok;
+      totalCacheReadTokens += crTok;
+
+      const p = getPricing(row.model);
+      inputCostUSD += (inTok * p.inputPerM) / 1_000_000;
+      outputCostUSD += (outTok * p.outputPerM) / 1_000_000;
+      cacheWriteCostUSD += (cwTok * p.cacheCreationPerM) / 1_000_000;
+      cacheReadCostUSD += (crTok * p.cacheReadPerM) / 1_000_000;
+    }
 
     return {
-      totalCostUSD,
-      inputCostUSD: totalTokens > 0 ? totalCostUSD * (totalInputTokens / totalTokens) : 0,
-      outputCostUSD: totalTokens > 0 ? totalCostUSD * (totalOutputTokens / totalTokens) : 0,
-      cacheWriteCostUSD: totalTokens > 0 ? totalCostUSD * (totalCacheWriteTokens / totalTokens) : 0,
-      cacheReadCostUSD: totalTokens > 0 ? totalCostUSD * (totalCacheReadTokens / totalTokens) : 0,
+      totalCostUSD: inputCostUSD + outputCostUSD + cacheWriteCostUSD + cacheReadCostUSD,
+      inputCostUSD,
+      outputCostUSD,
+      cacheWriteCostUSD,
+      cacheReadCostUSD,
       totalInputTokens,
       totalOutputTokens,
       totalCacheWriteTokens,

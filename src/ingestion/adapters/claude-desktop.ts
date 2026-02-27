@@ -508,10 +508,8 @@ export class ClaudeDesktopAdapter implements ISourceAdapter {
         }
       }
 
-      // Use authoritative server-side cost when available from result:success
-      if (resultSuccess.totalCostUsd != null) {
-        totalCost = resultSuccess.totalCostUsd;
-      }
+      // Session total is always the sum of locally-computed per-turn costs
+      // for consistency across all adapters (do not override with result:success value).
 
       const first = msgs.length > 0 ? msgs[0] : null;
       const sessionUserTurns = userMessages.filter(

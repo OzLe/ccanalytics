@@ -17,6 +17,74 @@ import {
 const router = Router();
 
 /**
+ * SQL CASE expression for per-model input rate ($/MTok).
+ * Must match the prefix-matching order in src/utils/pricing.ts.
+ */
+const INPUT_RATE_CASE = `
+  CASE
+    WHEN model LIKE 'claude-opus-4-5%' OR model LIKE 'claude-opus-4-6%' THEN 5.0
+    WHEN model LIKE 'claude-opus-4%' THEN 15.0
+    WHEN model LIKE 'claude-sonnet-4%' THEN 3.0
+    WHEN model LIKE 'claude-haiku-4-5%' THEN 1.0
+    WHEN model LIKE 'claude-haiku-4%' THEN 0.8
+    WHEN model LIKE 'claude-3-7-sonnet%' THEN 3.0
+    WHEN model LIKE 'claude-3-5-sonnet%' THEN 3.0
+    WHEN model LIKE 'claude-3-5-haiku%' THEN 0.8
+    WHEN model LIKE 'claude-3-opus%' THEN 15.0
+    WHEN model LIKE 'claude-3-sonnet%' THEN 3.0
+    WHEN model LIKE 'claude-3-haiku%' THEN 0.25
+    ELSE 3.0
+  END`;
+
+const OUTPUT_RATE_CASE = `
+  CASE
+    WHEN model LIKE 'claude-opus-4-5%' OR model LIKE 'claude-opus-4-6%' THEN 25.0
+    WHEN model LIKE 'claude-opus-4%' THEN 75.0
+    WHEN model LIKE 'claude-sonnet-4%' THEN 15.0
+    WHEN model LIKE 'claude-haiku-4-5%' THEN 5.0
+    WHEN model LIKE 'claude-haiku-4%' THEN 4.0
+    WHEN model LIKE 'claude-3-7-sonnet%' THEN 15.0
+    WHEN model LIKE 'claude-3-5-sonnet%' THEN 15.0
+    WHEN model LIKE 'claude-3-5-haiku%' THEN 4.0
+    WHEN model LIKE 'claude-3-opus%' THEN 75.0
+    WHEN model LIKE 'claude-3-sonnet%' THEN 15.0
+    WHEN model LIKE 'claude-3-haiku%' THEN 1.25
+    ELSE 15.0
+  END`;
+
+const CACHE_CREATION_RATE_CASE = `
+  CASE
+    WHEN model LIKE 'claude-opus-4-5%' OR model LIKE 'claude-opus-4-6%' THEN 6.25
+    WHEN model LIKE 'claude-opus-4%' THEN 18.75
+    WHEN model LIKE 'claude-sonnet-4%' THEN 3.75
+    WHEN model LIKE 'claude-haiku-4-5%' THEN 1.25
+    WHEN model LIKE 'claude-haiku-4%' THEN 1.0
+    WHEN model LIKE 'claude-3-7-sonnet%' THEN 3.75
+    WHEN model LIKE 'claude-3-5-sonnet%' THEN 3.75
+    WHEN model LIKE 'claude-3-5-haiku%' THEN 1.0
+    WHEN model LIKE 'claude-3-opus%' THEN 18.75
+    WHEN model LIKE 'claude-3-sonnet%' THEN 3.75
+    WHEN model LIKE 'claude-3-haiku%' THEN 0.3
+    ELSE 3.75
+  END`;
+
+const CACHE_READ_RATE_CASE = `
+  CASE
+    WHEN model LIKE 'claude-opus-4-5%' OR model LIKE 'claude-opus-4-6%' THEN 0.5
+    WHEN model LIKE 'claude-opus-4%' THEN 1.5
+    WHEN model LIKE 'claude-sonnet-4%' THEN 0.3
+    WHEN model LIKE 'claude-haiku-4-5%' THEN 0.1
+    WHEN model LIKE 'claude-haiku-4%' THEN 0.08
+    WHEN model LIKE 'claude-3-7-sonnet%' THEN 0.3
+    WHEN model LIKE 'claude-3-5-sonnet%' THEN 0.3
+    WHEN model LIKE 'claude-3-5-haiku%' THEN 0.08
+    WHEN model LIKE 'claude-3-opus%' THEN 1.5
+    WHEN model LIKE 'claude-3-sonnet%' THEN 0.3
+    WHEN model LIKE 'claude-3-haiku%' THEN 0.03
+    ELSE 0.3
+  END`;
+
+/**
  * GET /api/cost/total
  *
  * Get total cost breakdown (input, output, cache_write, cache_read).
@@ -29,11 +97,14 @@ router.get("/total", async (req, res, next) => {
 
     const sql = `
       SELECT
-        COALESCE(SUM(cost_usd), 0) AS total_cost_usd,
         COALESCE(SUM(input_tokens), 0) AS total_input_tokens,
         COALESCE(SUM(output_tokens), 0) AS total_output_tokens,
         COALESCE(SUM(cache_creation_tokens), 0) AS total_cache_write_tokens,
-        COALESCE(SUM(cache_read_tokens), 0) AS total_cache_read_tokens
+        COALESCE(SUM(cache_read_tokens), 0) AS total_cache_read_tokens,
+        COALESCE(SUM(input_tokens * ${INPUT_RATE_CASE} / 1000000.0), 0) AS input_cost_usd,
+        COALESCE(SUM(output_tokens * ${OUTPUT_RATE_CASE} / 1000000.0), 0) AS output_cost_usd,
+        COALESCE(SUM(cache_creation_tokens * ${CACHE_CREATION_RATE_CASE} / 1000000.0), 0) AS cache_write_cost_usd,
+        COALESCE(SUM(cache_read_tokens * ${CACHE_READ_RATE_CASE} / 1000000.0), 0) AS cache_read_cost_usd
       FROM conversation_turns
       WHERE role = 'assistant'
         AND timestamp >= $1 AND timestamp < $2
@@ -66,28 +137,23 @@ router.get("/total", async (req, res, next) => {
       );
     }
 
-    const totalCostUSD = Number(row.total_cost_usd);
-    const totalInputTokens = Number(row.total_input_tokens);
-    const totalOutputTokens = Number(row.total_output_tokens);
-    const totalCacheWriteTokens = Number(row.total_cache_write_tokens);
-    const totalCacheReadTokens = Number(row.total_cache_read_tokens);
-    const totalTokens =
-      totalInputTokens + totalOutputTokens + totalCacheWriteTokens + totalCacheReadTokens;
+    const inputCostUSD = Number(row.input_cost_usd);
+    const outputCostUSD = Number(row.output_cost_usd);
+    const cacheWriteCostUSD = Number(row.cache_write_cost_usd);
+    const cacheReadCostUSD = Number(row.cache_read_cost_usd);
 
     res.json(
       envelope(
         {
-          totalCostUSD,
-          inputCostUSD: totalTokens > 0 ? totalCostUSD * (totalInputTokens / totalTokens) : 0,
-          outputCostUSD: totalTokens > 0 ? totalCostUSD * (totalOutputTokens / totalTokens) : 0,
-          cacheWriteCostUSD:
-            totalTokens > 0 ? totalCostUSD * (totalCacheWriteTokens / totalTokens) : 0,
-          cacheReadCostUSD:
-            totalTokens > 0 ? totalCostUSD * (totalCacheReadTokens / totalTokens) : 0,
-          totalInputTokens,
-          totalOutputTokens,
-          totalCacheWriteTokens,
-          totalCacheReadTokens,
+          totalCostUSD: inputCostUSD + outputCostUSD + cacheWriteCostUSD + cacheReadCostUSD,
+          inputCostUSD,
+          outputCostUSD,
+          cacheWriteCostUSD,
+          cacheReadCostUSD,
+          totalInputTokens: Number(row.total_input_tokens),
+          totalOutputTokens: Number(row.total_output_tokens),
+          totalCacheWriteTokens: Number(row.total_cache_write_tokens),
+          totalCacheReadTokens: Number(row.total_cache_read_tokens),
         },
         filters.period,
       ),
@@ -115,6 +181,7 @@ router.get("/daily", async (req, res, next) => {
         SUM(cost_usd) AS total_cost,
         SUM(input_tokens) AS input_tokens,
         SUM(output_tokens) AS output_tokens,
+        SUM(cache_creation_tokens) AS cache_creation_tokens,
         SUM(cache_read_tokens) AS cache_read_tokens,
         COUNT(*) AS turn_count,
         COUNT(DISTINCT session_id) AS session_count
@@ -139,6 +206,7 @@ router.get("/daily", async (req, res, next) => {
       totalCost: Number(row.total_cost),
       inputTokens: Number(row.input_tokens),
       outputTokens: Number(row.output_tokens),
+      cacheCreationTokens: Number(row.cache_creation_tokens),
       cacheReadTokens: Number(row.cache_read_tokens),
       turnCount: Number(row.turn_count),
       sessionCount: Number(row.session_count),
@@ -168,18 +236,21 @@ router.get("/by-model", async (req, res, next) => {
       SELECT
         ct.model,
         COUNT(DISTINCT ct.session_id) AS session_count,
-        COALESCE(SUM(ct.cost_usd), 0) AS total_cost_usd,
         COALESCE(SUM(ct.input_tokens), 0) AS total_input_tokens,
         COALESCE(SUM(ct.output_tokens), 0) AS total_output_tokens,
         COALESCE(SUM(ct.cache_creation_tokens), 0) AS total_cache_write_tokens,
-        COALESCE(SUM(ct.cache_read_tokens), 0) AS total_cache_read_tokens
+        COALESCE(SUM(ct.cache_read_tokens), 0) AS total_cache_read_tokens,
+        COALESCE(SUM(ct.input_tokens * ${INPUT_RATE_CASE.replaceAll("model", "ct.model")} / 1000000.0), 0) AS input_cost_usd,
+        COALESCE(SUM(ct.output_tokens * ${OUTPUT_RATE_CASE.replaceAll("model", "ct.model")} / 1000000.0), 0) AS output_cost_usd,
+        COALESCE(SUM(ct.cache_creation_tokens * ${CACHE_CREATION_RATE_CASE.replaceAll("model", "ct.model")} / 1000000.0), 0) AS cache_write_cost_usd,
+        COALESCE(SUM(ct.cache_read_tokens * ${CACHE_READ_RATE_CASE.replaceAll("model", "ct.model")} / 1000000.0), 0) AS cache_read_cost_usd
       FROM conversation_turns ct
       WHERE ct.role = 'assistant'
         AND ct.model IS NOT NULL AND ct.model NOT LIKE '<%>'
         AND ct.timestamp >= $1 AND ct.timestamp < $2
         ${filterClauses.join("\n        ")}
       GROUP BY ct.model
-      ORDER BY total_cost_usd DESC
+      ORDER BY input_cost_usd + output_cost_usd + cache_write_cost_usd + cache_read_cost_usd DESC
     `;
 
     const result = await query(sql, [
@@ -189,28 +260,23 @@ router.get("/by-model", async (req, res, next) => {
     ]);
 
     const rows = result.rows.map((row: Record<string, unknown>) => {
-      const totalCostUSD = Number(row.total_cost_usd);
-      const totalInputTokens = Number(row.total_input_tokens);
-      const totalOutputTokens = Number(row.total_output_tokens);
-      const totalCacheWriteTokens = Number(row.total_cache_write_tokens);
-      const totalCacheReadTokens = Number(row.total_cache_read_tokens);
-      const totalTokens =
-        totalInputTokens + totalOutputTokens + totalCacheWriteTokens + totalCacheReadTokens;
+      const inputCostUSD = Number(row.input_cost_usd);
+      const outputCostUSD = Number(row.output_cost_usd);
+      const cacheWriteCostUSD = Number(row.cache_write_cost_usd);
+      const cacheReadCostUSD = Number(row.cache_read_cost_usd);
 
       return {
         model: row.model,
         sessionCount: Number(row.session_count),
-        totalCostUSD,
-        inputCostUSD: totalTokens > 0 ? totalCostUSD * (totalInputTokens / totalTokens) : 0,
-        outputCostUSD: totalTokens > 0 ? totalCostUSD * (totalOutputTokens / totalTokens) : 0,
-        cacheWriteCostUSD:
-          totalTokens > 0 ? totalCostUSD * (totalCacheWriteTokens / totalTokens) : 0,
-        cacheReadCostUSD:
-          totalTokens > 0 ? totalCostUSD * (totalCacheReadTokens / totalTokens) : 0,
-        totalInputTokens,
-        totalOutputTokens,
-        totalCacheWriteTokens,
-        totalCacheReadTokens,
+        totalCostUSD: inputCostUSD + outputCostUSD + cacheWriteCostUSD + cacheReadCostUSD,
+        inputCostUSD,
+        outputCostUSD,
+        cacheWriteCostUSD,
+        cacheReadCostUSD,
+        totalInputTokens: Number(row.total_input_tokens),
+        totalOutputTokens: Number(row.total_output_tokens),
+        totalCacheWriteTokens: Number(row.total_cache_write_tokens),
+        totalCacheReadTokens: Number(row.total_cache_read_tokens),
       };
     });
 
@@ -231,20 +297,25 @@ router.get("/by-project", async (req, res, next) => {
     const filters = parseFilters(req);
     const f = buildSessionFilterClauses(filters, 3);
 
+    // Join conversation_turns to get per-model token data for correct rate-based costs
     const sql = `
       SELECT
         COALESCE(s.project_path, 'unknown') AS project_path,
-        COALESCE(SUM(s.total_cost_usd), 0) AS total_cost_usd,
-        COUNT(*) AS session_count,
-        COALESCE(SUM(s.input_tokens), 0) AS total_input_tokens,
-        COALESCE(SUM(s.output_tokens), 0) AS total_output_tokens,
-        COALESCE(SUM(s.cache_creation_tokens), 0) AS total_cache_write_tokens,
-        COALESCE(SUM(s.cache_read_tokens), 0) AS total_cache_read_tokens
+        COUNT(DISTINCT s.session_id) AS session_count,
+        COALESCE(SUM(ct.input_tokens), 0) AS total_input_tokens,
+        COALESCE(SUM(ct.output_tokens), 0) AS total_output_tokens,
+        COALESCE(SUM(ct.cache_creation_tokens), 0) AS total_cache_write_tokens,
+        COALESCE(SUM(ct.cache_read_tokens), 0) AS total_cache_read_tokens,
+        COALESCE(SUM(ct.input_tokens * ${INPUT_RATE_CASE.replaceAll("model", "ct.model")} / 1000000.0), 0) AS input_cost_usd,
+        COALESCE(SUM(ct.output_tokens * ${OUTPUT_RATE_CASE.replaceAll("model", "ct.model")} / 1000000.0), 0) AS output_cost_usd,
+        COALESCE(SUM(ct.cache_creation_tokens * ${CACHE_CREATION_RATE_CASE.replaceAll("model", "ct.model")} / 1000000.0), 0) AS cache_write_cost_usd,
+        COALESCE(SUM(ct.cache_read_tokens * ${CACHE_READ_RATE_CASE.replaceAll("model", "ct.model")} / 1000000.0), 0) AS cache_read_cost_usd
       FROM sessions s
+      JOIN conversation_turns ct ON ct.session_id = s.session_id AND ct.role = 'assistant'
       WHERE s.start_time >= $1 AND s.start_time < $2
         ${f.clauses.join("\n        ")}
       GROUP BY s.project_path
-      ORDER BY total_cost_usd DESC
+      ORDER BY input_cost_usd + output_cost_usd + cache_write_cost_usd + cache_read_cost_usd DESC
     `;
 
     const result = await query(sql, [
@@ -254,13 +325,11 @@ router.get("/by-project", async (req, res, next) => {
     ]);
 
     const rows = result.rows.map((row: Record<string, unknown>) => {
-      const totalCostUSD = Number(row.total_cost_usd);
-      const totalInputTokens = Number(row.total_input_tokens);
-      const totalOutputTokens = Number(row.total_output_tokens);
-      const totalCacheWriteTokens = Number(row.total_cache_write_tokens);
-      const totalCacheReadTokens = Number(row.total_cache_read_tokens);
-      const totalTokens =
-        totalInputTokens + totalOutputTokens + totalCacheWriteTokens + totalCacheReadTokens;
+      const inputCostUSD = Number(row.input_cost_usd);
+      const outputCostUSD = Number(row.output_cost_usd);
+      const cacheWriteCostUSD = Number(row.cache_write_cost_usd);
+      const cacheReadCostUSD = Number(row.cache_read_cost_usd);
+      const totalCostUSD = inputCostUSD + outputCostUSD + cacheWriteCostUSD + cacheReadCostUSD;
 
       return {
         projectPath: row.project_path,
@@ -268,16 +337,14 @@ router.get("/by-project", async (req, res, next) => {
         sessionCount: Number(row.session_count),
         tokenBreakdown: {
           totalCostUSD,
-          inputCostUSD: totalTokens > 0 ? totalCostUSD * (totalInputTokens / totalTokens) : 0,
-          outputCostUSD: totalTokens > 0 ? totalCostUSD * (totalOutputTokens / totalTokens) : 0,
-          cacheWriteCostUSD:
-            totalTokens > 0 ? totalCostUSD * (totalCacheWriteTokens / totalTokens) : 0,
-          cacheReadCostUSD:
-            totalTokens > 0 ? totalCostUSD * (totalCacheReadTokens / totalTokens) : 0,
-          totalInputTokens,
-          totalOutputTokens,
-          totalCacheWriteTokens,
-          totalCacheReadTokens,
+          inputCostUSD,
+          outputCostUSD,
+          cacheWriteCostUSD,
+          cacheReadCostUSD,
+          totalInputTokens: Number(row.total_input_tokens),
+          totalOutputTokens: Number(row.total_output_tokens),
+          totalCacheWriteTokens: Number(row.total_cache_write_tokens),
+          totalCacheReadTokens: Number(row.total_cache_read_tokens),
         },
       };
     });
@@ -318,7 +385,9 @@ router.get("/trend", async (req, res, next) => {
         DATE_TRUNC('${duckBucket}', timestamp) AS ts,
         COALESCE(SUM(cost_usd), 0) AS cost_usd,
         COALESCE(SUM(input_tokens), 0) AS input_tokens,
-        COALESCE(SUM(output_tokens), 0) AS output_tokens
+        COALESCE(SUM(output_tokens), 0) AS output_tokens,
+        COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens,
+        COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens
       FROM conversation_turns
       WHERE role = 'assistant'
         AND timestamp >= $1 AND timestamp < $2
@@ -338,6 +407,8 @@ router.get("/trend", async (req, res, next) => {
       costUSD: Number(row.cost_usd),
       inputTokens: Number(row.input_tokens),
       outputTokens: Number(row.output_tokens),
+      cacheCreationTokens: Number(row.cache_creation_tokens),
+      cacheReadTokens: Number(row.cache_read_tokens),
     }));
 
     res.json(envelope(rows, filters.period));

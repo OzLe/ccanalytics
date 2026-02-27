@@ -22,6 +22,7 @@ import type {
 } from "../types/index.js";
 import type { QueryExecutor } from "../db/executor.js";
 import { buildTurnFilters } from "./filter-builder.js";
+import { getPricing } from "../utils/pricing.js";
 
 /** Cache metrics for a single session. */
 export interface SessionCacheMetrics {
@@ -56,8 +57,10 @@ export class CacheAnalyzer {
    */
   async getCacheHitRate(range: TimeRange, filters?: QueryFilters): Promise<CacheMetrics> {
     const f = buildTurnFilters(filters, 3);
+    // Group by model to compute model-aware cache savings
     const sql = `
       SELECT
+        model,
         COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
         COALESCE(SUM(cache_creation_tokens), 0) AS cache_write_tokens,
         COALESCE(SUM(input_tokens), 0) AS total_input_tokens
@@ -65,27 +68,39 @@ export class CacheAnalyzer {
       WHERE role = 'assistant'
         AND timestamp >= $1 AND timestamp < $2
         ${f.clauses.join("\n        ")}
+      GROUP BY model
     `;
     const result = await this.executor.query<{
+      model: string;
       cache_read_tokens: number;
       cache_write_tokens: number;
       total_input_tokens: number;
     }>(sql, [range.start, range.end, ...f.params]);
 
-    const row = result.rows[0];
-    const cacheReadTokens = Number(row?.cache_read_tokens ?? 0);
-    const cacheWriteTokens = Number(row?.cache_write_tokens ?? 0);
-    const totalInputTokens = Number(row?.total_input_tokens ?? 0);
+    let cacheReadTokens = 0;
+    let cacheWriteTokens = 0;
+    let totalInputTokens = 0;
+    let estimatedSavingsUSD = 0;
+
+    for (const row of result.rows) {
+      const crTok = Number(row.cache_read_tokens);
+      const cwTok = Number(row.cache_write_tokens);
+      const inTok = Number(row.total_input_tokens);
+
+      cacheReadTokens += crTok;
+      cacheWriteTokens += cwTok;
+      totalInputTokens += inTok;
+
+      // Savings per model = (inputPerM - cacheReadPerM) per MTok of cache reads
+      const p = getPricing(row.model);
+      const savingsPerMTok = p.inputPerM - p.cacheReadPerM;
+      estimatedSavingsUSD += (crTok / 1_000_000) * savingsPerMTok;
+    }
 
     // Uncached input = total input - cache_read (cache reads are part of input)
     const uncachedInputTokens = Math.max(0, totalInputTokens - cacheReadTokens);
     const denominator = cacheReadTokens + cacheWriteTokens + uncachedInputTokens;
     const cacheHitRate = denominator > 0 ? cacheReadTokens / denominator : 0;
-
-    // Estimate savings: cache reads are ~10x cheaper than regular input
-    // Savings = cacheReadTokens * 0.9 * (avg input cost per token)
-    // Approximate: $3/MTok input vs $0.30/MTok cache read = $2.70/MTok saved
-    const estimatedSavingsUSD = (cacheReadTokens / 1_000_000) * 2.70;
 
     let interpretation: "effective" | "moderate" | "ineffective";
     if (cacheHitRate > 0.8) {
@@ -161,40 +176,61 @@ export class CacheAnalyzer {
    * @returns Per-session cache metrics
    */
   async getCacheBySession(range: TimeRange): Promise<SessionCacheMetrics[]> {
+    // Group by session and model to compute model-aware savings
     const sql = `
       SELECT
         s.session_id,
         COALESCE(s.cache_hit_rate, 0) AS cache_hit_rate,
+        ct.model,
         COALESCE(SUM(ct.cache_read_tokens), 0) AS cache_read_tokens,
         COALESCE(SUM(ct.cache_creation_tokens), 0) AS cache_write_tokens,
         GREATEST(COALESCE(SUM(ct.input_tokens), 0) - COALESCE(SUM(ct.cache_read_tokens), 0), 0) AS uncached_input_tokens
       FROM v_session_summary s
       LEFT JOIN conversation_turns ct ON ct.session_id = s.session_id
       WHERE s.start_time >= $1 AND s.start_time < $2
-      GROUP BY s.session_id, s.cache_hit_rate
+      GROUP BY s.session_id, s.cache_hit_rate, ct.model
       ORDER BY cache_hit_rate DESC
     `;
     const result = await this.executor.query<{
       session_id: string;
       cache_hit_rate: number;
+      model: string;
       cache_read_tokens: number;
       cache_write_tokens: number;
       uncached_input_tokens: number;
     }>(sql, [range.start, range.end]);
 
-    return result.rows.map((row) => {
-      const cacheReadTokens = Number(row.cache_read_tokens);
-      // Estimate savings similarly to getCacheHitRate
-      const estimatedSavingsUSD = (cacheReadTokens / 1_000_000) * 2.70;
+    // Aggregate per-model rows into per-session metrics
+    const sessionMap = new Map<string, SessionCacheMetrics>();
 
-      return {
-        sessionId: row.session_id,
-        cacheHitRate: Number(row.cache_hit_rate),
-        cacheReadTokens,
-        cacheWriteTokens: Number(row.cache_write_tokens),
-        uncachedInputTokens: Number(row.uncached_input_tokens),
-        estimatedSavingsUSD,
-      };
-    });
+    for (const row of result.rows) {
+      const sid = row.session_id;
+      let entry = sessionMap.get(sid);
+      if (!entry) {
+        entry = {
+          sessionId: sid,
+          cacheHitRate: Number(row.cache_hit_rate),
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          uncachedInputTokens: 0,
+          estimatedSavingsUSD: 0,
+        };
+        sessionMap.set(sid, entry);
+      }
+
+      const crTok = Number(row.cache_read_tokens);
+      entry.cacheReadTokens += crTok;
+      entry.cacheWriteTokens += Number(row.cache_write_tokens);
+      entry.uncachedInputTokens += Number(row.uncached_input_tokens);
+
+      // Model-aware savings: (inputPerM - cacheReadPerM) per MTok
+      const p = getPricing(row.model);
+      const savingsPerMTok = p.inputPerM - p.cacheReadPerM;
+      entry.estimatedSavingsUSD += (crTok / 1_000_000) * savingsPerMTok;
+    }
+
+    const results = Array.from(sessionMap.values());
+    results.sort((a, b) => b.cacheHitRate - a.cacheHitRate);
+    return results;
   }
 }

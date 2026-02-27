@@ -87,15 +87,17 @@ describe("CostAnalyzer", () => {
       expect(sonnet).toBeDefined();
       expect(opus).toBeDefined();
       expect(sonnet!.totalInputTokens).toBeGreaterThan(0);
-      expect(opus!.totalCostUSD).toBe(0.25);
+      // Opus-4 rates: $15/$75/$18.75/$1.50 per M — computed from tokens not seed cost_usd
+      // turn-006: 2000*15/1M + 800*75/1M + 100*18.75/1M + 500*1.5/1M = 0.092625
+      expect(opus!.totalCostUSD).toBe(0.092625);
     });
   });
 
   describe("getTotalCost", () => {
     it("should return correct token breakdown totals", async () => {
       const result = await analyzer.getTotalCost(testRange);
-      // Sum of all assistant turns: 0.02 + 0.03 + 0.25 + 0.04 + 0.04 = 0.38
-      expect(result.totalCostUSD).toBeCloseTo(0.38, 2);
+      // Sum of all model-aware costs: sonnet 0.026325 + opus 0.092625 = 0.11895
+      expect(result.totalCostUSD).toBeCloseTo(0.11895, 4);
       expect(result.totalInputTokens).toBeGreaterThan(0);
       expect(result.totalOutputTokens).toBeGreaterThan(0);
     });
@@ -113,7 +115,8 @@ describe("CostAnalyzer", () => {
 
     it("should respect model filter", async () => {
       const result = await analyzer.getTotalCost(testRange, { model: "opus" });
-      expect(result.totalCostUSD).toBe(0.25);
+      // Opus-4 rates applied to turn-006 tokens: 0.092625
+      expect(result.totalCostUSD).toBe(0.092625);
     });
   });
 

@@ -155,8 +155,11 @@ describe("ClaudeDesktopAdapter", () => {
       const batch = adapter.buildInsertionBatch(file, deduped.unique, parsed.userMessages);
 
       const session = batch.sessions[0];
-      // The fixture has result:success with total_cost_usd: 0.0125
-      expect(session.total_cost_usd).toBe(0.0125);
+      // Session cost is now computed from token counts using model-aware rates (not result:success value).
+      // asst-d001: 200*3/1M + 50*15/1M + 10*3.75/1M + 100*0.3/1M = 0.0014175
+      // asst-d002: 300*3/1M + 80*15/1M + 5*3.75/1M + 150*0.3/1M = 0.00216375
+      // Total: 0.00358125
+      expect(session.total_cost_usd).toBeCloseTo(0.00358125, 8);
     });
 
     it("extracts tool calls from assistant content blocks", async () => {

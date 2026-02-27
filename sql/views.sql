@@ -14,6 +14,7 @@ SELECT
     SUM(ct.cost_usd)                    AS total_cost,
     SUM(ct.input_tokens)                AS input_tokens,
     SUM(ct.output_tokens)               AS output_tokens,
+    SUM(ct.cache_creation_tokens)       AS cache_creation_tokens,
     SUM(ct.cache_read_tokens)           AS cache_read_tokens,
     COUNT(*)                            AS turn_count,
     COUNT(DISTINCT ct.session_id)       AS session_count

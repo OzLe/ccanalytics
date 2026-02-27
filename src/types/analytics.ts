@@ -118,6 +118,8 @@ export interface CostTrend {
   costUSD: number;
   inputTokens: number;
   outputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
 }
 
 /** Daily cost aggregation row from v_daily_cost view. */
@@ -127,6 +129,7 @@ export interface DailyCost {
   totalCost: number;
   inputTokens: number;
   outputTokens: number;
+  cacheCreationTokens: number;
   cacheReadTokens: number;
   turnCount: number;
   sessionCount: number;
