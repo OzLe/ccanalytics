@@ -30,7 +30,7 @@ export default function ChartTooltip({
         {formattedLabel}
       </p>
       <div className="space-y-1">
-        {payload.map((entry) => {
+        {payload.filter((entry) => typeof entry.value === "number" && entry.value > 0).map((entry) => {
           const val = typeof entry.value === "number" ? entry.value : 0;
           const displayValue = valueFormatter ? valueFormatter(val) : val.toLocaleString();
           return (

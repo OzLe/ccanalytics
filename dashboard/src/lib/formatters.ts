@@ -56,6 +56,13 @@ export function formatDate(date: string | Date): string {
   });
 }
 
+export function formatDateShort(date: string | Date): string {
+  return new Date(date).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+  });
+}
+
 /**
  * Format a date string to include time.
  */

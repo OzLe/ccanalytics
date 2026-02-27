@@ -50,7 +50,7 @@ export default function ChartCard({
       </div>
 
       {/* ── Body ────────────────────────────────────────────── */}
-      <div className="p-[var(--space-6)]">
+      <div className="overflow-x-auto p-[var(--space-6)]">
         {loading ? (
           <ChartCardSkeleton />
         ) : empty ? (

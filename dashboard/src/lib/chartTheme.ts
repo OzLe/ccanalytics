@@ -10,7 +10,7 @@
 /** Primary palette colors for chart series. */
 export const CHART_COLORS = [
   "#6366f1", // indigo  — var(--accent)
-  "#8b5cf6", // violet
+  "#3b82f6", // blue
   "#ec4899", // pink
   "#f59e0b", // amber
   "#22c55e", // green   — var(--success)

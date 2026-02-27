@@ -27,7 +27,7 @@ import {
 } from "@/hooks/useCostData";
 import DataTable from "@/components/ui/DataTable";
 import type { Column } from "@/components/ui/DataTable";
-import { formatCost, formatDate } from "@/lib/formatters";
+import { formatCost, formatDateShort } from "@/lib/formatters";
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import {
   CHART_COLORS,
@@ -52,23 +52,34 @@ interface ModelTableRow {
 function pivotDailyByModel(
   rows: Array<{ date: string; model: string; totalCost: number }>,
 ): { data: Array<Record<string, unknown>>; models: string[] } {
-  const modelSet = new Set<string>();
+  const modelNameMap = new Map<string, string>();
   const dateMap = new Map<string, Record<string, unknown>>();
 
   for (const r of rows) {
     const shortModel = r.model.split("/").pop() ?? r.model;
-    modelSet.add(shortModel);
-    const existing = dateMap.get(r.date) ?? { date: r.date };
-    existing[shortModel] =
-      ((existing[shortModel] as number) ?? 0) + r.totalCost;
-    dateMap.set(r.date, existing);
+    const existing = modelNameMap.get(shortModel);
+    const displayName =
+      existing && existing !== r.model ? r.model : shortModel;
+    if (!existing) modelNameMap.set(shortModel, r.model);
+    if (existing && existing !== r.model) modelNameMap.set(shortModel, "__collision__");
+
+    const row = dateMap.get(r.date) ?? { date: r.date };
+    row[displayName] = ((row[displayName] as number) ?? 0) + r.totalCost;
+    dateMap.set(r.date, row);
+  }
+
+  const models = new Set<string>();
+  for (const row of dateMap.values()) {
+    for (const key of Object.keys(row)) {
+      if (key !== "date") models.add(key);
+    }
   }
 
   const data = Array.from(dateMap.values()).sort((a, b) =>
     String(a.date).localeCompare(String(b.date)),
   );
 
-  return { data, models: Array.from(modelSet) };
+  return { data, models: Array.from(models) };
 }
 
 /* ── Custom legend for the cost trend chart ─────────────────── */
@@ -172,7 +183,7 @@ export default function CostAnalysisPage() {
     () =>
       stackedData.map((d) => ({
         ...d,
-        date: formatDate(d.date as string),
+        date: formatDateShort(d.date as string),
       })),
     [stackedData],
   );
@@ -369,10 +380,10 @@ export default function CostAnalysisPage() {
           loading={costDaily.isLoading}
           empty={formattedStackedData.length === 0}
         >
-          <ResponsiveContainer width="100%" height={360}>
+          <ResponsiveContainer width="100%" height={400}>
             <AreaChart
               data={formattedStackedData}
-              margin={{ top: 8, right: 20, bottom: 0, left: 0 }}
+              margin={{ top: 8, right: 20, bottom: 24, left: 12 }}
             >
               <defs>
                 {models.map((model, i) => {
@@ -381,7 +392,7 @@ export default function CostAnalysisPage() {
                   return (
                     <linearGradient
                       key={model}
-                      id={`gradient-${i}`}
+                      id={`cost-area-gradient-${i}`}
                       x1="0"
                       y1="0"
                       x2="0"
@@ -390,12 +401,12 @@ export default function CostAnalysisPage() {
                       <stop
                         offset="0%"
                         stopColor={color}
-                        stopOpacity={0.4}
+                        stopOpacity={0.6}
                       />
                       <stop
                         offset="100%"
                         stopColor={color}
-                        stopOpacity={0.05}
+                        stopOpacity={0.1}
                       />
                     </linearGradient>
                   );
@@ -405,7 +416,8 @@ export default function CostAnalysisPage() {
               <XAxis dataKey="date" {...X_AXIS_PROPS} interval="preserveStartEnd" />
               <YAxis
                 {...Y_AXIS_PROPS}
-                tickFormatter={(v: number) => `$${v.toFixed(2)}`}
+                width={62}
+                tickFormatter={(v: number) => v >= 1 ? `$${Math.round(v)}` : `$${v.toFixed(2)}`}
               />
               <Tooltip
                 content={
@@ -424,7 +436,7 @@ export default function CostAnalysisPage() {
                   stackId="cost"
                   stroke={CHART_COLORS[i % CHART_COLORS.length]}
                   strokeWidth={1.5}
-                  fill={`url(#gradient-${i})`}
+                  fill={`url(#cost-area-gradient-${i})`}
                 />
               ))}
             </AreaChart>
@@ -486,7 +498,7 @@ export default function CostAnalysisPage() {
                   className="flex items-center gap-[var(--space-2)]"
                 >
                   <span
-                    className="inline-block h-2 w-2 rounded-full"
+                    className="inline-block h-2.5 w-2.5 rounded-full"
                     style={{
                       backgroundColor:
                         CHART_COLORS[i % CHART_COLORS.length],
