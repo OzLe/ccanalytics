@@ -27,6 +27,8 @@ export interface DbResult<T = Record<string, unknown>> {
 let instance: InstanceType<typeof DuckDBInstance> | null = null;
 let connection: Awaited<ReturnType<InstanceType<typeof DuckDBInstance>["connect"]>> | null = null;
 let dbPath: string | null = null;
+/** Deduplicates concurrent getConnection() calls. */
+let connectingPromise: Promise<typeof connection> | null = null;
 
 /**
  * Resolve the default database path.
@@ -64,13 +66,26 @@ async function openDb(p: string) {
 /**
  * Get or create the DuckDB connection.
  * The connection is lazily initialized and reused across requests.
+ * Uses a promise mutex so concurrent callers wait for the first initialization.
  * Includes auto-recovery for corrupt WAL files and database files.
  */
 async function getConnection() {
   if (connection) {
     return connection;
   }
+  // Deduplicate concurrent calls — all waiters share the same promise.
+  if (connectingPromise) {
+    return connectingPromise;
+  }
+  connectingPromise = initConnection();
+  try {
+    return await connectingPromise;
+  } finally {
+    connectingPromise = null;
+  }
+}
 
+async function initConnection() {
   dbPath = getDbPath();
   const walPath = `${dbPath}.wal`;
 
@@ -116,7 +131,22 @@ async function getConnection() {
   }
 
   // Rebuild indexes to fix potential ART index corruption from ON CONFLICT ops.
-  await rebuildIndexes(connection);
+  // If index rebuild triggers a FATAL error (corrupts the DuckDB instance),
+  // close everything and reopen without indexes rather than leaving a dead connection.
+  try {
+    await rebuildIndexes(connection);
+  } catch (err) {
+    const msg = (err as Error).message ?? "";
+    if (msg.includes("FATAL") || msg.includes("invalidated")) {
+      console.warn("[db] Index rebuild caused FATAL error — reopening without indexes");
+      try { connection.closeSync(); } catch { /* ignore */ }
+      instance = null;
+      connection = null;
+      const result = await openDb(dbPath);
+      instance = result.inst;
+      connection = result.conn;
+    }
+  }
 
   // Ensure analytical views are up-to-date on first connection.
   await initViews(connection);
