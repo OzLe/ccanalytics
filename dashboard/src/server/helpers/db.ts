@@ -39,9 +39,32 @@ function getDbPath(): string {
   return path.join(os.homedir(), ".ccanalytics", "analytics.duckdb");
 }
 
+/** Error messages that indicate an unrecoverable corrupt database file. */
+const CORRUPTION_PATTERNS = [
+  "Failed to load metadata pointer",
+  "Corrupt database",
+  "INTERNAL Error",
+  "IO Error: Could not read",
+  "not a valid DuckDB database file",
+  "Deserialization Error",
+  "invalid file header",
+];
+
+function looksCorrupt(msg: string): boolean {
+  return CORRUPTION_PATTERNS.some((p) => msg.includes(p));
+}
+
+/** Try to create a DuckDB instance and connect. */
+async function openDb(p: string) {
+  const inst = await DuckDBInstance.create(p);
+  const conn = await inst.connect();
+  return { inst, conn };
+}
+
 /**
  * Get or create the DuckDB connection.
  * The connection is lazily initialized and reused across requests.
+ * Includes auto-recovery for corrupt WAL files and database files.
  */
 async function getConnection() {
   if (connection) {
@@ -49,8 +72,48 @@ async function getConnection() {
   }
 
   dbPath = getDbPath();
-  instance = await DuckDBInstance.create(dbPath);
-  connection = await instance.connect();
+  const walPath = `${dbPath}.wal`;
+
+  try {
+    const result = await openDb(dbPath);
+    instance = result.inst;
+    connection = result.conn;
+  } catch (err) {
+    const msg = (err as Error).message ?? "";
+
+    // --- Stage 1: Corrupt WAL recovery ---
+    if (msg.includes("replaying WAL") && fs.existsSync(walPath)) {
+      console.warn(`[db] Corrupt WAL detected — removing ${walPath} and retrying`);
+      fs.unlinkSync(walPath);
+      try {
+        const result = await openDb(dbPath);
+        instance = result.inst;
+        connection = result.conn;
+      } catch (retryErr) {
+        const retryMsg = (retryErr as Error).message ?? "";
+        if (!looksCorrupt(retryMsg)) {
+          throw retryErr;
+        }
+        // WAL removal wasn't enough — fall through to Stage 2
+      }
+    }
+
+    // --- Stage 2: Corrupt database file recovery ---
+    if (!connection && looksCorrupt(msg) && fs.existsSync(dbPath)) {
+      console.warn(`[db] Corrupt database detected — removing ${dbPath} and recreating`);
+      fs.unlinkSync(dbPath);
+      if (fs.existsSync(walPath)) {
+        fs.unlinkSync(walPath);
+      }
+      const result = await openDb(dbPath);
+      instance = result.inst;
+      connection = result.conn;
+    }
+
+    if (!connection) {
+      throw err;
+    }
+  }
 
   // Rebuild indexes to fix potential ART index corruption from ON CONFLICT ops.
   await rebuildIndexes(connection);
