@@ -202,6 +202,7 @@ export default function DashboardPage() {
           {[
             <KPICard
               key="total-cost"
+              className="h-full"
               label="Total Cost"
               value={costTotal.data ? formatCost(costTotal.data.totalCostUSD) : "--"}
               type="cost"
@@ -215,6 +216,7 @@ export default function DashboardPage() {
             />,
             <KPICard
               key="total-sessions"
+              className="h-full"
               label="Total Sessions"
               value={
                 sessionStats.data
@@ -228,6 +230,7 @@ export default function DashboardPage() {
             />,
             <KPICard
               key="cache-hit-rate"
+              className="h-full"
               label="Cache Hit Rate"
               value={
                 cacheMetrics.data
@@ -243,6 +246,7 @@ export default function DashboardPage() {
             />,
             <KPICard
               key="tool-calls"
+              className="h-full"
               label="Tool Calls"
               value={totalToolCalls > 0 ? totalToolCalls.toLocaleString() : "--"}
               type="tools"
