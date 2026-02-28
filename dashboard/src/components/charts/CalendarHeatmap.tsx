@@ -91,7 +91,7 @@ export default function CalendarHeatmap({ data }: Props) {
     // Dynamic cell sizing: scale to fill available width
     const cellSize = Math.max(
       14,
-      Math.min(24, Math.floor((containerWidth - marginLeft - 10) / numWeeks) - CELL_GAP)
+      Math.floor((containerWidth - marginLeft - 10) / numWeeks) - CELL_GAP
     );
 
     const totalWidth = marginLeft + numWeeks * (cellSize + CELL_GAP) + 10;
