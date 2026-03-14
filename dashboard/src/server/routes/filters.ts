@@ -7,7 +7,11 @@
 
 import { Router } from "express";
 import { query } from "../helpers/db.js";
-import { parseFilters, envelope } from "../helpers/parseFilters.js";
+import {
+  parseFilters,
+  buildSessionFilterClauses,
+  envelope,
+} from "../helpers/parseFilters.js";
 
 const router = Router();
 
@@ -15,21 +19,32 @@ const router = Router();
  * GET /api/filters/models
  *
  * Get distinct model names available in the data.
- * Query params: ?period=7d
+ * Cross-filtered by source and project when provided.
+ * Query params: ?period=7d&source=X&project=Y
  */
 router.get("/models", async (req, res, next) => {
   try {
     const filters = parseFilters(req);
+    const f = buildSessionFilterClauses(
+      { ...filters, model: undefined },
+      3,
+      "s",
+    );
 
     const sql = `
-      SELECT DISTINCT model
-      FROM sessions
-      WHERE model IS NOT NULL
-        AND start_time >= $1 AND start_time < $2
-      ORDER BY model ASC
+      SELECT DISTINCT s.model
+      FROM sessions s
+      WHERE s.model IS NOT NULL
+        AND s.start_time >= $1 AND s.start_time < $2
+        ${f.clauses.join("\n        ")}
+      ORDER BY s.model ASC
     `;
 
-    const result = await query(sql, [filters.range.start, filters.range.end]);
+    const result = await query(sql, [
+      filters.range.start,
+      filters.range.end,
+      ...f.params,
+    ]);
 
     const models = result.rows.map((row: Record<string, unknown>) => row.model as string);
 
@@ -43,25 +58,36 @@ router.get("/models", async (req, res, next) => {
  * GET /api/filters/projects
  *
  * Get distinct project paths available in the data.
- * Query params: ?period=7d
+ * Cross-filtered by source and model when provided.
+ * Query params: ?period=7d&source=X&model=Y
  */
 router.get("/projects", async (req, res, next) => {
   try {
     const filters = parseFilters(req);
+    const f = buildSessionFilterClauses(
+      { ...filters, project: undefined },
+      3,
+      "s",
+    );
 
     const sql = `
-      SELECT project_path,
-             COALESCE(MAX(project_name), project_path) AS project_name,
+      SELECT s.project_path,
+             COALESCE(MAX(s.project_name), s.project_path) AS project_name,
              COUNT(*) AS session_count,
-             MAX(start_time) AS last_active
-      FROM sessions
-      WHERE project_path IS NOT NULL
-        AND start_time >= $1 AND start_time < $2
-      GROUP BY project_path
+             MAX(s.start_time) AS last_active
+      FROM sessions s
+      WHERE s.project_path IS NOT NULL
+        AND s.start_time >= $1 AND s.start_time < $2
+        ${f.clauses.join("\n        ")}
+      GROUP BY s.project_path
       ORDER BY session_count DESC
     `;
 
-    const result = await query(sql, [filters.range.start, filters.range.end]);
+    const result = await query(sql, [
+      filters.range.start,
+      filters.range.end,
+      ...f.params,
+    ]);
 
     const projects = result.rows.map((row: Record<string, unknown>) => ({
       projectPath: row.project_path as string,
@@ -82,23 +108,34 @@ router.get("/projects", async (req, res, next) => {
  * GET /api/filters/sources
  *
  * Get distinct source types available in the data.
- * Query params: ?period=7d
+ * Cross-filtered by project and model when provided.
+ * Query params: ?period=7d&project=Y&model=X
  */
 router.get("/sources", async (req, res, next) => {
   try {
     const filters = parseFilters(req);
+    const f = buildSessionFilterClauses(
+      { ...filters, source: undefined },
+      3,
+      "s",
+    );
 
     const sql = `
-      SELECT DISTINCT source_type,
+      SELECT DISTINCT s.source_type,
              COUNT(*) AS session_count
-      FROM sessions
-      WHERE source_type IS NOT NULL
-        AND start_time >= $1 AND start_time < $2
-      GROUP BY source_type
+      FROM sessions s
+      WHERE s.source_type IS NOT NULL
+        AND s.start_time >= $1 AND s.start_time < $2
+        ${f.clauses.join("\n        ")}
+      GROUP BY s.source_type
       ORDER BY session_count DESC
     `;
 
-    const result = await query(sql, [filters.range.start, filters.range.end]);
+    const result = await query(sql, [
+      filters.range.start,
+      filters.range.end,
+      ...f.params,
+    ]);
 
     const sources = result.rows.map((row: Record<string, unknown>) => ({
       sourceType: row.source_type as string,

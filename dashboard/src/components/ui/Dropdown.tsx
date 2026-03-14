@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { cn } from "@/lib/utils";
 import { ChevronDown, Check } from "lucide-react";
 
@@ -28,6 +29,10 @@ export default function Dropdown({
 }: DropdownProps) {
   const [open, setOpen] = useState(false);
   const [focusIndex, setFocusIndex] = useState(-1);
+  const [panelPos, setPanelPos] = useState<{ top: number; left: number }>({
+    top: 0,
+    left: 0,
+  });
   const ref = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -37,16 +42,33 @@ export default function Dropdown({
   /* All items: "All" sentinel + real options */
   const allItemCount = 1 + options.length;
 
+  /* ── Position the panel below the trigger button ───── */
+  useEffect(() => {
+    if (!open || !triggerRef.current) return;
+    const rect = triggerRef.current.getBoundingClientRect();
+    setPanelPos({
+      top: rect.bottom + 6,
+      left: rect.right,
+    });
+  }, [open]);
+
   /* ── Click-outside to close ─────────────────────────── */
   useEffect(() => {
+    if (!open) return;
     function handleClick(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      if (
+        ref.current &&
+        !ref.current.contains(target) &&
+        listRef.current &&
+        !listRef.current.contains(target)
+      ) {
         setOpen(false);
       }
     }
     document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
-  }, []);
+  }, [open]);
 
   /* ── Keyboard navigation ────────────────────────────── */
   const handleKeyDown = useCallback(
@@ -115,53 +137,20 @@ export default function Dropdown({
     }
   }, [open]);
 
-  return (
-    <div ref={ref} className={cn("relative", className)} onKeyDown={handleKeyDown}>
-      <button
-        ref={triggerRef}
-        onClick={() => setOpen(!open)}
-        aria-expanded={open}
-        aria-haspopup="listbox"
-        className={cn(
-          "inline-flex items-center gap-[6px] rounded-[var(--radius-full)]",
-          "px-[14px] py-[5px] min-h-[44px] sm:min-h-0",
-          "text-[12px] font-medium leading-[1.25] whitespace-nowrap",
-          "transition-all duration-[var(--duration-fast)]",
-          "border cursor-pointer",
-          isActive
-            ? "border-[var(--border-pill-active)] bg-[var(--bg-pill-active-strong)] text-[var(--text-primary)]"
-            : "border-[var(--border-pill)] bg-transparent text-[var(--text-secondary)]",
-          !isActive &&
-            "hover:bg-[var(--bg-pill-hover)] hover:text-[var(--text-primary)] hover:border-[var(--border-hover)]",
-          isActive && "hover:bg-[var(--bg-pill-active-hover)]",
-          open && "bg-[var(--bg-pill-hover)] border-[var(--border-pill-active)]",
-        )}
-      >
-        {isActive && (
-          <span className="h-[6px] w-[6px] shrink-0 rounded-[var(--radius-full)] bg-[var(--accent)]" />
-        )}
-        <span>{label}</span>
-        {isActive && (
-          <span className="max-w-[100px] truncate opacity-70">
-            {selected[0]}
-          </span>
-        )}
-        <ChevronDown
-          size={10}
-          className={cn(
-            "shrink-0 transition-transform duration-[var(--duration-normal)]",
-            open && "rotate-180",
-          )}
-        />
-      </button>
-
-      {/* Dropdown panel */}
-      {open && (
+  /* ── Dropdown panel (portalled to body) ─────────────── */
+  const panel = open
+    ? createPortal(
         <div
           ref={listRef}
           role="listbox"
+          style={{
+            position: "fixed",
+            top: panelPos.top,
+            left: panelPos.left,
+            transform: "translateX(-100%)",
+          }}
           className={cn(
-            "absolute right-0 top-[calc(100%+6px)] z-[var(--z-dropdown)]",
+            "z-[var(--z-dropdown)]",
             "min-w-[200px] max-h-[280px] overflow-y-auto",
             "bg-[var(--bg-elevated)] backdrop-blur-[20px]",
             "border border-[var(--border)] rounded-[var(--radius-lg)]",
@@ -235,8 +224,52 @@ export default function Dropdown({
               );
             })
           )}
-        </div>
-      )}
+        </div>,
+        document.body,
+      )
+    : null;
+
+  return (
+    <div ref={ref} className={cn("relative", className)} onKeyDown={handleKeyDown}>
+      <button
+        ref={triggerRef}
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        className={cn(
+          "inline-flex items-center gap-[6px] rounded-[var(--radius-full)]",
+          "px-[14px] py-[5px] min-h-[44px] sm:min-h-0",
+          "text-[12px] font-medium leading-[1.25] whitespace-nowrap",
+          "transition-all duration-[var(--duration-fast)]",
+          "border cursor-pointer",
+          isActive
+            ? "border-[var(--border-pill-active)] bg-[var(--bg-pill-active-strong)] text-[var(--text-primary)]"
+            : "border-[var(--border-pill)] bg-transparent text-[var(--text-secondary)]",
+          !isActive &&
+            "hover:bg-[var(--bg-pill-hover)] hover:text-[var(--text-primary)] hover:border-[var(--border-hover)]",
+          isActive && "hover:bg-[var(--bg-pill-active-hover)]",
+          open && "bg-[var(--bg-pill-hover)] border-[var(--border-pill-active)]",
+        )}
+      >
+        {isActive && (
+          <span className="h-[6px] w-[6px] shrink-0 rounded-[var(--radius-full)] bg-[var(--accent)]" />
+        )}
+        <span>{label}</span>
+        {isActive && (
+          <span className="max-w-[100px] truncate opacity-70">
+            {selected[0]}
+          </span>
+        )}
+        <ChevronDown
+          size={10}
+          className={cn(
+            "shrink-0 transition-transform duration-[var(--duration-normal)]",
+            open && "rotate-180",
+          )}
+        />
+      </button>
+
+      {panel}
     </div>
   );
 }

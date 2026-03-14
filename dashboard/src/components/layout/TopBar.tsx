@@ -1,8 +1,9 @@
 import { useLocation } from "react-router-dom";
 import { useFilters, type Period } from "@/hooks/useFilters";
+import { buildFilterQS } from "@/hooks/useFilterParams";
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "@/lib/api";
-import { useEffect, useCallback } from "react";
+import { useEffect, useCallback, useMemo } from "react";
 import { cn } from "@/lib/utils";
 import { pages } from "@/lib/pages";
 import { Menu, Command } from "lucide-react";
@@ -70,26 +71,41 @@ export default function TopBar({ onMenuClick }: TopBarProps) {
       document.removeEventListener("reset-filters", handleResetFilters);
   }, [handleResetFilters]);
 
+  /* Cross-filter query strings: each dropdown is filtered by the *other*
+     active filters so its options narrow dynamically. */
+  const modelsQS = useMemo(
+    () => buildFilterQS({ ...filters, model: null }),
+    [filters],
+  );
+  const projectsQS = useMemo(
+    () => buildFilterQS({ ...filters, project: null }),
+    [filters],
+  );
+  const sourcesQS = useMemo(
+    () => buildFilterQS({ ...filters, source: null }),
+    [filters],
+  );
+
   const { data: modelsData, isLoading: modelsLoading } = useQuery({
-    queryKey: ["filters", "models", filters.period],
+    queryKey: ["filters", "models", modelsQS],
     queryFn: () =>
-      apiGet<{ data: string[] }>(`/filters/models?period=${filters.period}`),
+      apiGet<{ data: string[] }>(`/filters/models?${modelsQS}`),
   });
 
   const { data: projectsData, isLoading: projectsLoading } = useQuery({
-    queryKey: ["filters", "projects", filters.period],
+    queryKey: ["filters", "projects", projectsQS],
     queryFn: () =>
       apiGet<{
         data: { projectPath: string; projectName?: string; sessionCount: number }[];
-      }>(`/filters/projects?period=${filters.period}`),
+      }>(`/filters/projects?${projectsQS}`),
   });
 
   const { data: sourcesData, isLoading: sourcesLoading } = useQuery({
-    queryKey: ["filters", "sources", filters.period],
+    queryKey: ["filters", "sources", sourcesQS],
     queryFn: () =>
       apiGet<{
         data: { sourceType: string; sessionCount: number }[];
-      }>(`/filters/sources?period=${filters.period}`),
+      }>(`/filters/sources?${sourcesQS}`),
   });
 
   const modelOptions = (modelsData?.data ?? []).map((m) => ({
@@ -151,7 +167,7 @@ export default function TopBar({ onMenuClick }: TopBarProps) {
       </div>
 
       {/* Right: period + filters + cmd-k */}
-      <div className="flex flex-wrap items-center gap-[var(--space-2)] overflow-hidden">
+      <div className="flex flex-wrap items-center gap-[var(--space-2)]">
         {/* Period segmented control */}
         <div
           className={cn(
