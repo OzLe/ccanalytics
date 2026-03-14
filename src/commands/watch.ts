@@ -80,9 +80,11 @@ export function registerWatchCommand(parent: Command): void {
         await schema.initialize(db.getConnection());
         await schema.migrate(db.getConnection());
 
-        // Create adapters and pipeline
+        // Create adapters and pipeline with backup
+        const backupDir = path.join(path.dirname(dbPath), "backups");
+        await ensureDir(backupDir);
         const adapters = createAdapters(config);
-        const pipeline = new IngestionPipeline(adapters, db);
+        const pipeline = new IngestionPipeline(adapters, db, { backupDir });
 
         // Create watcher
         watcher = new Watcher(config.watcher, pipeline);

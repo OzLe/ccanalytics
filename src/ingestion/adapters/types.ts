@@ -86,6 +86,8 @@ export interface ISourceAdapter {
   readonly name: string;
   /** Source type discriminator written to the DB. */
   readonly sourceType: SourceType;
+  /** Version of the upstream app this adapter was tested against. */
+  readonly testedUpstreamVersion: string;
 
   /**
    * Discover files that this adapter can ingest.

@@ -106,8 +106,13 @@ export function registerIngestCommand(parent: Command): void {
 
         logger.debug(`Active adapters: ${adapters.map(a => a.name).join(", ")}`);
 
-        // Create ingestion pipeline with adapters
-        const pipeline = new IngestionPipeline(adapters, db);
+        // Resolve backup directory (sibling to DB file)
+        const backupDir = path.join(path.dirname(dbPath), "backups");
+        await ensureDir(backupDir);
+        logger.debug(`Backup directory: ${backupDir}`);
+
+        // Create ingestion pipeline with adapters and backup
+        const pipeline = new IngestionPipeline(adapters, db, { backupDir });
 
         // Set batch size from options
         if (options.batchSize) {

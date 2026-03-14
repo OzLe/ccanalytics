@@ -77,11 +77,13 @@ export function registerInitCommand(parent: Command): void {
         await schema.migrate(db.getConnection());
         logger.debug("Schema initialized");
 
-        // Create adapters and run full ingestion
+        // Create adapters and run full ingestion with backup
+        const backupDir = path.join(path.dirname(dbPath), "backups");
+        await ensureDir(backupDir);
         const adapters = createAdapters(config);
         logger.debug(`Active adapters: ${adapters.map(a => a.name).join(", ")}`);
 
-        const pipeline = new IngestionPipeline(adapters, db);
+        const pipeline = new IngestionPipeline(adapters, db, { backupDir });
 
         const startTime = Date.now();
         const result = await pipeline.run({ force: true });

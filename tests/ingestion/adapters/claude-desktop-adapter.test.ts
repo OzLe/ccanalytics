@@ -141,7 +141,10 @@ describe("ClaudeDesktopAdapter", () => {
       expect(session.input_tokens).toBe(500); // 200 + 300
       expect(session.output_tokens).toBe(130); // 50 + 80
       expect(session.num_turns).toBe(4);
-      expect(session.project_path).toBe("/Users/testuser/projects/myapp");
+      // project_path comes from file.projectPath which makeDesktopFile sets to sessionId
+      expect(session.project_path).toBe("desktop-sess-001");
+      // Desktop projects get " (Desktop)" suffix to disambiguate from Code projects
+      expect(session.project_name).toContain("(Desktop)");
     });
 
     it("uses result:success total_cost_usd when available", async () => {

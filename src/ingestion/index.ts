@@ -10,6 +10,7 @@ export { JSONLParser } from "./jsonl-parser.js";
 export { Deduplicator } from "./deduplicator.js";
 export { BatchInserter } from "./batch-inserter.js";
 export { IngestionTracker } from "./ingestion-tracker.js";
+export { FileBackup } from "./file-backup.js";
 
 import type {
   IngestionResult,
@@ -19,6 +20,7 @@ import type { ConnectionManager } from "../db/connection.js";
 import type { ISourceAdapter } from "./adapters/types.js";
 import { BatchInserter } from "./batch-inserter.js";
 import { IngestionTracker } from "./ingestion-tracker.js";
+import { FileBackup } from "./file-backup.js";
 
 /**
  * Orchestrates the full ingestion pipeline using source adapters:
@@ -32,14 +34,17 @@ import { IngestionTracker } from "./ingestion-tracker.js";
 export class IngestionPipeline {
   private inserter: BatchInserter;
   private tracker: IngestionTracker;
+  private backup: FileBackup | null;
   private progressCallbacks: Array<(progress: IngestionProgress) => void> = [];
 
   constructor(
     private adapters: ISourceAdapter[],
     private db: ConnectionManager,
+    options?: { backupDir?: string },
   ) {
     this.inserter = new BatchInserter(db);
     this.tracker = new IngestionTracker(db);
+    this.backup = options?.backupDir ? new FileBackup(options.backupDir) : null;
   }
 
   /**
@@ -113,6 +118,15 @@ export class IngestionPipeline {
           if (byteOffset >= file.sizeBytes) {
             result.filesSkipped++;
             continue;
+          }
+
+          // Back up the source file before processing to prevent data loss
+          if (this.backup) {
+            try {
+              await this.backup.backupIfNeeded(file.absolutePath, file.sizeBytes);
+            } catch {
+              // Backup failure is non-fatal — continue ingestion
+            }
           }
 
           // Parse the file via the adapter

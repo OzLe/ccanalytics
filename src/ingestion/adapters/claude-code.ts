@@ -30,10 +30,13 @@ import { calculateCost } from "../../utils/pricing.js";
 /**
  * Adapter for Claude Code CLI JSONL session files.
  * Reads from ~/.claude/projects/<encoded-path>/<session-id>.jsonl
+ *
+ * Tested with Claude Code 2.1.76.
  */
 export class ClaudeCodeAdapter implements ISourceAdapter {
   readonly name = "Claude Code CLI";
   readonly sourceType = "claude-code" as const;
+  readonly testedUpstreamVersion = "2.1.76";
 
   private discovery: FileDiscovery;
   private parser: JSONLParser;

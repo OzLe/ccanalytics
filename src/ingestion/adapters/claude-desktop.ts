@@ -2,7 +2,7 @@
  * @module ingestion/adapters/claude-desktop
  *
  * Source adapter for Claude Desktop app audit.jsonl files.
- * Reads from ~/Library/Application Support/Claude/local-agent-mode-sessions/
+ * Reads from ~/Library/Application Support/Claude/{local-agent-mode-sessions,claude-code-sessions}/
  *
  * Desktop audit.jsonl structure:
  *   - type: "user" / "assistant" / "result:success" / "system:*" / "tool_use_summary"
@@ -41,6 +41,19 @@ import { expandHome } from "../../utils/paths.js";
 
 /** Maximum length of content_text stored per turn. */
 const CONTENT_TEXT_MAX_LENGTH = 10000;
+
+/** Suffix appended to Desktop project names to disambiguate from Code projects. */
+const DESKTOP_SUFFIX = " (Desktop)";
+
+/**
+ * Append " (Desktop)" to a project name so it's visually distinct
+ * from Claude Code projects that may share the same base name.
+ * Idempotent — won't double-suffix.
+ */
+function appendDesktopSuffix(name: string): string {
+  if (name.endsWith(DESKTOP_SUFFIX)) return name;
+  return name + DESKTOP_SUFFIX;
+}
 
 /**
  * Extract concatenated text from content blocks.
@@ -86,12 +99,25 @@ interface ResultSuccessData {
 }
 
 /**
+ * Subdirectories under the Desktop data dir that may contain session audit files.
+ * Claude Desktop moved from local-agent-mode-sessions to claude-code-sessions
+ * around early 2026 — scan both to cover old and new installations.
+ */
+const DESKTOP_SESSION_DIRS = [
+  "local-agent-mode-sessions",
+  "claude-code-sessions",
+];
+
+/**
  * Adapter for Claude Desktop app audit.jsonl files.
- * Reads from ~/Library/Application Support/Claude/local-agent-mode-sessions/
+ * Reads from ~/Library/Application Support/Claude/{local-agent-mode-sessions,claude-code-sessions}/
+ *
+ * Tested with Claude Desktop 1.1.6679 (f8f4ff) 2026-03-13.
  */
 export class ClaudeDesktopAdapter implements ISourceAdapter {
   readonly name = "Claude Desktop";
   readonly sourceType = "claude-desktop" as const;
+  readonly testedUpstreamVersion = "1.1.6679";
 
   private desktopDataDir: string;
 
@@ -100,14 +126,16 @@ export class ClaudeDesktopAdapter implements ISourceAdapter {
   }
 
   async discoverFiles(options?: { since?: string }): Promise<DiscoveredFile[]> {
-    const sessionsDir = path.join(this.desktopDataDir, "local-agent-mode-sessions");
     const sinceDate = options?.since ? new Date(options.since) : null;
     const results: DiscoveredFile[] = [];
 
-    // Recursively find all audit.jsonl files under the sessions directory.
-    // The Desktop directory structure can be nested arbitrarily:
-    //   local-agent-mode-sessions/<orgId>/<projectId>/<sessionId>/audit.jsonl
-    await this.walkForAuditFiles(sessionsDir, sinceDate, results);
+    // Scan all known Desktop session directories (old and new locations).
+    // The directory structure can be nested arbitrarily:
+    //   <dir>/<orgId>/<projectId>/<sessionId>/audit.jsonl
+    for (const subdir of DESKTOP_SESSION_DIRS) {
+      const sessionsDir = path.join(this.desktopDataDir, subdir);
+      await this.walkForAuditFiles(sessionsDir, sinceDate, results);
+    }
 
     // Sort by modification time descending (newest first)
     results.sort((a, b) => b.modifiedAt.getTime() - a.modifiedAt.getTime());
@@ -560,7 +588,9 @@ export class ClaudeDesktopAdapter implements ISourceAdapter {
         git_branch: first?.metadata.gitBranch ?? null,
         claude_version: first?.metadata.version ?? null,
         project_path: file.projectPath,
-        project_name: (file.metadata?.title as string) ?? file.projectPath.split("/").pop() ?? file.projectPath,
+        project_name: appendDesktopSuffix(
+          (file.metadata?.title as string) ?? file.projectPath.split("/").pop() ?? file.projectPath,
+        ),
         source_type: this.sourceType,
       });
     }

@@ -11,7 +11,7 @@ import * as path from "node:path";
 import { MigrationError } from "../errors.js";
 
 /** Current schema version matching sql/schema.sql */
-const CURRENT_VERSION = 3;
+const CURRENT_VERSION = 4;
 
 /**
  * Split a SQL file into individual statements.
@@ -134,8 +134,10 @@ export class SchemaManager {
       applied++;
     }
 
-    // Future migrations would go here as:
-    // if (currentVersion < 4) { applyMigration4(connection); }
+    if (currentVersion < 4) {
+      await this.applyMigration4(connection);
+      applied++;
+    }
 
     return applied;
   }
@@ -171,6 +173,24 @@ export class SchemaManager {
       );
     } catch (err) {
       throw new MigrationError(3, err as Error);
+    }
+  }
+
+  /**
+   * Migration v4: Append " (Desktop)" suffix to existing Desktop project names
+   * so they're visually distinct from Code projects in the UI.
+   */
+  private async applyMigration4(connection: unknown): Promise<void> {
+    const conn = connection as { run(sql: string): Promise<unknown> };
+    try {
+      await conn.run(
+        `UPDATE sessions SET project_name = project_name || ' (Desktop)' WHERE source_type = 'claude-desktop' AND project_name IS NOT NULL AND project_name NOT LIKE '% (Desktop)'`,
+      );
+      await conn.run(
+        `INSERT INTO schema_migrations (version, description) VALUES (4, 'Add Desktop suffix to desktop project names') ON CONFLICT (version) DO NOTHING`,
+      );
+    } catch (err) {
+      throw new MigrationError(4, err as Error);
     }
   }
 
