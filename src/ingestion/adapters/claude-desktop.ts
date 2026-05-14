@@ -27,19 +27,25 @@ import type {
   AdapterDeduplicationResult,
   ParsedUserMessage,
   ParsedAssistantMessage,
+  ParsedLoadedSkillRecord,
   NormalizedTokenUsage,
 } from "./types.js";
 import type {
   SessionRow,
   ConversationTurnRow,
   ToolCallRow,
+  SessionSkillRow,
   ContentBlock,
+  ToolUseBlock,
+  SkillListingAttachment,
 } from "../../types/index.js";
 import type { InsertionBatch } from "../batch-inserter.js";
 import type { DiscoveredFile } from "../file-discovery.js";
 import { calculateCost } from "../../utils/pricing.js";
 import { expandHome } from "../../utils/paths.js";
 import { deriveErrorRows } from "./error-derivation.js";
+import { buildSessionSkillRows } from "./skill-rows.js";
+import { parseSkillListing } from "../skill-listing-parser.js";
 
 /** Maximum length of content_text stored per turn. */
 const CONTENT_TEXT_MAX_LENGTH = 10000;
@@ -235,6 +241,7 @@ export class ClaudeDesktopAdapter implements ISourceAdapter {
 
     const userMessages: ParsedUserMessage[] = [];
     const assistantMessages: ParsedAssistantMessage[] = [];
+    const loadedSkills: ParsedLoadedSkillRecord[] = [];
     let parseErrors = 0;
     let bytesRead = 0;
     let linesProcessed = 0;
@@ -334,6 +341,16 @@ export class ClaudeDesktopAdapter implements ISourceAdapter {
         if (raw.modelUsage) {
           resultData.modelUsage = raw.modelUsage as Record<string, unknown>;
         }
+      } else if (type === "attachment") {
+        // P-06: defensive mirror of the Claude Code adapter. Desktop's
+        // audit.jsonl was NOT confirmed to carry skill_listing attachments —
+        // if it never emits one, this branch simply never fires and
+        // loadedSkills stays []. `attachment` is not in SKIPPED_TYPES, so it
+        // would otherwise fall through to the silent-skip path.
+        const rec = parseSkillListingRecord(raw, sessionId, timestamp, uuid);
+        if (rec) {
+          loadedSkills.push(rec);
+        }
       }
       // All other types (progress, etc.) are silently skipped
     }
@@ -349,6 +366,7 @@ export class ClaudeDesktopAdapter implements ISourceAdapter {
       parseErrors,
       bytesRead,
       linesProcessed,
+      loadedSkills,
     };
   }
 
@@ -366,6 +384,7 @@ export class ClaudeDesktopAdapter implements ISourceAdapter {
     file: DiscoveredFile,
     assistantMessages: ParsedAssistantMessage[],
     userMessages: ParsedUserMessage[],
+    loadedSkills?: ParsedLoadedSkillRecord[],
   ): InsertionBatch {
     const turns: ConversationTurnRow[] = [];
     const toolCalls: ToolCallRow[] = [];
@@ -472,6 +491,17 @@ export class ClaudeDesktopAdapter implements ISourceAdapter {
           const success = result != null ? !result.isError : null;
           const errorMessage = result?.isError ? result.content : null;
 
+          // P-06: mirror P-05 — capture invoked-skill name + caller type for
+          // `Skill` tool calls only; NULL for every other tool.
+          const skillBlock = block as ToolUseBlock;
+          const isSkill = toolName === "Skill";
+          const skillName = isSkill
+            ? ((skillBlock.input?.skill as string) ?? null)
+            : null;
+          const skillCallerType = isSkill
+            ? (skillBlock.caller?.type ?? null)
+            : null;
+
           toolCalls.push({
             tool_call_id: block.id,
             session_id: msg.sessionId,
@@ -483,6 +513,8 @@ export class ClaudeDesktopAdapter implements ISourceAdapter {
             success,
             error_message: errorMessage,
             parameters: block.input ?? null,
+            skill_name: skillName,
+            skill_caller_type: skillCallerType,
           });
         }
       }
@@ -602,11 +634,16 @@ export class ClaudeDesktopAdapter implements ISourceAdapter {
     // Previously hardcoded `errors: []`, leaving the errors table empty.
     const errors = deriveErrorRows(assistantMessages, userMessages);
 
+    // P-06: flatten any skill_listing attachments into session_skills rows
+    // (empty when Desktop did not emit a skill_listing record).
+    const sessionSkills: SessionSkillRow[] = buildSessionSkillRows(loadedSkills);
+
     return {
       sessions,
       conversationTurns: turns,
       toolCalls,
       errors,
+      sessionSkills,
     };
   }
 
@@ -638,4 +675,52 @@ export class ClaudeDesktopAdapter implements ISourceAdapter {
       return null;
     }
   }
+}
+
+/**
+ * P-06: turn a raw Desktop `attachment` JSONL record into a
+ * {@link ParsedLoadedSkillRecord} when it carries a `skill_listing` payload.
+ *
+ * Desktop's parse loop works on raw `Record<string, unknown>` objects (it does
+ * not route through {@link JSONLParser}), so this takes the raw object plus
+ * the already-resolved sessionId/timestamp/uuid. Returns `null` for any other
+ * attachment subtype (D13 — permissive). On a skillCount mismatch it logs a
+ * warning and still returns the record rather than failing the batch.
+ */
+function parseSkillListingRecord(
+  raw: Record<string, unknown>,
+  sessionId: string,
+  timestamp: string,
+  uuid: string | undefined,
+): ParsedLoadedSkillRecord | null {
+  const att = raw.attachment as
+    | SkillListingAttachment
+    | { type?: string; [k: string]: unknown }
+    | undefined;
+  if (!att || att.type !== "skill_listing") {
+    return null;
+  }
+  const listing = att as SkillListingAttachment;
+  const skills = parseSkillListing(listing.content ?? "");
+
+  if (
+    typeof listing.skillCount === "number" &&
+    skills.length !== listing.skillCount
+  ) {
+    console.warn(
+      `[claude-desktop] skill_listing skillCount mismatch in session ` +
+        `${sessionId}: parsed ${skills.length}, attachment.skillCount ` +
+        `${listing.skillCount} — storing parsed rows, trusting skillCount ` +
+        `for the count.`,
+    );
+  }
+
+  return {
+    sessionId,
+    recordUuid: uuid ?? null,
+    timestamp,
+    skillCount: listing.skillCount,
+    isInitial: listing.isInitial,
+    skills,
+  };
 }

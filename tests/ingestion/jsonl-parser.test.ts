@@ -175,5 +175,79 @@ describe("JSONLParser", () => {
       expect(result).not.toBeNull();
       expect(result!.type).toBe("queue-operation");
     });
+
+    it("should parse an attachment record (P-02 — was previously skipped)", () => {
+      const line = JSON.stringify({
+        type: "attachment",
+        sessionId: "sess-001",
+        timestamp: "2026-02-20T10:00:00.000Z",
+        uuid: "uuid-att-001",
+        attachment: {
+          type: "skill_listing",
+          content: "- simplify: Review changed code.",
+          skillCount: 1,
+          isInitial: true,
+        },
+      });
+
+      const result = parser.parseLine(line);
+
+      expect(result).not.toBeNull();
+      expect(result!.type).toBe("attachment");
+      if (result!.type === "attachment") {
+        expect(result!.data.sessionId).toBe("sess-001");
+        expect(result!.data.attachment.type).toBe("skill_listing");
+        if (result!.data.attachment.type === "skill_listing") {
+          expect(result!.data.attachment.skillCount).toBe(1);
+          expect(result!.data.attachment.isInitial).toBe(true);
+        }
+      }
+    });
+
+    it("should parse a non-skill_listing attachment permissively (D13)", () => {
+      // attachment.type is a moving target — any subtype still parses; the
+      // adapters, not the parser, decide to ignore non-skill_listing ones.
+      const line = JSON.stringify({
+        type: "attachment",
+        sessionId: "sess-001",
+        timestamp: "2026-02-20T10:00:00.000Z",
+        attachment: { type: "deferred_tools_delta", addedNames: ["WebFetch"] },
+      });
+
+      const result = parser.parseLine(line);
+
+      expect(result).not.toBeNull();
+      expect(result!.type).toBe("attachment");
+      if (result!.type === "attachment") {
+        expect(result!.data.attachment.type).toBe("deferred_tools_delta");
+      }
+    });
+  });
+
+  describe("parseFile — byte/line accounting unaffected by the attachment case", () => {
+    it("parses the attachment line without changing bytesRead/linesProcessed", async () => {
+      const path = await import("node:path");
+      const fixture = path.resolve(
+        process.cwd(),
+        "tests/fixtures/skill-listing-session.jsonl",
+      );
+
+      const result = await parser.parseFile(fixture, 0);
+
+      // P-02: the attachment record is now a parsed entry, not skipped.
+      const attachments = result.entries.filter((e) => e.type === "attachment");
+      expect(attachments).toHaveLength(1);
+
+      // bytesRead is still Buffer.byteLength(line)+1 per line — promoting
+      // attachment from skipped to parsed does not change the byte math.
+      const fs = await import("node:fs/promises");
+      const raw = await fs.readFile(fixture, "utf-8");
+      const nonEmptyLines = raw.split("\n").filter((l) => l.length > 0);
+      expect(result.linesProcessed).toBe(nonEmptyLines.length);
+      // Re-reading from EOF yields zero new bytes/lines (incremental resume).
+      const fromEof = await parser.parseFile(fixture, result.bytesRead);
+      expect(fromEof.bytesRead).toBe(0);
+      expect(fromEof.linesProcessed).toBe(0);
+    });
   });
 });

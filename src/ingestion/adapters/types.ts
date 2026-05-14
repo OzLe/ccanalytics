@@ -29,6 +29,34 @@ export interface AdapterParseResult {
   bytesRead: number;
   /** Total lines processed (including errors and skipped). */
   linesProcessed: number;
+  /**
+   * P-03: loaded-skill records parsed from `skill_listing` attachments in
+   * this file. Optional — most callers ignore it, and a file with no
+   * `skill_listing` record (e.g. incremental ingest past the file head, or a
+   * source that does not emit it) simply leaves it `undefined`/empty. A
+   * single file may carry 0..N `skill_listing` records.
+   */
+  loadedSkills?: ParsedLoadedSkillRecord[];
+}
+
+/**
+ * P-03: a single `skill_listing` attachment, normalized for the batch
+ * inserter. One record per `skill_listing` JSONL line; `skills` holds every
+ * skill parsed out of that record's `content`.
+ */
+export interface ParsedLoadedSkillRecord {
+  /** Session the attachment belongs to. */
+  sessionId: string;
+  /** The attachment record's own `uuid`, or null when absent. Part of the PK. */
+  recordUuid: string | null;
+  /** The attachment record's `timestamp` (ISO string). */
+  timestamp: string;
+  /** Upstream-reported skill count (the integrity-check denominator). */
+  skillCount: number;
+  /** TRUE for the session-start injection, FALSE for a mid-session re-listing. */
+  isInitial: boolean;
+  /** Every skill parsed from the attachment's `content`. */
+  skills: Array<{ name: string; description: string }>;
 }
 
 /** Result of adapter deduplication. */
@@ -115,10 +143,16 @@ export interface ISourceAdapter {
   /**
    * Build an InsertionBatch from parsed messages for a single file.
    * Sets source_type on SessionRow.
+   *
+   * P-03/P-05: also emits `sessionSkills` rows derived from any
+   * `skill_listing` attachments parsed in this file. When `loadedSkills` is
+   * passed it is flattened (one `SessionSkillRow` per parsed skill, keyed per
+   * D4); when omitted the batch's `sessionSkills` is simply `[]`.
    */
   buildInsertionBatch(
     file: DiscoveredFile,
     assistantMessages: ParsedAssistantMessage[],
     userMessages: ParsedUserMessage[],
+    loadedSkills?: ParsedLoadedSkillRecord[],
   ): InsertionBatch;
 }

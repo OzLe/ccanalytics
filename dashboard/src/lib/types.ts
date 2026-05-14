@@ -173,6 +173,38 @@ export interface CostTotal {
   totalCacheReadTokens: number;
 }
 
+// ---------------------------------------------------------------------------
+// Tokens API responses (F1)
+// ---------------------------------------------------------------------------
+
+/**
+ * F1: a token-count breakdown over the canonical cost-row population — the
+ * SAME predicate `/api/cost/total` aggregates, so token totals reconcile 1:1
+ * with cost totals. `cacheWriteTokens` is `cache_creation_tokens` surfaced
+ * under the "cache write" wording used everywhere else.
+ */
+export interface TokenBreakdown {
+  /** input + output + cacheWrite + cacheRead. */
+  totalTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  /** `cache_creation_tokens`, surfaced as "cache write". */
+  cacheWriteTokens: number;
+}
+
+/**
+ * GET /api/tokens/total — the filtered period block plus the fully unfiltered,
+ * dataset-wide all-time block (D7). `allTime` is a fixed per-request constant:
+ * it never responds to the period/model/project/source filters.
+ */
+export interface TokenTotals {
+  /** Token breakdown for the selected period, respecting all active filters. */
+  period: TokenBreakdown;
+  /** Dataset-wide token breakdown — no timestamp bound, no filters (D7). */
+  allTime: TokenBreakdown;
+}
+
 /** GET /api/cost/trend row */
 export interface CostTrendPoint {
   timestamp: string;
@@ -349,6 +381,119 @@ export interface FailureChainsData {
     worstStreak: number;
   };
   topSessions: SessionFailureChain[];
+}
+
+// ---------------------------------------------------------------------------
+// Skills API responses (F2K)
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/skills/summary — the page-level skill KPI bundle plus the
+ * "too many skills active" flags (D11). Powers the KPI row and the conditional
+ * advisory banner. `skillSuccessRate` follows the KPI-006 NULL rule (`null`
+ * when no `Skill` row has a non-NULL `success`). `tooManySkillsActive` is
+ * `deadWeightRatio > 0.50 OR loadedContextShare > 0.05`; `tooManyReasons`
+ * carries one human-readable string per tripped sub-condition.
+ */
+export interface SkillSummary {
+  /** AVG over period sessions of distinct skills loaded per session. */
+  avgSkillsLoadedPerSession: number;
+  /** MAX over period sessions of distinct skills loaded per session. */
+  maxSkillsLoadedPerSession: number;
+  /** `COUNT(DISTINCT skill)` invoked in the period. */
+  distinctSkillsInvoked: number;
+  /** `COUNT(DISTINCT skill_name)` loaded in the period. */
+  distinctSkillsLoaded: number;
+  /** Total `Skill` tool calls in the period. */
+  totalInvocations: number;
+  /** Skill-invocation success rate (KPI-006 NULL rule); `null` = no data. */
+  skillSuccessRate: number | null;
+  /** Distinct skills loaded in the period but never invoked in it. */
+  deadWeightSkills: number;
+  /** distinctSkillsInvoked / distinctSkillsLoaded; `null` when nothing loaded. */
+  invocationRate: number | null;
+  /** `deadWeightSkills / distinctSkillsLoaded`; `null` when nothing loaded. */
+  deadWeightRatio: number | null;
+  /** Estimated avg context tokens spent on loaded skill descriptions / session. */
+  avgLoadedSkillTokens: number;
+  /** Avg session context tokens (input + cache_read + cache_creation proxy). */
+  avgSessionContextTokens: number;
+  /** `avgLoadedSkillTokens / avgSessionContextTokens`; `null` when no context. */
+  loadedContextShare: number | null;
+  /** D11: `deadWeightRatio > 0.50 OR loadedContextShare > 0.05`. */
+  tooManySkillsActive: boolean;
+  /** One human-readable reason per tripped D11 sub-condition (may be empty). */
+  tooManyReasons: string[];
+}
+
+/**
+ * GET /api/skills/loaded row — one loaded skill with its est. context weight,
+ * how many sessions loaded it, its invocation count, and the dead-weight flag.
+ * `estContextTokens` uses the flat `FLAT_SKILL_TOKEN_ESTIMATE` (D10) — estimated.
+ */
+export interface SkillLoadedRow {
+  skill: string;
+  loadedInSessions: number;
+  /** `loadedInSessions * 45` — estimated (flat model). */
+  estContextTokens: number;
+  invocations: number;
+  /** loaded in the period but never invoked in it (§4.3). */
+  isDeadWeight: boolean;
+}
+
+/**
+ * GET /api/skills/invocations row — per-skill invocation stats. Skill names use
+ * `COALESCE(skill_name, parameters->>'skill')` so historical rows still appear.
+ * `successRate` is `null` when no row has a non-NULL `success` (KPI-006).
+ */
+export interface SkillInvocationRow {
+  skill: string;
+  invocations: number;
+  sessionsUsing: number;
+  successCount: number;
+  failureCount: number;
+  /** KPI-006: null when the skill has only NULL-success calls ("no data"). */
+  successRate: number | null;
+  avgPerSession: number;
+}
+
+/** GET /api/skills/trend row — one Skills-Per-Session trend point. */
+export interface SkillTrendPoint {
+  timestamp: string;
+  /** AVG over the bucket's sessions of distinct skills loaded per session. */
+  avgLoadedPerSession: number;
+  /** AVG over the bucket's sessions of distinct skills invoked per session. */
+  avgInvokedPerSession: number;
+}
+
+/**
+ * A single same-session thrash row — a `(sessionId, skill)` pair whose
+ * `invocationsInSession` reached `SKILL_THRASH_MIN` (= 2, D12).
+ * `isKnownReentrant` is true for skills in `KNOWN_REENTRANT_SKILLS` (those rows
+ * are still shown but should be de-emphasised).
+ */
+export interface SkillThrashRow {
+  sessionId: string;
+  skill: string;
+  invocationsInSession: number;
+  isKnownReentrant: boolean;
+}
+
+/**
+ * GET /api/skills/not-required — the same-session thrash signal: flagged rows
+ * plus a small summary. Powers the "Possibly-Unnecessary Invocations" table.
+ */
+export interface SkillNotRequiredData {
+  /** Thrash rows, ordered by `invocationsInSession` desc. */
+  thrash: SkillThrashRow[];
+  summary: {
+    /** Total flagged `(session, skill)` pairs. */
+    flaggedRows: number;
+    /** Flagged pairs whose skill is NOT a known re-entrant skill. */
+    nonReentrantRows: number;
+    /** Distinct sessions appearing in the thrash list. */
+    sessionsAffected: number;
+  };
 }
 
 // ---------------------------------------------------------------------------

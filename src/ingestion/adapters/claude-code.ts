@@ -12,13 +12,17 @@ import type {
   AdapterDeduplicationResult,
   ParsedUserMessage,
   ParsedAssistantMessage,
+  ParsedLoadedSkillRecord,
   NormalizedTokenUsage,
 } from "./types.js";
 import type {
   SessionRow,
   ConversationTurnRow,
   ToolCallRow,
+  SessionSkillRow,
   ContentBlock,
+  ToolUseBlock,
+  SkillListingAttachment,
 } from "../../types/index.js";
 import type { InsertionBatch } from "../batch-inserter.js";
 import type { DiscoveredFile } from "../file-discovery.js";
@@ -27,6 +31,8 @@ import { JSONLParser } from "../jsonl-parser.js";
 import { Deduplicator } from "../deduplicator.js";
 import { calculateCost } from "../../utils/pricing.js";
 import { deriveErrorRows } from "./error-derivation.js";
+import { buildSessionSkillRows } from "./skill-rows.js";
+import { parseSkillListing } from "../skill-listing-parser.js";
 
 /**
  * Adapter for Claude Code CLI JSONL session files.
@@ -62,6 +68,7 @@ export class ClaudeCodeAdapter implements ISourceAdapter {
 
     const userMessages: ParsedUserMessage[] = [];
     const assistantMessages: ParsedAssistantMessage[] = [];
+    const loadedSkills: ParsedLoadedSkillRecord[] = [];
 
     for (const entry of result.entries) {
       if (entry.type === "user") {
@@ -95,6 +102,13 @@ export class ClaudeCodeAdapter implements ISourceAdapter {
             gitBranch: msg.gitBranch,
           },
         });
+      } else if (entry.type === "attachment") {
+        // P-05: only `skill_listing` attachments carry loaded-skill data;
+        // every other (permissive D13) attachment.type is ignored here.
+        const rec = parseSkillListingRecord(entry.data);
+        if (rec) {
+          loadedSkills.push(rec);
+        }
       }
     }
 
@@ -104,6 +118,7 @@ export class ClaudeCodeAdapter implements ISourceAdapter {
       parseErrors: result.parseErrors,
       bytesRead: result.bytesRead,
       linesProcessed: result.linesProcessed,
+      loadedSkills,
     };
   }
 
@@ -135,6 +150,7 @@ export class ClaudeCodeAdapter implements ISourceAdapter {
     file: DiscoveredFile,
     assistantMessages: ParsedAssistantMessage[],
     userMessages: ParsedUserMessage[],
+    loadedSkills?: ParsedLoadedSkillRecord[],
   ): InsertionBatch {
     const turns: ConversationTurnRow[] = [];
     const toolCalls: ToolCallRow[] = [];
@@ -242,6 +258,18 @@ export class ClaudeCodeAdapter implements ISourceAdapter {
           const success = result != null ? !result.isError : null;
           const errorMessage = result?.isError ? result.content : null;
 
+          // P-05: capture invoked-skill name + caller type for `Skill` tool
+          // calls only — NULL for every other tool. `caller` is a sibling of
+          // `input` on the tool_use block (typed via ToolUseBlock.caller).
+          const skillBlock = block as ToolUseBlock;
+          const isSkill = toolName === "Skill";
+          const skillName = isSkill
+            ? ((skillBlock.input?.skill as string) ?? null)
+            : null;
+          const skillCallerType = isSkill
+            ? (skillBlock.caller?.type ?? null)
+            : null;
+
           toolCalls.push({
             tool_call_id: block.id,
             session_id: msg.sessionId,
@@ -253,6 +281,8 @@ export class ClaudeCodeAdapter implements ISourceAdapter {
             success,
             error_message: errorMessage,
             parameters: block.input ?? null,
+            skill_name: skillName,
+            skill_caller_type: skillCallerType,
           });
         }
       }
@@ -365,13 +395,58 @@ export class ClaudeCodeAdapter implements ISourceAdapter {
     // Previously hardcoded `errors: []`, leaving the errors table empty.
     const errors = deriveErrorRows(assistantMessages, userMessages);
 
+    // P-05: flatten any skill_listing attachments into session_skills rows.
+    const sessionSkills: SessionSkillRow[] = buildSessionSkillRows(loadedSkills);
+
     return {
       sessions,
       conversationTurns: turns,
       toolCalls,
       errors,
+      sessionSkills,
     };
   }
+}
+
+/**
+ * P-05: turn a parsed `attachment` JSONL record into a
+ * {@link ParsedLoadedSkillRecord} when it carries a `skill_listing` payload.
+ *
+ * Returns `null` for any other attachment subtype (D13 — permissive). On a
+ * `parsed.length !== attachment.skillCount` mismatch it logs a warning and
+ * still returns the record (trusting `attachment.skillCount` for the stored
+ * count) rather than failing the batch (R: skillCount-vs-parsed drift).
+ */
+function parseSkillListingRecord(
+  record: import("../../types/index.js").AttachmentRecord,
+): ParsedLoadedSkillRecord | null {
+  const att = record.attachment;
+  if (!att || att.type !== "skill_listing") {
+    return null;
+  }
+  const listing = att as SkillListingAttachment;
+  const skills = parseSkillListing(listing.content ?? "");
+
+  if (
+    typeof listing.skillCount === "number" &&
+    skills.length !== listing.skillCount
+  ) {
+    console.warn(
+      `[claude-code] skill_listing skillCount mismatch in session ` +
+        `${record.sessionId}: parsed ${skills.length}, attachment.skillCount ` +
+        `${listing.skillCount} — storing parsed rows, trusting skillCount ` +
+        `for the count.`,
+    );
+  }
+
+  return {
+    sessionId: record.sessionId,
+    recordUuid: record.uuid ?? null,
+    timestamp: record.timestamp,
+    skillCount: listing.skillCount,
+    isInitial: listing.isInitial,
+    skills,
+  };
 }
 
 /** Maximum length of content_text stored per turn. */

@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { MigrationError } from "../errors.js";
 
 /** Current schema version matching sql/schema.sql */
-const CURRENT_VERSION = 4;
+const CURRENT_VERSION = 5;
 
 /**
  * Split a SQL file into individual statements.
@@ -157,6 +157,11 @@ export class SchemaManager {
       applied++;
     }
 
+    if (currentVersion < 5) {
+      await this.applyMigration5(connection);
+      applied++;
+    }
+
     return applied;
   }
 
@@ -209,6 +214,101 @@ export class SchemaManager {
       );
     } catch (err) {
       throw new MigrationError(4, err as Error);
+    }
+  }
+
+  /**
+   * Migration v5: Skill Analysis (F2D) — purely ADDITIVE.
+   *
+   * Runs S-01..S-08 from the feature plan:
+   *   - S-01  CREATE TABLE session_skills
+   *   - S-02/S-03  CREATE INDEX on session_skills
+   *   - S-04/S-05  ALTER TABLE tool_calls ADD COLUMN skill_name / skill_caller_type
+   *   - S-06  CREATE INDEX idx_tools_skill_name
+   *   - S-07  CREATE OR REPLACE VIEW v_skill_usage
+   *   - S-08  record schema_migrations version 5
+   *
+   * Every statement is CREATE/ALTER ... IF NOT EXISTS or CREATE OR REPLACE —
+   * there is NO DROP, DELETE, TRUNCATE, column-drop, or existing-row UPDATE,
+   * so re-running on an already-migrated database is a no-op. The new
+   * tool_calls columns are nullable with no default, so existing rows are
+   * untouched (their skill_name/skill_caller_type read as NULL until a
+   * re-ingest or the backfill script fills them).
+   */
+  private async applyMigration5(connection: unknown): Promise<void> {
+    const conn = connection as { run(sql: string): Promise<unknown> };
+    try {
+      // S-01: loaded-skills table.
+      await conn.run(
+        `CREATE TABLE IF NOT EXISTS session_skills (
+           session_skill_id  VARCHAR   PRIMARY KEY,
+           session_id        VARCHAR   NOT NULL,
+           record_uuid       VARCHAR,
+           skill_name        VARCHAR   NOT NULL,
+           skill_description TEXT,
+           skill_count       INTEGER,
+           is_initial        BOOLEAN   DEFAULT TRUE,
+           captured_at       TIMESTAMP,
+           source            VARCHAR   DEFAULT 'skill_listing'
+         )`,
+      );
+      // S-02 / S-03: session_skills indexes.
+      await conn.run(
+        `CREATE INDEX IF NOT EXISTS idx_session_skills_session ON session_skills (session_id)`,
+      );
+      await conn.run(
+        `CREATE INDEX IF NOT EXISTS idx_session_skills_skill_name ON session_skills (skill_name)`,
+      );
+      // S-04 / S-05: invoked-skill columns on tool_calls (nullable, no default).
+      await conn.run(
+        `ALTER TABLE tool_calls ADD COLUMN IF NOT EXISTS skill_name VARCHAR`,
+      );
+      await conn.run(
+        `ALTER TABLE tool_calls ADD COLUMN IF NOT EXISTS skill_caller_type VARCHAR`,
+      );
+      // S-06: skill-name lookup index on tool_calls.
+      await conn.run(
+        `CREATE INDEX IF NOT EXISTS idx_tools_skill_name ON tool_calls (skill_name)`,
+      );
+      // S-07: per (session, skill) loaded-vs-invoked view.
+      await conn.run(
+        `CREATE OR REPLACE VIEW v_skill_usage AS
+         WITH loaded AS (
+           SELECT session_id, skill_name, MAX(skill_count) AS skills_loaded_in_session
+           FROM session_skills
+           GROUP BY session_id, skill_name
+         ),
+         invoked AS (
+           SELECT
+             session_id,
+             COALESCE(skill_name, parameters->>'skill') AS skill_name,
+             COUNT(*) AS invocations,
+             SUM(CASE WHEN success THEN 1 ELSE 0 END) AS successes,
+             SUM(CASE
+                   WHEN skill_caller_type IS NOT NULL AND skill_caller_type <> 'direct'
+                   THEN 1 ELSE 0
+                 END) AS non_direct_invocations
+           FROM tool_calls
+           WHERE tool_name = 'Skill'
+           GROUP BY session_id, COALESCE(skill_name, parameters->>'skill')
+         )
+         SELECT
+           COALESCE(l.session_id, i.session_id) AS session_id,
+           COALESCE(l.skill_name, i.skill_name) AS skill_name,
+           (l.skill_name IS NOT NULL) AS was_loaded,
+           COALESCE(i.invocations, 0) AS invocations,
+           COALESCE(i.successes, 0) AS successes,
+           COALESCE(i.non_direct_invocations, 0) AS non_direct_invocations
+         FROM loaded l
+         FULL OUTER JOIN invoked i
+           ON l.session_id = i.session_id AND l.skill_name = i.skill_name`,
+      );
+      // S-08: record the migration.
+      await conn.run(
+        `INSERT INTO schema_migrations (version, description) VALUES (5, 'Skill Analysis: session_skills table + tool_calls.skill_name/skill_caller_type columns + v_skill_usage view') ON CONFLICT (version) DO NOTHING`,
+      );
+    } catch (err) {
+      throw new MigrationError(5, err as Error);
     }
   }
 

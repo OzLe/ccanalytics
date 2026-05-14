@@ -28,6 +28,7 @@ import InsightCard from "@/components/ui/InsightCard";
 import ChartTooltip from "@/components/charts/ChartTooltip";
 import SubscriptionValueBand from "@/components/ui/SubscriptionValueBand";
 import { useCostTotal, useCostTrend, useCostByModel } from "@/hooks/useCostData";
+import { useTokenTotal } from "@/hooks/useTokenData";
 import { useSessionStats, useContextPressure } from "@/hooks/useSessionsQuery";
 import { useCacheMetrics } from "@/hooks/useCacheData";
 import { useToolUsage, useToolFailureChains } from "@/hooks/useToolData";
@@ -38,6 +39,7 @@ import {
   formatCostWithBasis,
   formatPercent,
   formatDate,
+  formatTokens,
 } from "@/lib/formatters";
 import {
   API_EQUIVALENT_TOOLTIP,
@@ -90,6 +92,7 @@ function computeTrendPercent(data: { costUSD: number }[]): number | null {
 export default function DashboardPage() {
   /* ── Data hooks ────────────────────────────────────────────── */
   const costTotal = useCostTotal();
+  const tokensTotal = useTokenTotal();
   const sessionStats = useSessionStats();
   const cacheMetrics = useCacheMetrics();
   const costTrend = useCostTrend("day");
@@ -105,7 +108,10 @@ export default function DashboardPage() {
   const tier = settings.data?.subscription.tier;
 
   const isLoading =
-    costTotal.isLoading || sessionStats.isLoading || cacheMetrics.isLoading;
+    costTotal.isLoading ||
+    tokensTotal.isLoading ||
+    sessionStats.isLoading ||
+    cacheMetrics.isLoading;
 
   /* ── Cost trend chart data ─────────────────────────────────── */
   const trendData = useMemo(() => {
@@ -235,7 +241,7 @@ export default function DashboardPage() {
             subtitle="Key metrics for the selected period"
           />
         </div>
-        <div className="grid grid-cols-2 gap-[var(--space-5)] lg:grid-cols-5">
+        <div className="grid grid-cols-2 gap-[var(--space-5)] lg:grid-cols-6">
           {[
             <KPICard
               key="total-cost"
@@ -248,6 +254,36 @@ export default function DashboardPage() {
               trend={
                 costTrendPercent !== null
                   ? { value: costTrendPercent, label: "recent trend" }
+                  : undefined
+              }
+              loading={isLoading}
+            />,
+            /* F1: Total Tokens — period total (input + output + cache write +
+               cache read) over the canonical cost-row population, so it
+               reconciles 1:1 with Total Cost. The hint carries the 4-way
+               breakdown and the unfiltered all-time total (D7). No trend
+               badge (D9). Placed adjacent to Total Cost for visual parity. */
+            <KPICard
+              key="total-tokens"
+              className="h-full"
+              label="Total Tokens"
+              labelTooltip="Sum of input + output + cache-write + cache-read tokens over the same assistant-turn population the Total Cost KPI uses, so the two reconcile. The headline is the selected period; the hint shows the 4-way breakdown and the dataset-wide all-time total (which ignores the active filters)."
+              value={
+                tokensTotal.data
+                  ? formatTokens(tokensTotal.data.period.totalTokens)
+                  : "--"
+              }
+              type="tokens"
+              variant="default"
+              hint={
+                tokensTotal.data
+                  ? `In ${formatTokens(tokensTotal.data.period.inputTokens)} · Out ${formatTokens(
+                      tokensTotal.data.period.outputTokens,
+                    )} · Cache R ${formatTokens(
+                      tokensTotal.data.period.cacheReadTokens,
+                    )} · Cache W ${formatTokens(
+                      tokensTotal.data.period.cacheWriteTokens,
+                    )} · All-time ${formatTokens(tokensTotal.data.allTime.totalTokens)}`
                   : undefined
               }
               loading={isLoading}

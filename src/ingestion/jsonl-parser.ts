@@ -12,6 +12,7 @@ import type {
   AssistantMessage,
   FileHistorySnapshot,
   QueueOperation,
+  AttachmentRecord,
 } from "../types/index.js";
 
 /** Discriminated union of all parsed JSONL entry types. */
@@ -19,7 +20,8 @@ export type ParsedEntry =
   | { type: "user"; data: UserMessage }
   | { type: "assistant"; data: AssistantMessage }
   | { type: "file-history-snapshot"; data: FileHistorySnapshot }
-  | { type: "queue-operation"; data: QueueOperation };
+  | { type: "queue-operation"; data: QueueOperation }
+  | { type: "attachment"; data: AttachmentRecord };
 
 /** Known JSONL types that we intentionally skip (no analytics value). */
 const SKIPPED_TYPES = new Set(["progress", "system", "summary"]);
@@ -96,6 +98,17 @@ export class JSONLParser {
         return {
           status: "parsed",
           entry: { type: "queue-operation", data: raw as unknown as QueueOperation },
+        };
+
+      case "attachment":
+        // P-02: promote `attachment` records from default:skipped to a parsed
+        // case so adapters can pick out `attachment.type === "skill_listing"`.
+        // Kept permissive (D13) — non-skill_listing attachments still parse
+        // here but the adapters ignore them. bytesRead/linesProcessed
+        // accounting is unaffected (same byte math, just a different status).
+        return {
+          status: "parsed",
+          entry: { type: "attachment", data: raw as unknown as AttachmentRecord },
         };
 
       default:

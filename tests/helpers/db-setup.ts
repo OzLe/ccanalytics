@@ -101,6 +101,100 @@ export async function seedTestData(connection: DuckDBConnection): Promise<void> 
   `);
 }
 
+/**
+ * Seed skill-analysis fixtures (migration 5) on top of {@link seedTestData}.
+ *
+ * Additive: this only INSERTs into `session_skills`, `conversation_turns`
+ * (extra `user` turns, all 0-token so they are invisible to the token / cost /
+ * cache analyzers), and `tool_calls` (`Skill` rows). It never mutates the rows
+ * `seedTestData` creates, so the existing analyzer tests are unaffected.
+ *
+ * Call AFTER `seedTestData` — the `Skill` `tool_calls` join onto
+ * `conversation_turns`, and the period-session scoping in `session_skills`,
+ * both rely on the base sessions (`sess-001/002/003`) already existing.
+ *
+ * Fixture layout (all timestamps inside 2026-02-19 .. 2026-02-22):
+ *
+ *   LOADED (`session_skills`)
+ *     skill-alpha : sess-001, sess-003           (2 sessions, also invoked)
+ *     skill-beta  : sess-001                     (1 session,  also invoked)
+ *     skill-ghost : sess-002, sess-003           (2 sessions, NEVER invoked → dead weight)
+ *     skill-orphan: sess-003                     (1 session,  NEVER invoked → dead weight)
+ *
+ *   INVOKED (`tool_calls` where tool_name = 'Skill')
+ *     skill-alpha : sess-001 ×3 (success TRUE, TRUE, NULL), sess-003 ×1 (FALSE)
+ *                   → the sess-001 ×3 is a thrash row; the sess-003 row uses
+ *                     skill_name = NULL + parameters->>'skill' (COALESCE fallback)
+ *     skill-beta  : sess-002 ×2 (both success NULL) — thrash row; one row uses
+ *                   the COALESCE fallback. skill-beta is invoked in the period
+ *                   so it is NOT dead weight even though loaded only once.
+ *     loop        : sess-003 ×2 (success TRUE, TRUE) — thrash row, but `loop`
+ *                   is a KNOWN_REENTRANT skill so isKnownReentrant = true.
+ *
+ *   skill_caller_type is populated on a subset of rows ('user' / 'agent').
+ */
+export async function seedSkillData(
+  connection: DuckDBConnection,
+): Promise<void> {
+  // Extra host turns for the Skill tool_calls — role 'user', 0 tokens, so they
+  // are invisible to the token / cost / cache fixtures (those predicates all
+  // require role = 'assistant'). The `model` is set to each session's model so
+  // the analyzer's model filter — which joins `tool_calls` onto the hosting
+  // `conversation_turns` row — narrows the Skill rows correctly. The
+  // skill-analyzer join needs (turn_id, session_id) to match and the timestamp
+  // to fall in range.
+  await connection.run(`
+    INSERT INTO conversation_turns (turn_id, session_id, role, timestamp,
+      input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+      cost_usd, model, stop_reason, request_id, has_tool_use, has_thinking)
+    VALUES
+      ('turn-sk-101', 'sess-001', 'user', '2026-02-20 10:10:00', 0, 0, 0, 0, 0, 'claude-sonnet-4-5', NULL, NULL, FALSE, FALSE),
+      ('turn-sk-102', 'sess-001', 'user', '2026-02-20 10:11:00', 0, 0, 0, 0, 0, 'claude-sonnet-4-5', NULL, NULL, FALSE, FALSE),
+      ('turn-sk-103', 'sess-001', 'user', '2026-02-20 10:12:00', 0, 0, 0, 0, 0, 'claude-sonnet-4-5', NULL, NULL, FALSE, FALSE),
+      ('turn-sk-201', 'sess-002', 'user', '2026-02-20 14:20:00', 0, 0, 0, 0, 0, 'claude-opus-4', NULL, NULL, FALSE, FALSE),
+      ('turn-sk-202', 'sess-002', 'user', '2026-02-20 14:21:00', 0, 0, 0, 0, 0, 'claude-opus-4', NULL, NULL, FALSE, FALSE),
+      ('turn-sk-301', 'sess-003', 'user', '2026-02-21 09:10:00', 0, 0, 0, 0, 0, 'claude-sonnet-4-5', NULL, NULL, FALSE, FALSE),
+      ('turn-sk-302', 'sess-003', 'user', '2026-02-21 09:11:00', 0, 0, 0, 0, 0, 'claude-sonnet-4-5', NULL, NULL, FALSE, FALSE),
+      ('turn-sk-303', 'sess-003', 'user', '2026-02-21 09:12:00', 0, 0, 0, 0, 0, 'claude-sonnet-4-5', NULL, NULL, FALSE, FALSE)
+  `);
+
+  // LOADED side — session_skills (one row per (session, skill); skill_count
+  // and the rest are not read by the analyzer but are populated for realism).
+  await connection.run(`
+    INSERT INTO session_skills (session_skill_id, session_id, record_uuid,
+      skill_name, skill_description, skill_count, is_initial, captured_at, source)
+    VALUES
+      ('ss-001', 'sess-001', 'rec-001', 'skill-alpha',  'Alpha skill',  4, TRUE,  '2026-02-20 10:00:00', 'skill_listing'),
+      ('ss-002', 'sess-001', 'rec-001', 'skill-beta',   'Beta skill',   4, TRUE,  '2026-02-20 10:00:00', 'skill_listing'),
+      ('ss-003', 'sess-002', 'rec-002', 'skill-ghost',  'Ghost skill',  2, TRUE,  '2026-02-20 14:00:00', 'skill_listing'),
+      ('ss-004', 'sess-003', 'rec-003', 'skill-alpha',  'Alpha skill',  3, TRUE,  '2026-02-21 09:00:00', 'skill_listing'),
+      ('ss-005', 'sess-003', 'rec-003', 'skill-ghost',  'Ghost skill',  3, TRUE,  '2026-02-21 09:00:00', 'skill_listing'),
+      ('ss-006', 'sess-003', 'rec-003', 'skill-orphan', 'Orphan skill', 3, TRUE,  '2026-02-21 09:00:00', 'skill_listing')
+  `);
+
+  // INVOKED side — tool_calls where tool_name = 'Skill'. Some rows carry an
+  // explicit skill_name; the COALESCE-fallback rows leave skill_name NULL and
+  // only set parameters->>'skill'. skill_caller_type is set on a subset.
+  await connection.run(`
+    INSERT INTO tool_calls (tool_call_id, session_id, turn_id, tool_name,
+      tool_type, mcp_server, duration_ms, success, error_message, parameters,
+      skill_name, skill_caller_type)
+    VALUES
+      -- skill-alpha in sess-001 ×3 (thrash). success TRUE / TRUE / NULL.
+      ('sk-tc-001', 'sess-001', 'turn-sk-101', 'Skill', 'native', NULL, 100, TRUE,  NULL, '{"skill":"skill-alpha"}', 'skill-alpha', 'user'),
+      ('sk-tc-002', 'sess-001', 'turn-sk-102', 'Skill', 'native', NULL, 110, TRUE,  NULL, '{"skill":"skill-alpha"}', 'skill-alpha', 'user'),
+      ('sk-tc-003', 'sess-001', 'turn-sk-103', 'Skill', 'native', NULL, 120, NULL,  NULL, '{"skill":"skill-alpha"}', 'skill-alpha', 'agent'),
+      -- skill-alpha in sess-003 ×1 (FALSE) — COALESCE fallback: skill_name NULL.
+      ('sk-tc-004', 'sess-003', 'turn-sk-301', 'Skill', 'native', NULL, 130, FALSE, 'boom', '{"skill":"skill-alpha"}', NULL, 'agent'),
+      -- skill-beta in sess-002 ×2 (thrash). Both success NULL → per-skill rate NULL.
+      ('sk-tc-005', 'sess-002', 'turn-sk-201', 'Skill', 'native', NULL, 140, NULL,  NULL, '{"skill":"skill-beta"}', 'skill-beta', NULL),
+      ('sk-tc-006', 'sess-002', 'turn-sk-202', 'Skill', 'native', NULL, 150, NULL,  NULL, '{"skill":"skill-beta"}', NULL, NULL),
+      -- loop in sess-003 ×2 (thrash) — KNOWN_REENTRANT, success TRUE / TRUE.
+      ('sk-tc-007', 'sess-003', 'turn-sk-302', 'Skill', 'native', NULL, 160, TRUE,  NULL, '{"skill":"loop"}', 'loop', 'user'),
+      ('sk-tc-008', 'sess-003', 'turn-sk-303', 'Skill', 'native', NULL, 170, TRUE,  NULL, '{"skill":"loop"}', 'loop', 'user')
+  `);
+}
+
 function splitStatements(sql: string): string[] {
   const stripped = sql
     .replace(/--.*$/gm, "")

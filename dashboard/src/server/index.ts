@@ -16,8 +16,10 @@ import cors from "cors";
 
 import healthRoutes from "./routes/health.js";
 import costRoutes from "./routes/cost.js";
+import tokensRoutes from "./routes/tokens.js";
 import sessionsRoutes from "./routes/sessions.js";
 import toolsRoutes from "./routes/tools.js";
+import skillsRoutes from "./routes/skills.js";
 import cacheRoutes from "./routes/cache.js";
 import activityRoutes from "./routes/activity.js";
 import filtersRoutes from "./routes/filters.js";
@@ -63,8 +65,10 @@ function createApp(): express.Application {
   // ---------------------------------------------------------------------------
   app.use("/api/health", healthRoutes);
   app.use("/api/cost", costRoutes);
+  app.use("/api/tokens", tokensRoutes);
   app.use("/api/sessions", sessionsRoutes);
   app.use("/api/tools", toolsRoutes);
+  app.use("/api/skills", skillsRoutes);
   app.use("/api/cache", cacheRoutes);
   app.use("/api/activity", activityRoutes);
   app.use("/api/filters", filtersRoutes);
@@ -138,6 +142,7 @@ const server = app.listen(PORT, () => {
   console.log(`  GET /api/cost/by-model`);
   console.log(`  GET /api/cost/by-project`);
   console.log(`  GET /api/cost/trend`);
+  console.log(`  GET /api/tokens/total`);
   console.log(`  GET /api/sessions`);
   console.log(`  GET /api/sessions/stats`);
   console.log(`  GET /api/sessions/context-pressure`);
@@ -148,6 +153,11 @@ const server = app.listen(PORT, () => {
   console.log(`  GET /api/tools/failure-chains`);
   console.log(`  GET /api/tools/mcp-servers`);
   console.log(`  GET /api/tools/chains`);
+  console.log(`  GET /api/skills/summary`);
+  console.log(`  GET /api/skills/loaded`);
+  console.log(`  GET /api/skills/invocations`);
+  console.log(`  GET /api/skills/trend`);
+  console.log(`  GET /api/skills/not-required`);
   console.log(`  GET /api/cache/metrics`);
   console.log(`  GET /api/cache/trend`);
   console.log(`  GET /api/activity/hourly`);

@@ -6,6 +6,7 @@ import CostAnalysisPage from "@/pages/CostAnalysisPage";
 import SessionsPage from "@/pages/SessionsPage";
 import SessionDetailPage from "@/pages/SessionDetailPage";
 import ToolsPage from "@/pages/ToolsPage";
+import SkillsPage from "@/pages/SkillsPage";
 import CachePage from "@/pages/CachePage";
 import ActivityPage from "@/pages/ActivityPage";
 import PromptsPage from "@/pages/PromptsPage";
@@ -39,6 +40,7 @@ export default function App() {
           <Route path="/sessions" element={<SessionsPage />} />
           <Route path="/sessions/:id" element={<SessionDetailPage />} />
           <Route path="/tools" element={<ToolsPage />} />
+          <Route path="/skills" element={<SkillsPage />} />
           <Route path="/cache" element={<CachePage />} />
           <Route path="/activity" element={<ActivityPage />} />
           <Route path="/prompts" element={<PromptsPage />} />

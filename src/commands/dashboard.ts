@@ -100,8 +100,9 @@ export function registerDashboardCommand(parent: Command): void {
         const executor = new QueryExecutor(db.getConnection());
         const formatter = new OutputFormatter();
 
-        const { CostAnalyzer, CacheAnalyzer, ToolAnalyzer, SessionAnalyzer } = await import("../queries/index.js");
+        const { CostAnalyzer, TokenAnalyzer, CacheAnalyzer, ToolAnalyzer, SessionAnalyzer } = await import("../queries/index.js");
         const costAnalyzer = new CostAnalyzer(executor);
+        const tokenAnalyzer = new TokenAnalyzer(executor);
         const cacheAnalyzer = new CacheAnalyzer(executor);
         const toolAnalyzer = new ToolAnalyzer(executor);
         const sessionAnalyzer = new SessionAnalyzer(executor);
@@ -118,8 +119,9 @@ export function registerDashboardCommand(parent: Command): void {
             process.stdout.write("\x1b[2J\x1b[H");
 
             // Query data
-            const [totalCost, cacheMetrics, sessionStats] = await Promise.all([
+            const [totalCost, tokenTotals, cacheMetrics, sessionStats] = await Promise.all([
               costAnalyzer.getTotalCost(range),
+              tokenAnalyzer.getTotalTokens(range),
               cacheAnalyzer.getCacheHitRate(range),
               sessionAnalyzer.getSessionStats(range),
             ]);
@@ -146,8 +148,12 @@ export function registerDashboardCommand(parent: Command): void {
             process.stdout.write(`  Period: ${periodLabel}${compact ? " (compact)" : ""}\n\n`);
 
             // Cost Summary
+            // F1: "Total Tokens" is the period token total (input + output +
+            // cache write + cache read) — it reconciles 1:1 with Total Cost
+            // because TokenAnalyzer aggregates the same cost-row population.
             const costSummary = formatter.formatSummary([
               { label: "Total Cost", value: formatter.formatCost(totalCost.totalCostUSD) },
+              { label: "Total Tokens", value: formatter.formatTokens(tokenTotals.period.totalTokens) },
               { label: "Input Tokens", value: formatter.formatTokens(totalCost.totalInputTokens) },
               { label: "Output Tokens", value: formatter.formatTokens(totalCost.totalOutputTokens) },
               ...(compact ? [] : [

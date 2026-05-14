@@ -177,6 +177,74 @@ describe("ClaudeDesktopAdapter", () => {
       expect(batch.toolCalls).toHaveLength(1);
       expect(batch.toolCalls[0].tool_name).toBe("Read");
       expect(batch.toolCalls[0].tool_type).toBe("builtin");
+      // Non-Skill tool — both skill columns NULL (S-04/S-05).
+      expect(batch.toolCalls[0].skill_name).toBeNull();
+      expect(batch.toolCalls[0].skill_caller_type).toBeNull();
+    });
+
+    it("sessionSkills is [] when the audit file has no skill_listing record", async () => {
+      const file = makeDesktopFile(
+        path.join(FIXTURES_DIR, "desktop-audit.jsonl"),
+        "desktop-sess-001",
+      );
+      const parsed = await adapter.parseFile(file, 0);
+      const deduped = adapter.deduplicate(parsed.assistantMessages);
+      const batch = adapter.buildInsertionBatch(
+        file,
+        deduped.unique,
+        parsed.userMessages,
+        parsed.loadedSkills,
+      );
+
+      // P-06 is defensive — the standard Desktop fixture emits no
+      // skill_listing, so the branch never fires and the batch stays empty.
+      expect(parsed.loadedSkills).toEqual([]);
+      expect(batch.sessionSkills).toEqual([]);
+    });
+  });
+
+  describe("skill_listing + Skill tool_use (P-06 — defensive mirror)", () => {
+    it("parses a skill_listing attachment when Desktop does emit one", async () => {
+      const file = makeDesktopFile(
+        path.join(FIXTURES_DIR, "desktop-skill-listing-audit.jsonl"),
+        "desktop-skill-001",
+      );
+      const parsed = await adapter.parseFile(file, 0);
+
+      expect(parsed.loadedSkills).toHaveLength(1);
+      const rec = parsed.loadedSkills![0];
+      expect(rec.sessionId).toBe("desktop-skill-001");
+      expect(rec.recordUuid).toBe("uuid-d-att-001");
+      expect(rec.skillCount).toBe(2);
+      expect(rec.isInitial).toBe(true);
+      expect(rec.skills.map((s) => s.name)).toEqual(["simplify", "linear"]);
+    });
+
+    it("emits sessionSkills rows + tags Skill tool_calls", async () => {
+      const file = makeDesktopFile(
+        path.join(FIXTURES_DIR, "desktop-skill-listing-audit.jsonl"),
+        "desktop-skill-001",
+      );
+      const parsed = await adapter.parseFile(file, 0);
+      const deduped = adapter.deduplicate(parsed.assistantMessages);
+      const batch = adapter.buildInsertionBatch(
+        file,
+        deduped.unique,
+        parsed.userMessages,
+        parsed.loadedSkills,
+      );
+
+      expect(batch.sessionSkills).toHaveLength(2);
+      const simplify = batch.sessionSkills.find((s) => s.skill_name === "simplify")!;
+      expect(simplify.session_skill_id).toBe(
+        "desktop-skill-001:uuid-d-att-001:simplify",
+      );
+      expect(simplify.is_initial).toBe(true);
+
+      const skillCalls = batch.toolCalls.filter((tc) => tc.tool_name === "Skill");
+      expect(skillCalls).toHaveLength(1);
+      expect(skillCalls[0].skill_name).toBe("simplify");
+      expect(skillCalls[0].skill_caller_type).toBe("direct");
     });
   });
 
