@@ -86,6 +86,21 @@ ccanalytics watch
 ccanalytics watch --interval 5000   # 5s polling interval
 ```
 
+### Run at login (macOS)
+
+`ccanalytics web` launches the web dashboard (API on `:3001`, UI on `:5173`).
+To start it automatically when you log in, install the LaunchAgent:
+
+```bash
+./scripts/install-launchagent.sh              # install + start now
+./scripts/install-launchagent.sh --status     # check whether it's loaded
+./scripts/install-launchagent.sh --uninstall  # unload + remove
+```
+
+The agent runs `ccanalytics web --no-open` and keeps it alive; logs go to
+`~/.ccanalytics/logs/`. It pins the current `node` path, so re-run the script
+after switching node versions (e.g. via nvm).
+
 ### `export` — Export data
 
 Export analytics to Parquet, CSV, or JSON for use in other tools.
