@@ -16,7 +16,7 @@
  * INGEST time by `calculateCost()` and stored. Fixing `pricing.ts` / the SQL
  * `CASE` does NOT retroactively correct already-ingested rows; the daily/trend
  * read paths sum the stored column and would keep serving the old (wrong)
- * total. See `.a5c/.../audit-plan.md` §1a.
+ * total.
  *
  * IDEMPOTENT: the script computes `cost_usd` purely from the (immutable) token
  * columns × the current rates, so re-running it produces the exact same

@@ -19,6 +19,7 @@
  */
 
 import * as fs from "node:fs/promises";
+import type { Dirent } from "node:fs";
 import * as path from "node:path";
 import type {
   ISourceAdapter,
@@ -153,7 +154,7 @@ export class ClaudeDesktopAdapter implements ISourceAdapter {
     sinceDate: Date | null,
     results: DiscoveredFile[],
   ): Promise<void> {
-    let entries: Awaited<ReturnType<typeof fs.readdir>>;
+    let entries: Dirent<string>[];
     try {
       entries = await fs.readdir(dir, { withFileTypes: true });
     } catch {

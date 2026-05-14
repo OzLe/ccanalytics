@@ -71,7 +71,10 @@ export class ClaudeCodeAdapter implements ISourceAdapter {
           timestamp: msg.timestamp,
           uuid: msg.uuid,
           parentUuid: msg.parentUuid,
-          content: msg.message?.content ?? [],
+          // User content may be a plain string or a content-block array;
+          // downstream extractContentText() handles both, so preserve the raw
+          // value and cast to satisfy the unknown[] field type.
+          content: (msg.message?.content ?? []) as unknown as unknown[],
         });
       } else if (entry.type === "assistant") {
         const msg = entry.data;
@@ -82,7 +85,7 @@ export class ClaudeCodeAdapter implements ISourceAdapter {
           uuid: msg.uuid,
           parentUuid: msg.parentUuid,
           requestId: msg.requestId,
-          model: msg.model ?? msg.message?.model ?? null ?? undefined,
+          model: msg.model ?? msg.message?.model ?? undefined,
           content: msg.message?.content ?? [],
           stopReason: msg.message?.stop_reason,
           usage,

@@ -4,13 +4,22 @@ Local-first analytics for Claude Code sessions — cost tracking, cache efficien
 
 ## Quickstart
 
+ccanalytics is not yet published to npm — build it from source:
+
 ```bash
-# Install globally
-npm install -g ccanalytics
+git clone https://github.com/OzLe/ccanalytics.git
+cd ccanalytics
+npm install
+npm run build
 
-# Or run directly with npx
-npx ccanalytics
+# Optionally link the `ccanalytics` command onto your PATH
+npm link
+```
 
+Requires **Node.js 20+**. Without `npm link`, invoke the CLI directly as
+`node dist/cli.cjs <command>` in place of `ccanalytics <command>` below.
+
+```bash
 # 1. Ingest your Claude Code session data
 ccanalytics ingest
 
@@ -30,7 +39,7 @@ ccanalytics dashboard
 ccanalytics watch
 ```
 
-Requires **Node.js 20+**. Data is read from `~/.claude/projects/` and stored in a local DuckDB database at `~/.ccanalytics/analytics.duckdb`.
+Data is read from `~/.claude/projects/` and stored in a local DuckDB database at `~/.ccanalytics/analytics.duckdb`.
 
 ## Commands
 
@@ -85,6 +94,24 @@ Monitors `~/.claude/projects/**/*.jsonl` for changes and triggers incremental in
 ccanalytics watch
 ccanalytics watch --interval 5000   # 5s polling interval
 ```
+
+### `web` — Browser dashboard
+
+A richer React dashboard with interactive charts. It has its own dependencies,
+so install them once before first use:
+
+```bash
+cd dashboard && npm install && cd ..
+```
+
+```bash
+ccanalytics web              # API on :3001, UI on :5173
+ccanalytics web --dev        # Vite dev server with hot reload
+ccanalytics web --api-only   # Start only the API server
+```
+
+`npm run build:dashboard` produces an optimized production build that `web`
+serves automatically when present.
 
 ### Run at login (macOS)
 

@@ -923,7 +923,7 @@ Archiving a month of analytics data for long-term storage or team sharing.
 ```bash
 $ ccanalytics export --format parquet --period 30d --output ~/analytics-archive/
 
-Exported 4 tables to /Users/oz/analytics-archive/
+Exported 4 tables to /Users/sam/analytics-archive/
   sessions.parquet              124 rows      22 KB
   conversation_turns.parquet  6,103 rows     580 KB
   tool_calls.parquet          4,218 rows     412 KB
@@ -942,7 +942,7 @@ $ duckdb -c "SELECT count(*) FROM read_parquet('~/analytics-archive/sessions.par
 # Export just tool data as CSV for spreadsheet analysis
 $ ccanalytics export --format csv --table tool_calls --output ~/tools.csv
 
-Exported 1 table to /Users/oz/tools.csv
+Exported 1 table to /Users/sam/tools.csv
   tool_calls.csv   28,519 rows   4.2 MB
 ```
 
