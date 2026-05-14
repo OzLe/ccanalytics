@@ -16,7 +16,7 @@ import type {
   IngestionResult,
   IngestionProgress,
 } from "../types/index.js";
-import type { ConnectionManager } from "../db/connection.js";
+import type { ConnectionLike } from "../db/connection.js";
 import type { ISourceAdapter } from "./adapters/types.js";
 import { BatchInserter } from "./batch-inserter.js";
 import { IngestionTracker } from "./ingestion-tracker.js";
@@ -40,7 +40,7 @@ export class IngestionPipeline {
 
   constructor(
     private adapters: ISourceAdapter[],
-    private db: ConnectionManager,
+    private db: ConnectionLike,
     options?: { backupDir?: string },
   ) {
     this.inserter = new BatchInserter(db);

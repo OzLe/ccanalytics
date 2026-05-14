@@ -3,11 +3,14 @@ import { useFilters, type Period } from "@/hooks/useFilters";
 import { buildFilterQS } from "@/hooks/useFilterParams";
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "@/lib/api";
-import { useEffect, useCallback, useMemo } from "react";
+import { useEffect, useCallback, useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
 import { pages } from "@/lib/pages";
-import { Menu, Command } from "lucide-react";
+import { Menu, Command, RotateCw } from "lucide-react";
 import Dropdown from "@/components/ui/Dropdown";
+import { Button } from "@/components/ui/Button";
+import Toast, { type ToastVariant } from "@/components/ui/Toast";
+import { useIngest } from "@/hooks/useIngest";
 
 /* ── Period options ───────────────────────────────────────── */
 const periodOptions: { value: Period; label: string }[] = [
@@ -29,6 +32,22 @@ const routeSubtitles: Record<string, string> = {
   "/activity": "Timeline of coding activity",
   "/settings": "Application preferences and configuration",
 };
+
+/**
+ * Pull a human-readable message out of a thrown error. The API client throws
+ * `ApiError` whose `.message` is the raw response body — for our routes that
+ * body is JSON like `{ "error": "...", "message": "..." }`, so unwrap it when
+ * possible (e.g. the 409 "already running" case) and fall back to the raw text.
+ */
+function extractErrorMessage(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  try {
+    const parsed = JSON.parse(raw) as { message?: string; error?: string };
+    return parsed.message ?? parsed.error ?? raw;
+  } catch {
+    return raw;
+  }
+}
 
 function getPageInfo(pathname: string): { title: string; subtitle: string } {
   /* Handle session detail */
@@ -128,7 +147,65 @@ export default function TopBar({ onMenuClick }: TopBarProps) {
           : s.sourceType,
   }));
 
+  /* ── Ingest: POST /api/ingest, surface the result in a toast ──────── */
+  const ingest = useIngest();
+  const [toastDismissed, setToastDismissed] = useState(false);
+
+  const handleIngest = useCallback(() => {
+    setToastDismissed(false);
+    ingest.mutate();
+  }, [ingest]);
+
+  /* Derive the toast content from the mutation state. */
+  const toast = useMemo<{
+    variant: ToastVariant;
+    title: string;
+    lines: string[];
+    autoDismissMs?: number;
+  } | null>(() => {
+    if (ingest.isPending) {
+      return {
+        variant: "loading",
+        title: "Ingesting sessions…",
+        lines: ["Parsing JSONL files and loading new data."],
+      };
+    }
+    if (ingest.isSuccess) {
+      const r = ingest.data.data;
+      const failed = r.filesFailed > 0;
+      const lines = [
+        `${r.filesProcessed} processed · ${r.filesSkipped} up to date · ${r.entriesIngested.toLocaleString()} entries`,
+      ];
+      const extras: string[] = [];
+      if (r.duplicatesRemoved > 0)
+        extras.push(`${r.duplicatesRemoved.toLocaleString()} duplicates`);
+      if (r.parseErrors > 0) extras.push(`${r.parseErrors} parse errors`);
+      if (r.filesFailed > 0) extras.push(`${r.filesFailed} files failed`);
+      if (extras.length > 0) lines.push(extras.join(" · "));
+      lines.push(`Done in ${(r.durationMs / 1000).toFixed(1)}s`);
+      return {
+        variant: failed ? "error" : "success",
+        title: failed
+          ? "Ingestion finished with errors"
+          : "Ingestion complete",
+        lines,
+        autoDismissMs: failed ? undefined : 6000,
+      };
+    }
+    if (ingest.isError) {
+      return {
+        variant: "error",
+        title: "Ingestion failed",
+        lines: [extractErrorMessage(ingest.error)],
+      };
+    }
+    return null;
+  }, [ingest.isPending, ingest.isSuccess, ingest.isError, ingest.data, ingest.error]);
+
+  const showToast = toast !== null && !toastDismissed;
+
   return (
+    <>
     <header
       className={cn(
         "sticky top-0 z-[var(--z-dropdown)]",
@@ -256,7 +333,38 @@ export default function TopBar({ onMenuClick }: TopBarProps) {
           <Command size={11} className="shrink-0" />
           <span>K</span>
         </button>
+
+        {/* Divider */}
+        <div className="hidden h-6 w-px shrink-0 bg-[var(--border-subtle)] sm:block" />
+
+        {/* Ingest button — runs POST /api/ingest (in-process, shared with the CLI) */}
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={handleIngest}
+          disabled={ingest.isPending}
+          className="shrink-0"
+          aria-label="Ingest sessions"
+          title="Parse new JSONL session files into the database"
+        >
+          <RotateCw
+            size={13}
+            className={cn("shrink-0", ingest.isPending && "animate-spin")}
+          />
+          <span>{ingest.isPending ? "Ingesting…" : "Ingest"}</span>
+        </Button>
       </div>
     </header>
+
+    {showToast && toast && (
+      <Toast
+        variant={toast.variant}
+        title={toast.title}
+        lines={toast.lines}
+        autoDismissMs={toast.autoDismissMs}
+        onDismiss={() => setToastDismissed(true)}
+      />
+    )}
+    </>
   );
 }

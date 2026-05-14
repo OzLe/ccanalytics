@@ -621,3 +621,24 @@ export interface PromptDetailResponse {
     timestamp: string;
   };
 }
+
+// ---------------------------------------------------------------------------
+// Ingest (POST /api/ingest)
+// ---------------------------------------------------------------------------
+
+/**
+ * Summary of one ingestion pass. Mirrors `IngestionResult` in the parent
+ * package (`src/types/index.ts`) — kept in sync manually because the dashboard
+ * build does not import the CLI source for types.
+ */
+export interface IngestResult {
+  filesDiscovered: number;
+  filesProcessed: number;
+  filesSkipped: number;
+  filesFailed: number;
+  failedFiles: Array<{ path: string; error: string }>;
+  entriesIngested: number;
+  duplicatesRemoved: number;
+  parseErrors: number;
+  durationMs: number;
+}

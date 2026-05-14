@@ -12,7 +12,7 @@ import type {
   ToolCallRow,
   ErrorRow,
 } from "../types/index.js";
-import type { ConnectionManager } from "../db/connection.js";
+import type { ConnectionLike } from "../db/connection.js";
 
 /** Default batch size for INSERT operations. */
 const DEFAULT_BATCH_SIZE = 1000;
@@ -66,7 +66,7 @@ function sqlVal(v: unknown): string {
 export class BatchInserter {
   private batchSize: number = DEFAULT_BATCH_SIZE;
 
-  constructor(private db: ConnectionManager) {}
+  constructor(private db: ConnectionLike) {}
 
   /**
    * Get the raw DuckDB connection for direct SQL execution.

@@ -22,10 +22,23 @@ const CORRUPTION_PATTERNS = [
 ];
 
 /**
+ * Minimal connection-provider interface.
+ *
+ * Anything that can hand out a live {@link DuckDBConnection} can drive the
+ * ingestion pipeline — it does not have to be a full {@link ConnectionManager}.
+ * The dashboard API server reuses its own long-lived connection by passing a
+ * lightweight object that satisfies this interface, which lets `runIngestion`
+ * run in-process without opening a second (lock-conflicting) connection.
+ */
+export interface ConnectionLike {
+  getConnection(): DuckDBConnection;
+}
+
+/**
  * Manages the DuckDB instance and connection lifecycle.
  * Enforces single-writer pattern: one instance, one connection per process.
  */
-export class ConnectionManager {
+export class ConnectionManager implements ConnectionLike {
   private instance: DuckDBInstance | null = null;
   private connection: DuckDBConnection | null = null;
   private dbPath: string | null = null;

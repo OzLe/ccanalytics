@@ -313,3 +313,19 @@ export async function closeDb(): Promise<void> {
 export function getDbPathInfo(): string {
   return dbPath ?? getDbPath();
 }
+
+/**
+ * Get a `ConnectionLike` wrapper around the server's singleton DuckDB
+ * connection, for handing to the shared `runIngestion()` orchestration.
+ *
+ * DuckDB is single-writer: the API server already holds a read-write
+ * connection to `analytics.duckdb`, so the ingest route must reuse THIS
+ * connection rather than opening a second one (which would deadlock on the
+ * file lock). Reusing it keeps the whole ingestion pass in-process.
+ */
+export async function getIngestConnection(): Promise<{
+  getConnection(): DuckDBConnection;
+}> {
+  const conn = await getConnection();
+  return { getConnection: () => conn };
+}

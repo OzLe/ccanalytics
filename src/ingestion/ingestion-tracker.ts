@@ -7,14 +7,14 @@
  */
 
 import type { IngestionState } from "../types/index.js";
-import type { ConnectionManager } from "../db/connection.js";
+import type { ConnectionLike } from "../db/connection.js";
 
 /**
  * Tracks the ingestion progress for each JSONL file.
  * Persists state in the ingestion_state table for incremental reads.
  */
 export class IngestionTracker {
-  constructor(private db: ConnectionManager) {}
+  constructor(private db: ConnectionLike) {}
 
   /**
    * Get the raw DuckDB connection for direct SQL execution.

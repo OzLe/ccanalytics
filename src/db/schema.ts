@@ -7,7 +7,9 @@
  */
 
 import * as fs from "node:fs/promises";
+import { existsSync } from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { MigrationError } from "../errors.js";
 
 /** Current schema version matching sql/schema.sql */
@@ -36,24 +38,40 @@ function splitStatements(sql: string): string[] {
  * In CJS bundle (dist/cli.cjs), __dirname points to dist/, so sql/ is one level up.
  * In ESM source (src/db/schema.ts), navigate up 3 levels to project root.
  */
+/**
+ * Resolve the directory this module lives in, working in BOTH module systems:
+ *   - ESM source run via tsx (the package is "type": "module") — use
+ *     import.meta.url. This path is exercised by the dashboard's POST
+ *     /api/ingest route, which loads the ingestion pipeline from source.
+ *   - The tsup CJS bundle (dist/cli.cjs), where import.meta.url may be absent —
+ *     fall back to __dirname (typeof guard is safe even when undefined), then
+ *     to process.cwd().
+ */
+function getModuleDir(): string {
+  if (typeof import.meta.url === "string") {
+    return path.dirname(fileURLToPath(import.meta.url));
+  }
+  if (typeof __dirname !== "undefined") {
+    return __dirname;
+  }
+  return process.cwd();
+}
+
 function getSqlDir(): string {
-  // tsup bundles to dist/cli.cjs, so __dirname = dist/
-  // sql/ is at project root, one level up from dist/
+  const moduleDir = getModuleDir();
+  // dist/cli.cjs        -> moduleDir = dist/,   sql/ is ../sql
+  // src/db/schema.ts    -> moduleDir = src/db/, sql/ is ../../sql
   const candidates = [
-    path.resolve(__dirname, "..", "sql"),
-    path.resolve(__dirname, "..", "..", "..", "sql"),
+    path.resolve(moduleDir, "..", "sql"),
+    path.resolve(moduleDir, "..", "..", "sql"),
+    path.resolve(moduleDir, "..", "..", "..", "sql"),
     path.resolve(process.cwd(), "sql"),
   ];
 
-  // Return first candidate that looks valid (has schema.sql)
-  // At build time we can't check, so return the most likely one
+  // Return the first candidate that actually contains schema.sql.
   for (const candidate of candidates) {
-    try {
-      // Sync check is fine during startup
-      require("node:fs").accessSync(path.join(candidate, "schema.sql"));
+    if (existsSync(path.join(candidate, "schema.sql"))) {
       return candidate;
-    } catch {
-      continue;
     }
   }
 
