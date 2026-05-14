@@ -7,6 +7,7 @@ import type {
   PromptRankingResponse,
   PromptStatsResponse,
   PromptDetailResponse,
+  PromptThroughputResponse,
 } from "@/lib/types";
 import { useFilterParams } from "./useFilterParams";
 
@@ -57,6 +58,20 @@ export function usePromptStats() {
   return useQuery({
     queryKey: ["prompts", "stats", filters],
     queryFn: () => apiGet<PromptStatsResponse>(`/prompts/stats?${qs}`),
+    select: (res) => res.data,
+  });
+}
+
+/**
+ * NEW-004: GET /api/prompts/throughput — agentic-depth / throughput metrics
+ * (prompts per session, turns per prompt, tool calls per prompt).
+ * Automatically includes global filter params (period, model, project).
+ */
+export function usePromptThroughput() {
+  const { filters, qs } = useFilterParams();
+  return useQuery({
+    queryKey: ["prompts", "throughput", filters],
+    queryFn: () => apiGet<PromptThroughputResponse>(`/prompts/throughput?${qs}`),
     select: (res) => res.data,
   });
 }

@@ -2,10 +2,29 @@
 -- ccanalytics Analytical Views
 -- Version: 0.1.0
 -- =============================================================================
+--
+-- KPI-009 — role of these views: the query analyzers (src/queries/*) and the
+-- dashboard routes (dashboard/src/server/routes/*) re-implement each view's
+-- logic inline so they can apply period/model/project filters. Only
+-- v_session_summary is currently SELECTed by code; v_daily_cost,
+-- v_cache_efficiency, v_hourly_activity, v_tool_usage, v_prompt_analysis and
+-- the NEW-001/002/003 views (v_context_pressure, v_tool_failure_trend,
+-- v_session_failure_chains) are REFERENCE / advisory definitions. They are
+-- intentionally kept (not dropped) and are the canonical specification each
+-- inline query is matched against. When a KPI definition changes, update BOTH
+-- the inline SQL and the view here so they can never drift apart (this drift
+-- was the root cause of KPI-001 / KPI-002). Every view is created with
+-- CREATE OR REPLACE VIEW — additive only.
 
 -- ---------------------------------------------------------------------------
 -- v_daily_cost: Daily cost aggregation broken down by model
 -- Powers cost trending dashboard and budget monitoring
+--
+-- COST-005: row inclusion is an explicit, intentional predicate — every
+-- assistant turn, excluding only the '<synthetic>' placeholder model. The old
+-- 'cost_usd > 0' silent filter is gone (cost must never be a proxy for "real
+-- turn"). This matches costRowPredicate() in the CLI cost-analyzer and the
+-- dashboard cost route, so token/turn counts reconcile across all cost views.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE VIEW v_daily_cost AS
 SELECT
@@ -20,7 +39,8 @@ SELECT
     COUNT(DISTINCT ct.session_id)       AS session_count
 FROM conversation_turns ct
 WHERE ct.role = 'assistant'
-  AND ct.cost_usd > 0
+  AND ct.model IS NOT NULL
+  AND ct.model <> '<synthetic>'
 GROUP BY
     CAST(ct.timestamp AS DATE),
     ct.model
@@ -29,28 +49,62 @@ ORDER BY date DESC, total_cost DESC;
 -- ---------------------------------------------------------------------------
 -- v_session_summary: Session-level summary with cache efficiency
 -- Powers session list view and detail drill-down
+--
+-- COST-004: total_cost_usd, total token counts, cache_hit_rate, num_turns and
+-- num_tool_calls are DERIVED here by aggregating the child tables
+-- (conversation_turns / tool_calls) rather than trusting the sessions.*
+-- columns. The adapters recompute the sessions.* aggregates from only the
+-- latest incremental parse batch, so the stored columns drift from the
+-- accumulated child rows (61/960 sessions diverged, ~$507 abs). Deriving from
+-- the children makes this view always reconcile with v_daily_cost and the
+-- /api/cost/* endpoints (which sum conversation_turns.cost_usd). The
+-- backfill migration (scripts/backfill-costs.mjs) additionally corrects the
+-- stored sessions.total_cost_usd column itself; the sessions.* columns are
+-- treated as advisory.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE VIEW v_session_summary AS
+WITH turn_agg AS (
+    SELECT
+        ct.session_id,
+        SUM(ct.cost_usd)                                AS total_cost_usd,
+        SUM(ct.input_tokens)                            AS input_tokens,
+        SUM(ct.output_tokens)                           AS output_tokens,
+        SUM(ct.cache_creation_tokens)                   AS cache_creation_tokens,
+        SUM(ct.cache_read_tokens)                       AS cache_read_tokens,
+        COUNT(*)                                        AS num_turns
+    FROM conversation_turns ct
+    GROUP BY ct.session_id
+),
+tool_agg AS (
+    SELECT
+        tc.session_id,
+        COUNT(*)                                        AS num_tool_calls
+    FROM tool_calls tc
+    GROUP BY tc.session_id
+)
 SELECT
     s.session_id,
     s.start_time,
     s.end_time,
     s.duration_seconds,
     s.model,
-    s.total_cost_usd,
-    (s.input_tokens + s.output_tokens + s.cache_creation_tokens + s.cache_read_tokens)
-                                        AS total_tokens,
+    COALESCE(ta.total_cost_usd, 0.0)    AS total_cost_usd,
+    COALESCE(
+        ta.input_tokens + ta.output_tokens
+        + ta.cache_creation_tokens + ta.cache_read_tokens,
+        0
+    )                                   AS total_tokens,
     CASE
-        WHEN (s.cache_read_tokens + s.cache_creation_tokens + s.input_tokens) > 0
+        WHEN COALESCE(ta.cache_read_tokens + ta.cache_creation_tokens + ta.input_tokens, 0) > 0
         THEN ROUND(
-            s.cache_read_tokens::DOUBLE /
-            (s.cache_read_tokens + s.cache_creation_tokens + s.input_tokens)::DOUBLE,
+            ta.cache_read_tokens::DOUBLE /
+            (ta.cache_read_tokens + ta.cache_creation_tokens + ta.input_tokens)::DOUBLE,
             4
         )
         ELSE 0.0
     END                                 AS cache_hit_rate,
-    s.num_turns,
-    s.num_tool_calls,
+    COALESCE(ta.num_turns, 0)           AS num_turns,
+    COALESCE(toa.num_tool_calls, 0)     AS num_tool_calls,
     s.project_path,
     s.project_name,
     s.git_branch,
@@ -59,6 +113,8 @@ SELECT
     s.source_file,
     s.source_type
 FROM sessions s
+LEFT JOIN turn_agg ta  ON ta.session_id  = s.session_id
+LEFT JOIN tool_agg toa ON toa.session_id = s.session_id
 ORDER BY s.start_time DESC;
 
 -- ---------------------------------------------------------------------------
@@ -143,6 +199,14 @@ ORDER BY hour_of_day;
 -- v_prompt_analysis: Per-prompt metrics joining user turns to assistant responses
 -- For each user turn, aggregates cost, tokens, tool calls, and response depth
 -- across all consecutive assistant turns that follow before the next user turn
+--
+-- KPI-004: this view emits one row per user turn WITH text, including user
+-- turns immediately followed by another user turn — those get
+-- multi_turn_depth = 0 / response_cost = 0 (no assistant response). The
+-- PromptAnalyzer and the /api/prompts/* routes EXCLUDE multi_turn_depth = 0
+-- rows from totalPrompts / avgCost / the distributions and surface their count
+-- separately as promptsWithNoResponse, so a consumer of this view should apply
+-- the same `multi_turn_depth > 0` predicate for "responded prompt" metrics.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE VIEW v_prompt_analysis AS
 WITH numbered_turns AS (
@@ -251,3 +315,163 @@ LEFT JOIN assistant_agg aa
 LEFT JOIN tool_counts tcc
     ON tcc.prompt_turn_id = ut.turn_id
 ORDER BY ut.timestamp DESC;
+
+-- ---------------------------------------------------------------------------
+-- NEW-001 — v_context_pressure: per-session context-window utilization.
+--
+-- CLAUDE.md flags >60% context utilization as a quality-degradation risk, but
+-- nothing computed it before. Per assistant turn the context proxy is
+-- input_tokens + cache_read_tokens + cache_creation_tokens (in the Anthropic
+-- API these three are SEPARATE fields, so summing them is the size of the
+-- context the model actually processed for that turn).
+--
+-- The window denominator is MODEL-AWARE *and* SELF-CORRECTING. The 1M-context
+-- capability is NOT reliably encoded in the model id — in this dataset
+-- `claude-opus-4-7` (a plain id, no `-1m` suffix) legitimately reaches
+-- ~861k tokens/turn. So the window is the LARGER of: (a) 1,000,000 if the
+-- model id hints at a 1M variant ('-1m' / '1m-context'), and (b) whichever of
+-- {200,000, 1,000,000} actually contains the turn's context_tokens. A turn
+-- whose context already exceeds 200k was demonstrably running on the
+-- 1M-context variant, so it gets the 1M denominator. This keeps utilization
+-- in a sane 0..1 range with no schema change and no brittle id heuristic.
+--
+-- Per session: peak_context_pct = MAX(utilization), pressure_share =
+-- share of assistant turns whose utilization > 0.60, plus a >0.80 "critical"
+-- count and a stop_reason='max_tokens' truncation count. The CLI
+-- SessionAnalyzer.getContextPressure / getContextPressureStats and
+-- /api/sessions/context-pressure re-implement this inline to support
+-- period/model/project filters — keep all three in sync.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE VIEW v_context_pressure AS
+WITH assistant_turns AS (
+    SELECT
+        ct.session_id,
+        ct.timestamp,
+        ct.stop_reason,
+        (ct.input_tokens + ct.cache_read_tokens + ct.cache_creation_tokens)
+                                            AS context_tokens,
+        CASE
+            WHEN LOWER(COALESCE(ct.model, '')) LIKE '%-1m%'
+              OR LOWER(COALESCE(ct.model, '')) LIKE '%1m-context%'
+              OR (ct.input_tokens + ct.cache_read_tokens + ct.cache_creation_tokens) > 200000
+            THEN 1000000
+            ELSE 200000
+        END                                 AS window_size
+    FROM conversation_turns ct
+    WHERE ct.role = 'assistant'
+),
+turn_util AS (
+    SELECT
+        session_id,
+        timestamp,
+        stop_reason,
+        context_tokens,
+        window_size,
+        context_tokens::DOUBLE / window_size::DOUBLE AS context_utilization
+    FROM assistant_turns
+)
+SELECT
+    session_id,
+    COUNT(*)                                                AS assistant_turns,
+    ROUND(MAX(context_utilization), 4)                      AS peak_context_pct,
+    MAX(context_tokens)                                     AS peak_context_tokens,
+    ROUND(AVG(context_utilization), 4)                      AS avg_context_pct,
+    COUNT(*) FILTER (WHERE context_utilization > 0.60)      AS turns_over_60,
+    COUNT(*) FILTER (WHERE context_utilization > 0.80)      AS turns_over_80,
+    ROUND(
+        COUNT(*) FILTER (WHERE context_utilization > 0.60)::DOUBLE /
+        NULLIF(COUNT(*), 0)::DOUBLE,
+        4
+    )                                                       AS pressure_share,
+    COUNT(*) FILTER (WHERE stop_reason = 'max_tokens')      AS max_tokens_turns
+FROM turn_util
+GROUP BY session_id
+ORDER BY peak_context_pct DESC;
+
+-- ---------------------------------------------------------------------------
+-- NEW-002 — v_tool_failure_trend: tool failure rate bucketed by day, split by
+-- tool_type (builtin vs mcp).
+--
+-- failure_rate = COUNT(success = FALSE) / COUNT(success IS NOT NULL). NULL-
+-- success calls are excluded from the denominator (a result that was never
+-- captured is "no data", not a failure — same rule as v_tool_usage). The day
+-- bucket comes from the JOINed conversation_turns.timestamp. tool_type values
+-- in the data are 'mcp' and a native bucket ('native'/'builtin'); this view
+-- normalizes anything that is not 'mcp' to 'builtin'. The ToolAnalyzer
+-- getToolFailureTrend method and /api/tools/failure-trend re-implement this
+-- inline (with a configurable bucket) to support period/model/project filters.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE VIEW v_tool_failure_trend AS
+SELECT
+    CAST(ct.timestamp AS DATE)                              AS date,
+    CASE WHEN tc.tool_type = 'mcp' THEN 'mcp' ELSE 'builtin' END
+                                                            AS tool_class,
+    COUNT(*)                                                AS total_calls,
+    COUNT(*) FILTER (WHERE tc.success IS NOT NULL)          AS evaluated_calls,
+    COUNT(*) FILTER (WHERE tc.success = FALSE)              AS failure_count,
+    CASE
+        WHEN COUNT(*) FILTER (WHERE tc.success IS NOT NULL) > 0
+        THEN ROUND(
+            COUNT(*) FILTER (WHERE tc.success = FALSE)::DOUBLE /
+            COUNT(*) FILTER (WHERE tc.success IS NOT NULL)::DOUBLE,
+            4
+        )
+        ELSE NULL
+    END                                                     AS failure_rate
+FROM tool_calls tc
+JOIN conversation_turns ct
+    ON ct.turn_id = tc.turn_id AND ct.session_id = tc.session_id
+GROUP BY CAST(ct.timestamp AS DATE), tool_class
+ORDER BY date DESC, tool_class;
+
+-- ---------------------------------------------------------------------------
+-- NEW-003 — v_session_failure_chains: consecutive tool-call failure streaks
+-- per session ("the agent got stuck and thrashed" — a rework signal).
+--
+-- Within a session, tool_calls are ordered by tool_call_id (the same ordering
+-- proxy getToolChains uses). A classic gaps-and-islands pattern: subtract a
+-- ROW_NUMBER partitioned by success from the global ROW_NUMBER to group
+-- maximal consecutive runs of the same success value; the runs WHERE
+-- success = FALSE are the failure streaks. Per session this reports the
+-- longest failure streak and the count of failure streaks of length >= 2.
+-- The dataset-level KPI (% of sessions with a streak >= 3) is computed by the
+-- ToolAnalyzer getFailureChains method / the /api/tools/failure-chains route,
+-- which re-implement this inline to support period/model/project filters.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE VIEW v_session_failure_chains AS
+WITH ordered_tools AS (
+    SELECT
+        tc.session_id,
+        tc.success,
+        ROW_NUMBER() OVER (PARTITION BY tc.session_id ORDER BY tc.tool_call_id) AS rn
+    FROM tool_calls tc
+    WHERE tc.success IS NOT NULL
+),
+streak_groups AS (
+    SELECT
+        session_id,
+        success,
+        rn
+            - ROW_NUMBER() OVER (
+                PARTITION BY session_id, success ORDER BY rn
+            )                                               AS streak_group
+    FROM ordered_tools
+),
+failure_streaks AS (
+    SELECT
+        session_id,
+        streak_group,
+        COUNT(*)                                            AS streak_len
+    FROM streak_groups
+    WHERE success = FALSE
+    GROUP BY session_id, streak_group
+)
+SELECT
+    session_id,
+    COALESCE(MAX(streak_len), 0)                            AS max_failure_streak,
+    COUNT(*) FILTER (WHERE streak_len >= 2)                 AS failure_chains_2plus,
+    COUNT(*) FILTER (WHERE streak_len >= 3)                 AS failure_chains_3plus,
+    COALESCE(SUM(streak_len), 0)                            AS total_failed_in_chains
+FROM failure_streaks
+GROUP BY session_id
+ORDER BY max_failure_streak DESC;

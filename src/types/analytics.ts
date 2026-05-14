@@ -167,9 +167,119 @@ export interface ToolUsageStats {
   toolType: string;
   mcpServer: string | null;
   callCount: number;
+  successCount?: number;
+  failureCount?: number;
   successRate: number | null;
   avgDurationMs: number | null;
   sessionsUsingTool: number;
+  /**
+   * KPI-009: average calls of this tool per session that used it
+   * (call_count / distinct sessions). Previously defined only in the
+   * v_tool_usage view and never surfaced — now selected by getToolUsage
+   * and /api/tools/usage so the view and the analyzers agree.
+   */
+  avgPerSession: number;
+}
+
+/** NEW-002: a tool failure-rate trend point for one time bucket. */
+export interface ToolFailureTrendPoint {
+  /** Start of the time bucket. */
+  timestamp: Date;
+  /** Built-in (native) tool calls in this bucket. */
+  builtin: ToolFailureTrendSeries;
+  /** MCP tool calls in this bucket. */
+  mcp: ToolFailureTrendSeries;
+  /** Combined (builtin + mcp) for this bucket. */
+  overall: ToolFailureTrendSeries;
+}
+
+/** NEW-002: failure stats for one tool class within a time bucket. */
+export interface ToolFailureTrendSeries {
+  /** All calls of this class in the bucket (incl. NULL-success). */
+  totalCalls: number;
+  /** Calls with a non-NULL success value (the failure-rate denominator). */
+  evaluatedCalls: number;
+  /** Calls with success = FALSE. */
+  failureCount: number;
+  /** failureCount / evaluatedCalls, or null when no evaluated calls. */
+  failureRate: number | null;
+}
+
+/** NEW-003: per-session tool-failure-chain (rework) stats. */
+export interface SessionFailureChainStats {
+  sessionId: string;
+  /** Longest run of consecutive success = FALSE tool calls in the session. */
+  maxFailureStreak: number;
+  /** Count of failure streaks of length >= 2. */
+  failureChains2Plus: number;
+  /** Count of failure streaks of length >= 3. */
+  failureChains3Plus: number;
+  /** Total failed tool calls that are part of a streak >= 2. */
+  totalFailedInChains: number;
+}
+
+/** NEW-003: dataset-level tool-failure-chain summary. */
+export interface FailureChainSummary {
+  /** Sessions that have at least one evaluated (non-NULL) tool call. */
+  sessionsWithToolCalls: number;
+  /** Sessions containing a failure chain of length >= 2. */
+  sessionsWithChains2Plus: number;
+  /** Sessions containing a failure chain of length >= 3. */
+  sessionsWithChains3Plus: number;
+  /** sessionsWithChains3Plus / sessionsWithToolCalls (the headline KPI). */
+  chainRate3Plus: number;
+  /** Longest failure streak observed across all sessions. */
+  worstStreak: number;
+  /** Top sessions by max failure streak (descending). */
+  topSessions: SessionFailureChainStats[];
+}
+
+// ---------------------------------------------------------------------------
+// Context Pressure Analytics (NEW-001)
+// ---------------------------------------------------------------------------
+
+/**
+ * NEW-001: per-session context-window utilization.
+ * context_tokens (per assistant turn) = input + cache_read + cache_creation;
+ * utilization = context_tokens / window, where window is MODEL-AWARE
+ * (1,000,000 for 1M-context models, 200,000 otherwise).
+ */
+export interface SessionContextPressure {
+  sessionId: string;
+  /** Assistant turns in the session. */
+  assistantTurns: number;
+  /** MAX(context_utilization) across the session's assistant turns (0..n). */
+  peakContextPct: number;
+  /** Largest single-turn context token count. */
+  peakContextTokens: number;
+  /** AVG(context_utilization) across assistant turns. */
+  avgContextPct: number;
+  /** Assistant turns whose utilization exceeded 0.60. */
+  turnsOver60: number;
+  /** Assistant turns whose utilization exceeded 0.80. */
+  turnsOver80: number;
+  /** turnsOver60 / assistantTurns. */
+  pressureShare: number;
+  /** Assistant turns with stop_reason = 'max_tokens' (hard truncation). */
+  maxTokensTurns: number;
+}
+
+/** NEW-001: dataset-level context-pressure summary for the Overview KPI. */
+export interface ContextPressureStats {
+  /** Sessions that have at least one assistant turn. */
+  totalSessions: number;
+  /** Sessions whose peak context utilization exceeded 0.60. */
+  sessionsOver60: number;
+  /** Sessions whose peak context utilization exceeded 0.80 ("critical"). */
+  sessionsOver80: number;
+  /** sessionsOver60 / totalSessions (the headline KPI). */
+  pressureRate: number;
+  /** sessionsOver80 / totalSessions. */
+  criticalRate: number;
+  /** Highest peak context utilization observed across all sessions. */
+  worstPeakPct: number;
+  /** Total assistant turns with stop_reason = 'max_tokens'. */
+  maxTokensTurns: number;
 }
 
 // ---------------------------------------------------------------------------

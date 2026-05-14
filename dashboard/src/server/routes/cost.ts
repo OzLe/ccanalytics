@@ -13,76 +13,49 @@ import {
   buildSessionFilterClauses,
   envelope,
 } from "../helpers/parseFilters.js";
+// SINGLE SHARED RATE SOURCE (COST-001 / COST-003): the per-model rate CASE
+// expressions below are GENERATED from the same PRICING table that
+// src/utils/pricing.ts uses for ingest-time cost calculation. They are no
+// longer hand-maintained, so the SQL rates can never drift from pricing.ts.
+import { buildRateCaseSql } from "../../../../src/utils/pricing.js";
 
 const router = Router();
 
 /**
- * SQL CASE expression for per-model input rate ($/MTok).
- * Must match the prefix-matching order in src/utils/pricing.ts.
+ * Per-model rate CASE expressions ($/MTok), generated from the shared
+ * PRICING table in src/utils/pricing.ts. `model` is the bare column name;
+ * routes that alias the table (e.g. `ct`) regenerate against `ct.model`.
+ *
+ * COST-001: includes claude-opus-4-7 (= 5/25/6.25/0.5) and claude-sonnet-4-6
+ * automatically because they are entries in the shared table.
  */
-const INPUT_RATE_CASE = `
-  CASE
-    WHEN model LIKE 'claude-opus-4-5%' OR model LIKE 'claude-opus-4-6%' THEN 5.0
-    WHEN model LIKE 'claude-opus-4%' THEN 15.0
-    WHEN model LIKE 'claude-sonnet-4%' THEN 3.0
-    WHEN model LIKE 'claude-haiku-4-5%' THEN 1.0
-    WHEN model LIKE 'claude-haiku-4%' THEN 0.8
-    WHEN model LIKE 'claude-3-7-sonnet%' THEN 3.0
-    WHEN model LIKE 'claude-3-5-sonnet%' THEN 3.0
-    WHEN model LIKE 'claude-3-5-haiku%' THEN 0.8
-    WHEN model LIKE 'claude-3-opus%' THEN 15.0
-    WHEN model LIKE 'claude-3-sonnet%' THEN 3.0
-    WHEN model LIKE 'claude-3-haiku%' THEN 0.25
-    ELSE 3.0
-  END`;
+const INPUT_RATE_CASE = buildRateCaseSql("inputPerM");
+const OUTPUT_RATE_CASE = buildRateCaseSql("outputPerM");
+const CACHE_CREATION_RATE_CASE = buildRateCaseSql("cacheCreationPerM");
+const CACHE_READ_RATE_CASE = buildRateCaseSql("cacheReadPerM");
 
-const OUTPUT_RATE_CASE = `
-  CASE
-    WHEN model LIKE 'claude-opus-4-5%' OR model LIKE 'claude-opus-4-6%' THEN 25.0
-    WHEN model LIKE 'claude-opus-4%' THEN 75.0
-    WHEN model LIKE 'claude-sonnet-4%' THEN 15.0
-    WHEN model LIKE 'claude-haiku-4-5%' THEN 5.0
-    WHEN model LIKE 'claude-haiku-4%' THEN 4.0
-    WHEN model LIKE 'claude-3-7-sonnet%' THEN 15.0
-    WHEN model LIKE 'claude-3-5-sonnet%' THEN 15.0
-    WHEN model LIKE 'claude-3-5-haiku%' THEN 4.0
-    WHEN model LIKE 'claude-3-opus%' THEN 75.0
-    WHEN model LIKE 'claude-3-sonnet%' THEN 15.0
-    WHEN model LIKE 'claude-3-haiku%' THEN 1.25
-    ELSE 15.0
-  END`;
+/** Same four CASE expressions, qualified to the `ct` table alias. */
+const INPUT_RATE_CASE_CT = buildRateCaseSql("inputPerM", "ct.model");
+const OUTPUT_RATE_CASE_CT = buildRateCaseSql("outputPerM", "ct.model");
+const CACHE_CREATION_RATE_CASE_CT = buildRateCaseSql("cacheCreationPerM", "ct.model");
+const CACHE_READ_RATE_CASE_CT = buildRateCaseSql("cacheReadPerM", "ct.model");
 
-const CACHE_CREATION_RATE_CASE = `
-  CASE
-    WHEN model LIKE 'claude-opus-4-5%' OR model LIKE 'claude-opus-4-6%' THEN 6.25
-    WHEN model LIKE 'claude-opus-4%' THEN 18.75
-    WHEN model LIKE 'claude-sonnet-4%' THEN 3.75
-    WHEN model LIKE 'claude-haiku-4-5%' THEN 1.25
-    WHEN model LIKE 'claude-haiku-4%' THEN 1.0
-    WHEN model LIKE 'claude-3-7-sonnet%' THEN 3.75
-    WHEN model LIKE 'claude-3-5-sonnet%' THEN 3.75
-    WHEN model LIKE 'claude-3-5-haiku%' THEN 1.0
-    WHEN model LIKE 'claude-3-opus%' THEN 18.75
-    WHEN model LIKE 'claude-3-sonnet%' THEN 3.75
-    WHEN model LIKE 'claude-3-haiku%' THEN 0.3
-    ELSE 3.75
-  END`;
-
-const CACHE_READ_RATE_CASE = `
-  CASE
-    WHEN model LIKE 'claude-opus-4-5%' OR model LIKE 'claude-opus-4-6%' THEN 0.5
-    WHEN model LIKE 'claude-opus-4%' THEN 1.5
-    WHEN model LIKE 'claude-sonnet-4%' THEN 0.3
-    WHEN model LIKE 'claude-haiku-4-5%' THEN 0.1
-    WHEN model LIKE 'claude-haiku-4%' THEN 0.08
-    WHEN model LIKE 'claude-3-7-sonnet%' THEN 0.3
-    WHEN model LIKE 'claude-3-5-sonnet%' THEN 0.3
-    WHEN model LIKE 'claude-3-5-haiku%' THEN 0.08
-    WHEN model LIKE 'claude-3-opus%' THEN 1.5
-    WHEN model LIKE 'claude-3-sonnet%' THEN 0.3
-    WHEN model LIKE 'claude-3-haiku%' THEN 0.03
-    ELSE 0.3
-  END`;
+/**
+ * Canonical row-inclusion predicate for cost aggregation (COST-005).
+ *
+ * Replaces the old implicit `cost_usd > 0` silent filter. The intent is
+ * "real assistant turns" — every assistant turn, explicitly excluding only
+ * the `<synthetic>` placeholder model (0 tokens, $0). Cost is never used as a
+ * proxy for "is this a real turn". Applied uniformly across /total, /daily,
+ * /by-model, /by-project and /trend so token/turn counts reconcile.
+ *
+ * @param alias - Table alias for conversation_turns; "" for the bare column
+ *   form (default), or e.g. "ct" when the query joins/aliases the table.
+ */
+function costRowPredicate(alias = ""): string {
+  const p = alias ? `${alias}.` : "";
+  return `${p}role = 'assistant' AND ${p}model IS NOT NULL AND ${p}model <> '<synthetic>'`;
+}
 
 /**
  * GET /api/cost/total
@@ -95,8 +68,14 @@ router.get("/total", async (req, res, next) => {
     const filters = parseFilters(req);
     const f = buildTurnFilterClauses(filters, 3);
 
+    // COST-003: totalCostUSD is SUM of the stored cost_usd column — the single
+    // canonical cost basis, identical to v_daily_cost / sessions / the daily
+    // and trend endpoints. The per-category breakdown (input/output/cache) is
+    // still rate-derived since cost_usd is a single combined total; after the
+    // COST-002 backfill the per-category sum reconciles with stored_cost_usd.
     const sql = `
       SELECT
+        COALESCE(SUM(cost_usd), 0) AS stored_cost_usd,
         COALESCE(SUM(input_tokens), 0) AS total_input_tokens,
         COALESCE(SUM(output_tokens), 0) AS total_output_tokens,
         COALESCE(SUM(cache_creation_tokens), 0) AS total_cache_write_tokens,
@@ -106,7 +85,7 @@ router.get("/total", async (req, res, next) => {
         COALESCE(SUM(cache_creation_tokens * ${CACHE_CREATION_RATE_CASE} / 1000000.0), 0) AS cache_write_cost_usd,
         COALESCE(SUM(cache_read_tokens * ${CACHE_READ_RATE_CASE} / 1000000.0), 0) AS cache_read_cost_usd
       FROM conversation_turns
-      WHERE role = 'assistant'
+      WHERE ${costRowPredicate()}
         AND timestamp >= $1 AND timestamp < $2
         ${f.clauses.join("\n        ")}
     `;
@@ -145,7 +124,8 @@ router.get("/total", async (req, res, next) => {
     res.json(
       envelope(
         {
-          totalCostUSD: inputCostUSD + outputCostUSD + cacheWriteCostUSD + cacheReadCostUSD,
+          // Canonical: SUM of the stored cost_usd column (COST-003).
+          totalCostUSD: Number(row.stored_cost_usd),
           inputCostUSD,
           outputCostUSD,
           cacheWriteCostUSD,
@@ -186,8 +166,7 @@ router.get("/daily", async (req, res, next) => {
         COUNT(*) AS turn_count,
         COUNT(DISTINCT session_id) AS session_count
       FROM conversation_turns
-      WHERE role = 'assistant'
-        AND cost_usd > 0
+      WHERE ${costRowPredicate()}
         AND timestamp >= $1 AND timestamp < $2
         ${f.clauses.join("\n        ")}
       GROUP BY CAST(CAST(timestamp AS DATE) AS VARCHAR), model
@@ -236,21 +215,21 @@ router.get("/by-model", async (req, res, next) => {
       SELECT
         ct.model,
         COUNT(DISTINCT ct.session_id) AS session_count,
+        COALESCE(SUM(ct.cost_usd), 0) AS stored_cost_usd,
         COALESCE(SUM(ct.input_tokens), 0) AS total_input_tokens,
         COALESCE(SUM(ct.output_tokens), 0) AS total_output_tokens,
         COALESCE(SUM(ct.cache_creation_tokens), 0) AS total_cache_write_tokens,
         COALESCE(SUM(ct.cache_read_tokens), 0) AS total_cache_read_tokens,
-        COALESCE(SUM(ct.input_tokens * ${INPUT_RATE_CASE.replaceAll("model", "ct.model")} / 1000000.0), 0) AS input_cost_usd,
-        COALESCE(SUM(ct.output_tokens * ${OUTPUT_RATE_CASE.replaceAll("model", "ct.model")} / 1000000.0), 0) AS output_cost_usd,
-        COALESCE(SUM(ct.cache_creation_tokens * ${CACHE_CREATION_RATE_CASE.replaceAll("model", "ct.model")} / 1000000.0), 0) AS cache_write_cost_usd,
-        COALESCE(SUM(ct.cache_read_tokens * ${CACHE_READ_RATE_CASE.replaceAll("model", "ct.model")} / 1000000.0), 0) AS cache_read_cost_usd
+        COALESCE(SUM(ct.input_tokens * ${INPUT_RATE_CASE_CT} / 1000000.0), 0) AS input_cost_usd,
+        COALESCE(SUM(ct.output_tokens * ${OUTPUT_RATE_CASE_CT} / 1000000.0), 0) AS output_cost_usd,
+        COALESCE(SUM(ct.cache_creation_tokens * ${CACHE_CREATION_RATE_CASE_CT} / 1000000.0), 0) AS cache_write_cost_usd,
+        COALESCE(SUM(ct.cache_read_tokens * ${CACHE_READ_RATE_CASE_CT} / 1000000.0), 0) AS cache_read_cost_usd
       FROM conversation_turns ct
-      WHERE ct.role = 'assistant'
-        AND ct.model IS NOT NULL AND ct.model NOT LIKE '<%>'
+      WHERE ${costRowPredicate("ct")}
         AND ct.timestamp >= $1 AND ct.timestamp < $2
         ${filterClauses.join("\n        ")}
       GROUP BY ct.model
-      ORDER BY input_cost_usd + output_cost_usd + cache_write_cost_usd + cache_read_cost_usd DESC
+      ORDER BY stored_cost_usd DESC
     `;
 
     const result = await query(sql, [
@@ -268,7 +247,8 @@ router.get("/by-model", async (req, res, next) => {
       return {
         model: row.model,
         sessionCount: Number(row.session_count),
-        totalCostUSD: inputCostUSD + outputCostUSD + cacheWriteCostUSD + cacheReadCostUSD,
+        // Canonical: SUM of the stored cost_usd column (COST-003).
+        totalCostUSD: Number(row.stored_cost_usd),
         inputCostUSD,
         outputCostUSD,
         cacheWriteCostUSD,
@@ -303,20 +283,21 @@ router.get("/by-project", async (req, res, next) => {
         COALESCE(s.project_path, 'unknown') AS project_path,
         COALESCE(MAX(s.project_name), COALESCE(s.project_path, 'unknown')) AS project_name,
         COUNT(DISTINCT s.session_id) AS session_count,
+        COALESCE(SUM(ct.cost_usd), 0) AS stored_cost_usd,
         COALESCE(SUM(ct.input_tokens), 0) AS total_input_tokens,
         COALESCE(SUM(ct.output_tokens), 0) AS total_output_tokens,
         COALESCE(SUM(ct.cache_creation_tokens), 0) AS total_cache_write_tokens,
         COALESCE(SUM(ct.cache_read_tokens), 0) AS total_cache_read_tokens,
-        COALESCE(SUM(ct.input_tokens * ${INPUT_RATE_CASE.replaceAll("model", "ct.model")} / 1000000.0), 0) AS input_cost_usd,
-        COALESCE(SUM(ct.output_tokens * ${OUTPUT_RATE_CASE.replaceAll("model", "ct.model")} / 1000000.0), 0) AS output_cost_usd,
-        COALESCE(SUM(ct.cache_creation_tokens * ${CACHE_CREATION_RATE_CASE.replaceAll("model", "ct.model")} / 1000000.0), 0) AS cache_write_cost_usd,
-        COALESCE(SUM(ct.cache_read_tokens * ${CACHE_READ_RATE_CASE.replaceAll("model", "ct.model")} / 1000000.0), 0) AS cache_read_cost_usd
+        COALESCE(SUM(ct.input_tokens * ${INPUT_RATE_CASE_CT} / 1000000.0), 0) AS input_cost_usd,
+        COALESCE(SUM(ct.output_tokens * ${OUTPUT_RATE_CASE_CT} / 1000000.0), 0) AS output_cost_usd,
+        COALESCE(SUM(ct.cache_creation_tokens * ${CACHE_CREATION_RATE_CASE_CT} / 1000000.0), 0) AS cache_write_cost_usd,
+        COALESCE(SUM(ct.cache_read_tokens * ${CACHE_READ_RATE_CASE_CT} / 1000000.0), 0) AS cache_read_cost_usd
       FROM sessions s
-      JOIN conversation_turns ct ON ct.session_id = s.session_id AND ct.role = 'assistant'
+      JOIN conversation_turns ct ON ct.session_id = s.session_id AND ${costRowPredicate("ct")}
       WHERE s.start_time >= $1 AND s.start_time < $2
         ${f.clauses.join("\n        ")}
       GROUP BY s.project_path
-      ORDER BY input_cost_usd + output_cost_usd + cache_write_cost_usd + cache_read_cost_usd DESC
+      ORDER BY stored_cost_usd DESC
     `;
 
     const result = await query(sql, [
@@ -330,7 +311,8 @@ router.get("/by-project", async (req, res, next) => {
       const outputCostUSD = Number(row.output_cost_usd);
       const cacheWriteCostUSD = Number(row.cache_write_cost_usd);
       const cacheReadCostUSD = Number(row.cache_read_cost_usd);
-      const totalCostUSD = inputCostUSD + outputCostUSD + cacheWriteCostUSD + cacheReadCostUSD;
+      // Canonical: SUM of the stored cost_usd column (COST-003).
+      const totalCostUSD = Number(row.stored_cost_usd);
 
       return {
         projectPath: row.project_path,
@@ -391,7 +373,7 @@ router.get("/trend", async (req, res, next) => {
         COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens,
         COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens
       FROM conversation_turns
-      WHERE role = 'assistant'
+      WHERE ${costRowPredicate()}
         AND timestamp >= $1 AND timestamp < $2
         ${f.clauses.join("\n        ")}
       GROUP BY ts

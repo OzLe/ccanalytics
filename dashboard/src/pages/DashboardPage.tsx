@@ -20,17 +20,29 @@ import {
   Database,
   Zap,
   Lightbulb,
+  Repeat,
 } from "lucide-react";
 import KPICard from "@/components/ui/KPICard";
 import ChartCard from "@/components/ui/ChartCard";
 import InsightCard from "@/components/ui/InsightCard";
 import ChartTooltip from "@/components/charts/ChartTooltip";
+import SubscriptionValueBand from "@/components/ui/SubscriptionValueBand";
 import { useCostTotal, useCostTrend, useCostByModel } from "@/hooks/useCostData";
-import { useSessionStats } from "@/hooks/useSessionsQuery";
+import { useSessionStats, useContextPressure } from "@/hooks/useSessionsQuery";
 import { useCacheMetrics } from "@/hooks/useCacheData";
-import { useToolUsage } from "@/hooks/useToolData";
+import { useToolUsage, useToolFailureChains } from "@/hooks/useToolData";
 import { useActivityHourly } from "@/hooks/useActivityData";
-import { formatCost, formatPercent, formatDate } from "@/lib/formatters";
+import { useSettings } from "@/hooks/useSettings";
+import {
+  formatCost,
+  formatCostWithBasis,
+  formatPercent,
+  formatDate,
+} from "@/lib/formatters";
+import {
+  API_EQUIVALENT_TOOLTIP,
+  totalCostKpiLabel,
+} from "@/lib/costLabels";
 import { cn } from "@/lib/utils";
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import {
@@ -52,8 +64,13 @@ function formatHour(hour: number): string {
 }
 
 /**
- * Compute a simple trend percentage from an array of daily cost values.
- * Compares the last half to the first half of the data.
+ * Compute a within-window trend percentage from an array of daily cost values.
+ *
+ * KPI-010: this compares the SECOND HALF of the in-window daily series to the
+ * FIRST HALF — it is NOT a comparison against the prior equivalent period.
+ * The KPI badge is labeled "recent trend" accordingly (it used to say
+ * "vs prior", which implied a period-over-period change that was never
+ * computed). Returns null below 4 data points.
  */
 function computeTrendPercent(data: { costUSD: number }[]): number | null {
   if (!data || data.length < 4) return null;
@@ -79,6 +96,13 @@ export default function DashboardPage() {
   const costByModel = useCostByModel();
   const toolUsage = useToolUsage();
   const activityHourly = useActivityHourly();
+  const settings = useSettings();
+  // NEW-001 / NEW-003: context-pressure and tool-failure-chain signals.
+  const contextPressure = useContextPressure();
+  const failureChains = useToolFailureChains();
+
+  /* ── Subscription tier (drives tier-aware cost labels) ─────── */
+  const tier = settings.data?.subscription.tier;
 
   const isLoading =
     costTotal.isLoading || sessionStats.isLoading || cacheMetrics.isLoading;
@@ -184,9 +208,22 @@ export default function DashboardPage() {
     return undefined;
   }, []);
 
+  /* ── NEW-001: context-pressure summary ─────────────────────── */
+  const contextSummary = contextPressure.data?.summary ?? null;
+
+  /* ── NEW-003: tool-failure-chain (rework) summary ──────────── */
+  const failureChainSummary = failureChains.data?.summary ?? null;
+
   return (
     <ErrorBoundary>
     <div className="min-h-0 flex-1 space-y-[var(--space-8)] overflow-y-auto">
+
+      {/* ================================================================ */}
+      {/*  Subscription Value hero band (MAX-005)                          */}
+      {/*  Above the KPI grid — the single most important reframing.       */}
+      {/*  Renders nothing when subscription.tier === "none".              */}
+      {/* ================================================================ */}
+      <SubscriptionValueBand />
 
       {/* ================================================================ */}
       {/*  KPI Cards                                                       */}
@@ -198,18 +235,19 @@ export default function DashboardPage() {
             subtitle="Key metrics for the selected period"
           />
         </div>
-        <div className="grid grid-cols-2 gap-[var(--space-5)] lg:grid-cols-4">
+        <div className="grid grid-cols-2 gap-[var(--space-5)] lg:grid-cols-5">
           {[
             <KPICard
               key="total-cost"
               className="h-full"
-              label="Total Cost"
+              label={totalCostKpiLabel(tier)}
+              labelTooltip={API_EQUIVALENT_TOOLTIP}
               value={costTotal.data ? formatCost(costTotal.data.totalCostUSD) : "--"}
               type="cost"
               variant="default"
               trend={
                 costTrendPercent !== null
-                  ? { value: costTrendPercent, label: "vs prior" }
+                  ? { value: costTrendPercent, label: "recent trend" }
                   : undefined
               }
               loading={isLoading}
@@ -253,6 +291,36 @@ export default function DashboardPage() {
               variant="default"
               loading={isLoading || toolUsage.isLoading}
             />,
+            /* NEW-001: Sessions Under Context Pressure — % of sessions whose
+               peak context-window utilization exceeded 60% (model-aware
+               window). CLAUDE.md flags >60% as a quality-degradation risk. */
+            <KPICard
+              key="context-pressure"
+              className="h-full"
+              label="Under Context Pressure"
+              labelTooltip="Share of sessions whose peak context-window utilization (input + cache tokens / model context window) exceeded 60% on at least one turn. Above 60% risks quality degradation — consider splitting or compacting those sessions. The window is model-aware (1M for 1M-context models, 200k otherwise)."
+              value={
+                contextSummary
+                  ? formatPercent(contextSummary.pressureRate)
+                  : "--"
+              }
+              type="tokens"
+              variant={
+                contextSummary && contextSummary.criticalRate > 0
+                  ? "warning"
+                  : "default"
+              }
+              hint={
+                contextSummary
+                  ? `${contextSummary.sessionsOver60.toLocaleString()} of ${contextSummary.totalSessions.toLocaleString()} sessions${
+                      contextSummary.sessionsOver80 > 0
+                        ? ` · ${contextSummary.sessionsOver80.toLocaleString()} critical (>80%)`
+                        : ""
+                    }`
+                  : undefined
+              }
+              loading={isLoading || contextPressure.isLoading}
+            />,
           ].map((card, index) => (
             <div
               key={index}
@@ -280,7 +348,7 @@ export default function DashboardPage() {
           {/* ── Cost Trend Area Chart ──────────────────────────── */}
           <ChartCard
             title="Cost Over Time"
-            subtitle="Daily spending trend"
+            subtitle="Daily API-equivalent spend"
             loading={costTrend.isLoading}
             empty={trendData.length === 0}
             action={
@@ -336,7 +404,7 @@ export default function DashboardPage() {
           {/* ── Cost by Model Donut Chart ─────────────────────── */}
           <ChartCard
             title="Cost by Model"
-            subtitle="Spending distribution across models"
+            subtitle="API-equivalent spend distribution across models"
             loading={costByModel.isLoading}
             empty={modelPieData.length === 0}
             action={
@@ -507,7 +575,7 @@ export default function DashboardPage() {
               icon={DollarSign}
               iconColor="text-[var(--accent)]"
               title={`Top spender: ${mostExpensiveModel.model}`}
-              description={`This model accounts for ${mostExpensiveModel.pct.toFixed(0)}% of your total spend at ${formatCost(mostExpensiveModel.cost)}. Consider reviewing usage patterns for cost optimization.`}
+              description={`This model accounts for ${mostExpensiveModel.pct.toFixed(0)}% of your API-equivalent spend at ${formatCostWithBasis(mostExpensiveModel.cost)} Consider reviewing usage patterns for cost optimization.`}
               linkTo="/cost"
               linkLabel="Explore cost breakdown"
               badge={{ text: `${mostExpensiveModel.pct.toFixed(0)}%`, variant: "accent" }}
@@ -522,7 +590,7 @@ export default function DashboardPage() {
               title={`Cache: ${formatPercent(cacheInterpretation.hitRate)} hit rate`}
               description={
                 cacheInterpretation.savings > 0
-                  ? `Your cache strategy is ${cacheInterpretation.interpretation}, saving an estimated ${formatCost(cacheInterpretation.savings)}. ${cacheInterpretation.interpretation === "effective" ? "Keep it up!" : "There may be room for improvement."}`
+                  ? `Your cache strategy is ${cacheInterpretation.interpretation}, worth an estimated ${formatCost(cacheInterpretation.savings)} vs. uncached API list pricing. On a flat-fee subscription this is not cash saved — caching saves rate-limit budget and latency. ${cacheInterpretation.interpretation === "effective" ? "Keep it up!" : "There may be room for improvement."}`
                   : `Your cache strategy is rated as ${cacheInterpretation.interpretation}. Review your prompting patterns to improve cache reuse.`
               }
               linkTo="/cache"
@@ -547,8 +615,44 @@ export default function DashboardPage() {
             />
           )}
 
+          {/* NEW-003: Insight — tool-failure chains (rework signal). A run of
+              consecutive failed tool calls is the closest proxy for "the agent
+              got stuck and thrashed". */}
+          {failureChainSummary && failureChainSummary.sessionsWithToolCalls > 0 && (
+            <InsightCard
+              icon={Repeat}
+              iconColor={
+                failureChainSummary.sessionsWithChains3Plus > 0
+                  ? "text-[var(--danger)]"
+                  : "text-[var(--success)]"
+              }
+              title={
+                failureChainSummary.sessionsWithChains2Plus > 0
+                  ? `${failureChainSummary.sessionsWithChains2Plus.toLocaleString()} session${failureChainSummary.sessionsWithChains2Plus === 1 ? "" : "s"} had tool-failure chains`
+                  : "No tool-failure chains detected"
+              }
+              description={
+                failureChainSummary.sessionsWithChains2Plus > 0
+                  ? `${failureChainSummary.sessionsWithChains3Plus.toLocaleString()} session${failureChainSummary.sessionsWithChains3Plus === 1 ? "" : "s"} (${formatPercent(failureChainSummary.chainRate3Plus)}) hit a chain of 3+ consecutive failed tool calls — a sign the agent got stuck and thrashed. Worst streak: ${failureChainSummary.worstStreak} in a row.`
+                  : `Across ${failureChainSummary.sessionsWithToolCalls.toLocaleString()} sessions with tool calls, no session had 2+ consecutive tool failures. Tool execution is running smoothly.`
+              }
+              linkTo="/tools"
+              linkLabel="View tool reliability"
+              badge={{
+                text:
+                  failureChainSummary.sessionsWithChains3Plus > 0
+                    ? `${formatPercent(failureChainSummary.chainRate3Plus)} ≥3-chain`
+                    : "healthy",
+                variant:
+                  failureChainSummary.sessionsWithChains3Plus > 0
+                    ? "danger"
+                    : "success",
+              }}
+            />
+          )}
+
           {/* Fallback: if no insights are available yet */}
-          {!mostExpensiveModel && !cacheInterpretation && !peakActivity && !isLoading && (
+          {!mostExpensiveModel && !cacheInterpretation && !peakActivity && !failureChainSummary && !isLoading && (
             <div
               className={cn(
                 "col-span-full flex items-center justify-center gap-[var(--space-3)]",

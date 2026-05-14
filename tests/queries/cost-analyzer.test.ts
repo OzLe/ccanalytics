@@ -87,17 +87,27 @@ describe("CostAnalyzer", () => {
       expect(sonnet).toBeDefined();
       expect(opus).toBeDefined();
       expect(sonnet!.totalInputTokens).toBeGreaterThan(0);
-      // Opus-4 rates: $15/$75/$18.75/$1.50 per M — computed from tokens not seed cost_usd
-      // turn-006: 2000*15/1M + 800*75/1M + 100*18.75/1M + 500*1.5/1M = 0.092625
-      expect(opus!.totalCostUSD).toBe(0.092625);
+      // COST-003: totalCostUSD is the canonical SUM of the stored cost_usd
+      // column, NOT a recompute from tokens. opus = turn-006 stored 0.25;
+      // sonnet = turn-002+004+008+010 stored = 0.02+0.03+0.04+0.04 = 0.13.
+      expect(opus!.totalCostUSD).toBeCloseTo(0.25, 10);
+      expect(sonnet!.totalCostUSD).toBeCloseTo(0.13, 10);
+      // The per-category breakdown is still rate-derived from tokens
+      // (Opus-4 rates: 2000*15 + 800*75 + 100*18.75 + 500*1.5, all /1M).
+      expect(opus!.inputCostUSD).toBeCloseTo(0.03, 10);
+      expect(
+        opus!.inputCostUSD + opus!.outputCostUSD +
+          opus!.cacheWriteCostUSD + opus!.cacheReadCostUSD,
+      ).toBeCloseTo(0.092625, 10);
     });
   });
 
   describe("getTotalCost", () => {
     it("should return correct token breakdown totals", async () => {
       const result = await analyzer.getTotalCost(testRange);
-      // Sum of all model-aware costs: sonnet 0.026325 + opus 0.092625 = 0.11895
-      expect(result.totalCostUSD).toBeCloseTo(0.11895, 4);
+      // COST-003: canonical total is SUM of the stored cost_usd column —
+      // 0.02 + 0.03 + 0.25 + 0.04 + 0.04 = 0.38.
+      expect(result.totalCostUSD).toBeCloseTo(0.38, 10);
       expect(result.totalInputTokens).toBeGreaterThan(0);
       expect(result.totalOutputTokens).toBeGreaterThan(0);
     });
@@ -115,8 +125,8 @@ describe("CostAnalyzer", () => {
 
     it("should respect model filter", async () => {
       const result = await analyzer.getTotalCost(testRange, { model: "opus" });
-      // Opus-4 rates applied to turn-006 tokens: 0.092625
-      expect(result.totalCostUSD).toBe(0.092625);
+      // COST-003: canonical total = stored cost_usd of turn-006 = 0.25.
+      expect(result.totalCostUSD).toBeCloseTo(0.25, 10);
     });
   });
 

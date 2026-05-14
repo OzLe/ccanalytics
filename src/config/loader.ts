@@ -16,6 +16,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import type { CCAnalyticsConfig } from "../types/index.js";
 import { DEFAULT_CONFIG } from "./defaults.js";
+import { DEFAULT_MONTHLY_USD, isSubscriptionTier } from "./subscription.js";
 
 /** Sources of configuration overrides. */
 export interface ConfigSources {
@@ -55,7 +56,32 @@ export async function loadConfig(
     config = mergeDeep(config as unknown as Record<string, unknown>, sources.cliOverrides as Record<string, unknown>) as unknown as CCAnalyticsConfig;
   }
 
+  // 5. Light validation/normalization for fields a config file could corrupt.
+  normalizeSubscription(config);
+
   return config;
+}
+
+/**
+ * Clamp the merged `subscription` block to a sane shape.
+ *
+ * A hand-edited config.json could carry an unknown `tier` or a non-numeric
+ * `monthlyUSD`. mergeDeep merges the nested object structurally but does not
+ * validate its values, so this coerces:
+ *   - an unknown/missing `tier` back to the default tier, and
+ *   - a non-finite `monthlyUSD` to the canonical price for the (clamped) tier.
+ */
+function normalizeSubscription(config: CCAnalyticsConfig): void {
+  const sub = config.subscription ?? { ...DEFAULT_CONFIG.subscription };
+
+  if (!isSubscriptionTier(sub.tier)) {
+    sub.tier = DEFAULT_CONFIG.subscription.tier;
+  }
+  if (typeof sub.monthlyUSD !== "number" || !Number.isFinite(sub.monthlyUSD)) {
+    sub.monthlyUSD = DEFAULT_MONTHLY_USD[sub.tier];
+  }
+
+  config.subscription = sub;
 }
 
 /**

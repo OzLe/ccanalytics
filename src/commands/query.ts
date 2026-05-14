@@ -53,14 +53,17 @@ export function registerQueryCommand(parent: Command): void {
     .option("--desc", "Sort descending (default)", true)
     .option("--no-desc", "Sort ascending")
     .action(async (type: string, options) => {
-      // TODO: Implement query command
-      // 1. Validate query type
-      // 2. Load config with CLI overrides
-      // 3. Open DB connection
-      // 4. Create appropriate analyzer based on type
-      // 5. Execute query with options
-      // 6. Format and print results
-      // 7. Close DB connection
+      // KPI-007: full implementation — the CLI query path exercises the same
+      // analyzer classes (CostAnalyzer / SessionAnalyzer / ToolAnalyzer /
+      // CacheAnalyzer / TimeSeriesAnalyzer) that the /api/* routes mirror, so
+      // `ccanalytics query <type>` can be used to cross-check the web numbers.
+      //   1. Validate query type
+      //   2. Load config with CLI overrides
+      //   3. Open DB connection
+      //   4. Create the analyzer for the requested type
+      //   5. Execute the query with the CLI options
+      //   6. Format and print results
+      //   7. Close the DB connection
 
       if (!VALID_QUERY_TYPES.includes(type as QueryType)) {
         process.stderr.write(

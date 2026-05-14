@@ -19,6 +19,7 @@ function makeConfig(overrides?: Partial<CCAnalyticsConfig>): CCAnalyticsConfig {
     ingestion: { globPattern: "**/*.jsonl", batchSize: 1000, minFileSize: 0, maxAgeDays: 30 },
     watcher: { patterns: [], stabilityThreshold: 2000, debounceMs: 500, pollInterval: 2000, usePolling: false, maxBatchSize: 50 },
     database: { logQueries: false, memoryLimit: "256MB", threads: 0 },
+    subscription: { tier: "max-20x", monthlyUSD: 200 },
     ...overrides,
   };
 }

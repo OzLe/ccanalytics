@@ -22,6 +22,7 @@ import cacheRoutes from "./routes/cache.js";
 import activityRoutes from "./routes/activity.js";
 import filtersRoutes from "./routes/filters.js";
 import promptsRoutes from "./routes/prompts.js";
+import settingsRoutes from "./routes/settings.js";
 import { closeDb } from "./helpers/db.js";
 
 /**
@@ -67,6 +68,7 @@ function createApp(): express.Application {
   app.use("/api/activity", activityRoutes);
   app.use("/api/filters", filtersRoutes);
   app.use("/api/prompts", promptsRoutes);
+  app.use("/api/settings", settingsRoutes);
 
   // ---------------------------------------------------------------------------
   // 404 handler for unmatched /api routes
@@ -136,9 +138,12 @@ const server = app.listen(PORT, () => {
   console.log(`  GET /api/cost/trend`);
   console.log(`  GET /api/sessions`);
   console.log(`  GET /api/sessions/stats`);
+  console.log(`  GET /api/sessions/context-pressure`);
   console.log(`  GET /api/sessions/:id`);
   console.log(`  GET /api/tools/usage`);
   console.log(`  GET /api/tools/success-rates`);
+  console.log(`  GET /api/tools/failure-trend`);
+  console.log(`  GET /api/tools/failure-chains`);
   console.log(`  GET /api/tools/mcp-servers`);
   console.log(`  GET /api/tools/chains`);
   console.log(`  GET /api/cache/metrics`);
@@ -150,7 +155,10 @@ const server = app.listen(PORT, () => {
   console.log(`  GET /api/filters/projects`);
   console.log(`  GET /api/prompts/ranked`);
   console.log(`  GET /api/prompts/stats`);
+  console.log(`  GET /api/prompts/throughput`);
   console.log(`  GET /api/prompts/:turnId`);
+  console.log(`  GET /api/settings`);
+  console.log(`  PUT /api/settings`);
 });
 
 // Graceful shutdown

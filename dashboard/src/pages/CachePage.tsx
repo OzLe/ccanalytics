@@ -19,6 +19,10 @@ import { SectionHeader } from "@/components/ui/SectionHeader";
 import { useCacheMetrics, useCacheTrend } from "@/hooks/useCacheData";
 import { formatCost, formatPercent, formatDate, formatTokens } from "@/lib/formatters";
 import {
+  CACHE_SAVINGS_LABEL,
+  CACHE_SAVINGS_TOOLTIP,
+} from "@/lib/costLabels";
+import {
   CHART_COLORS,
   GRID_PROPS,
   X_AXIS_PROPS,
@@ -97,7 +101,7 @@ export default function CachePage() {
         <div className="mb-[var(--space-5)]">
           <SectionHeader
             title="Cache Performance"
-            subtitle="Token caching metrics and estimated savings"
+            subtitle="Token caching metrics and estimated savings vs. uncached API list pricing"
           />
         </div>
         <div className="grid grid-cols-2 gap-[var(--space-5)] lg:grid-cols-4">
@@ -113,7 +117,8 @@ export default function CachePage() {
             loading={metrics.isLoading}
           />
           <KPICard
-            label="Estimated Savings"
+            label={CACHE_SAVINGS_LABEL}
+            labelTooltip={CACHE_SAVINGS_TOOLTIP}
             value={
               metrics.data
                 ? formatCost(metrics.data.estimatedSavingsUSD)
@@ -121,6 +126,7 @@ export default function CachePage() {
             }
             type="cost"
             loading={metrics.isLoading}
+            hint="vs. uncached API list pricing"
           />
           <KPICard
             label="Cache Read Tokens"

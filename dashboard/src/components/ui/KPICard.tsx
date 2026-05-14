@@ -9,9 +9,11 @@ import {
   Wrench,
   Coins,
   Timer,
+  Info,
   type LucideIcon,
 } from "lucide-react";
 import Skeleton from "./Skeleton";
+import { Tooltip } from "./Tooltip";
 
 /* ── KPI types and their icon mappings ───────────────────── */
 type KPIType = "cost" | "cache" | "sessions" | "tools" | "tokens" | "duration";
@@ -96,6 +98,17 @@ interface KPICardProps extends VariantProps<typeof cardVariants> {
     value: number;
     label?: string;
   };
+  /**
+   * Optional secondary caption shown below the value (e.g. KPI-004's
+   * "N with no response" qualifier). Mutually compatible with `trend`.
+   */
+  hint?: string;
+  /**
+   * Optional info tooltip rendered as an `Info` icon next to the label.
+   * MAX-001: cost KPIs across pages use this to carry the "API-equivalent cost"
+   * explanation without bespoke markup — the single cleanest touch-point.
+   */
+  labelTooltip?: string;
   loading?: boolean;
   className?: string;
 }
@@ -106,6 +119,8 @@ export default function KPICard({
   type = "sessions",
   variant = "default",
   trend,
+  hint,
+  labelTooltip,
   loading = false,
   className,
 }: KPICardProps) {
@@ -130,7 +145,23 @@ export default function KPICard({
     <div className={cn(cardVariants({ variant }), className)}>
       {/* Top row: label + icon */}
       <div className="flex items-start justify-between">
-        <p className="text-overline text-[var(--text-secondary)]">{label}</p>
+        <p className="inline-flex items-center gap-[var(--space-1)] text-overline text-[var(--text-secondary)]">
+          {label}
+          {labelTooltip && (
+            <Tooltip
+              content={labelTooltip}
+              position="top"
+              className="max-w-xs whitespace-normal"
+            >
+              <Info
+                size={12}
+                strokeWidth={2}
+                className="text-[var(--text-tertiary)]"
+                aria-label="More info"
+              />
+            </Tooltip>
+          )}
+        </p>
         <div
           className={cn(
             "flex h-8 w-8 items-center justify-center rounded-[var(--radius-md)]",
@@ -156,6 +187,13 @@ export default function KPICard({
         <div className="mt-[var(--space-2)]">
           <TrendIndicator value={trend.value} label={trend.label} />
         </div>
+      )}
+
+      {/* Optional secondary caption */}
+      {hint && (
+        <p className="mt-[var(--space-2)] text-caption text-[var(--text-tertiary)]">
+          {hint}
+        </p>
       )}
     </div>
   );

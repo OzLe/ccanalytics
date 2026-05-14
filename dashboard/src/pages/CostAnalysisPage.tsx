@@ -19,15 +19,21 @@ import ChartCard from "@/components/ui/ChartCard";
 import ChartTooltip from "@/components/charts/ChartTooltip";
 import CostTreemap from "@/components/charts/CostTreemap";
 import TokenFlowSankey from "@/components/charts/TokenFlowSankey";
+import SubscriptionValueSection from "@/components/ui/SubscriptionValueSection";
 import {
   useCostTotal,
   useCostDaily,
   useCostByModel,
   useCostByProject,
 } from "@/hooks/useCostData";
+import { useSettings } from "@/hooks/useSettings";
 import DataTable from "@/components/ui/DataTable";
 import type { Column } from "@/components/ui/DataTable";
 import { formatCost, formatDateShort } from "@/lib/formatters";
+import {
+  API_EQUIVALENT_TOOLTIP,
+  totalCostKpiLabel,
+} from "@/lib/costLabels";
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import {
   CHART_COLORS,
@@ -143,8 +149,12 @@ export default function CostAnalysisPage() {
   const costDaily = useCostDaily();
   const costByModel = useCostByModel();
   const costByProject = useCostByProject();
+  const settings = useSettings();
 
   const isLoading = costTotal.isLoading;
+
+  /* ── Subscription tier (drives tier-aware cost labels) ─────── */
+  const tier = settings.data?.subscription.tier;
 
   /* ── KPI computations ──────────────────────────────────────── */
   const totalCost = costTotal.data?.totalCostUSD ?? 0;
@@ -322,12 +332,13 @@ export default function CostAnalysisPage() {
         <div className="mb-[var(--space-5)]">
           <SectionHeader
             title="Cost Overview"
-            subtitle="Aggregate spending metrics for the selected period"
+            subtitle="Aggregate API-equivalent spending for the selected period"
           />
         </div>
         <div className="grid grid-cols-2 gap-[var(--space-5)] lg:grid-cols-4">
         <KPICard
-          label="Total Cost"
+          label={totalCostKpiLabel(tier)}
+          labelTooltip={API_EQUIVALENT_TOOLTIP}
           value={formatCost(totalCost)}
           type="cost"
           variant="accent"
@@ -335,6 +346,7 @@ export default function CostAnalysisPage() {
         />
         <KPICard
           label="Daily Average"
+          labelTooltip={API_EQUIVALENT_TOOLTIP}
           value={formatCost(avgDailyCost)}
           type="cost"
           loading={costDaily.isLoading}
@@ -346,6 +358,7 @@ export default function CostAnalysisPage() {
         />
         <KPICard
           label="Top Model"
+          labelTooltip={API_EQUIVALENT_TOOLTIP}
           value={formatCost(topModelCost.cost)}
           type="tokens"
           loading={costByModel.isLoading}
@@ -360,6 +373,7 @@ export default function CostAnalysisPage() {
         />
         <KPICard
           label="Cache Read Cost"
+          labelTooltip={API_EQUIVALENT_TOOLTIP}
           value={formatCost(cacheSavings)}
           type="cache"
           variant="success"
@@ -367,6 +381,11 @@ export default function CostAnalysisPage() {
         />
         </div>
       </section>
+
+      {/* ── Subscription Value (MAX-005) ───────────────────────── */}
+      {/*  Detailed ROI section — placed right after Cost Overview. */}
+      {/*  Renders nothing when subscription.tier === "none".       */}
+      <SubscriptionValueSection />
 
       {/* ── Cost Trend ─────────────────────────────────────────── */}
       <section className="space-y-[var(--space-3)]">
@@ -376,7 +395,7 @@ export default function CostAnalysisPage() {
         />
         <ChartCard
           title="Daily Cost by Model"
-          subtitle="Stacked area showing spend distribution over time"
+          subtitle="Stacked area showing API-equivalent spend distribution over time"
           loading={costDaily.isLoading}
           empty={formattedStackedData.length === 0}
         >
@@ -455,7 +474,7 @@ export default function CostAnalysisPage() {
           {/* Donut chart */}
           <ChartCard
             title="Cost Distribution"
-            subtitle="Share of total spend"
+            subtitle="Share of total API-equivalent spend"
             loading={costByModel.isLoading}
             empty={donutData.length === 0}
             className="lg:col-span-2"
@@ -518,7 +537,7 @@ export default function CostAnalysisPage() {
           {/* Model comparison table */}
           <ChartCard
             title="Model Comparison"
-            subtitle="Cost and usage per model"
+            subtitle="API-equivalent cost and usage per model"
             loading={costByModel.isLoading}
             empty={modelTableData.length === 0}
             className="lg:col-span-3"
@@ -529,6 +548,13 @@ export default function CostAnalysisPage() {
               loading={costByModel.isLoading}
               emptyMessage="No model cost data available."
             />
+            {/* MAX-001: one-time footnote rather than per-cell labels. */}
+            {modelTableData.length > 0 && (
+              <p className="mt-[var(--space-3)] text-caption text-[var(--text-tertiary)]">
+                All costs are API-equivalent (standard pay-as-you-go rates) — not
+                your flat subscription fee.
+              </p>
+            )}
           </ChartCard>
         </div>
       </section>
@@ -537,12 +563,12 @@ export default function CostAnalysisPage() {
       <section className="space-y-[var(--space-3)]">
         <SectionHeader
           title="Project Breakdown"
-          subtitle="Top projects ranked by total spend"
+          subtitle="Top projects ranked by total API-equivalent spend"
         />
         <div className="grid grid-cols-1 gap-[var(--space-6)] lg:grid-cols-2">
           <ChartCard
             title="Cost by Project"
-            subtitle="Top 10 projects by total spend"
+            subtitle="Top 10 projects by total API-equivalent spend"
             loading={costByProject.isLoading}
             empty={projectData.length === 0}
           >
@@ -594,7 +620,7 @@ export default function CostAnalysisPage() {
           {/* Treemap */}
           <ChartCard
             title="Project Cost Map"
-            subtitle="Hierarchical cost breakdown"
+            subtitle="Hierarchical API-equivalent cost breakdown"
             loading={costByProject.isLoading}
             empty={!costByProject.data || costByProject.data.length === 0}
           >

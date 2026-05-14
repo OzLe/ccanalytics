@@ -12,8 +12,20 @@ import {
   buildTurnFilterClauses,
   envelope,
 } from "../helpers/parseFilters.js";
+// SINGLE SHARED RATE SOURCE (COST-001): the cache-read savings rate CASE is
+// generated from the same PRICING table as src/utils/pricing.ts, so it can
+// never drift and automatically covers claude-opus-4-7.
+import { buildCacheSavingsRateCaseSql } from "../../../../src/utils/pricing.js";
 
 const router = Router();
+
+/**
+ * Per-model cache-read savings rate ($/MTok = inputPerM - cacheReadPerM),
+ * generated from the shared PRICING table. COST-001: claude-opus-4-7 is
+ * covered automatically (4.5/MTok), instead of falling through to the
+ * Opus-4 (13.5) rate as it did with the old hand-maintained CASE.
+ */
+const SAVINGS_RATE_CASE = buildCacheSavingsRateCaseSql();
 
 /**
  * GET /api/cache/metrics
@@ -26,29 +38,12 @@ router.get("/metrics", async (req, res, next) => {
     const filters = parseFilters(req);
     const f = buildTurnFilterClauses(filters, 3);
 
-    // Use CASE WHEN to compute per-model savings rates in SQL
-    const savingsRateCase = `
-      CASE
-        WHEN model LIKE 'claude-opus-4-5%' OR model LIKE 'claude-opus-4-6%' THEN 4.50
-        WHEN model LIKE 'claude-opus-4%' THEN 13.50
-        WHEN model LIKE 'claude-sonnet-4%' THEN 2.70
-        WHEN model LIKE 'claude-haiku-4-5%' THEN 0.90
-        WHEN model LIKE 'claude-haiku-4%' THEN 0.72
-        WHEN model LIKE 'claude-3-7-sonnet%' THEN 2.70
-        WHEN model LIKE 'claude-3-5-sonnet%' THEN 2.70
-        WHEN model LIKE 'claude-3-5-haiku%' THEN 0.72
-        WHEN model LIKE 'claude-3-opus%' THEN 13.50
-        WHEN model LIKE 'claude-3-sonnet%' THEN 2.70
-        WHEN model LIKE 'claude-3-haiku%' THEN 0.22
-        ELSE 2.70
-      END`;
-
     const sql = `
       SELECT
         COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
         COALESCE(SUM(cache_creation_tokens), 0) AS cache_write_tokens,
         COALESCE(SUM(input_tokens), 0) AS total_input_tokens,
-        COALESCE(SUM(cache_read_tokens * ${savingsRateCase} / 1000000.0), 0) AS estimated_savings_usd
+        COALESCE(SUM(cache_read_tokens * ${SAVINGS_RATE_CASE} / 1000000.0), 0) AS estimated_savings_usd
       FROM conversation_turns
       WHERE role = 'assistant'
         AND timestamp >= $1 AND timestamp < $2
@@ -66,7 +61,11 @@ router.get("/metrics", async (req, res, next) => {
     const cacheWriteTokens = Number(row?.cache_write_tokens ?? 0);
     const totalInputTokens = Number(row?.total_input_tokens ?? 0);
 
-    const uncachedInputTokens = Math.max(0, totalInputTokens - cacheReadTokens);
+    // KPI-001: input_tokens is already the uncached-input figure (cache reads
+    // are a SEPARATE Anthropic API field, not a subset of input_tokens).
+    // Canonical denominator = cache_read + cache_creation + input_tokens,
+    // matching v_cache_efficiency / v_session_summary and /api/cache/trend.
+    const uncachedInputTokens = totalInputTokens;
     const denominator = cacheReadTokens + cacheWriteTokens + uncachedInputTokens;
     const cacheHitRate = denominator > 0 ? cacheReadTokens / denominator : 0;
 

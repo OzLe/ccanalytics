@@ -58,8 +58,15 @@ export interface PromptRankingRow {
 
 /** Aggregate statistics across all prompts in a filtered range. */
 export interface PromptStats {
-  /** Total number of user prompts. */
+  /** Total number of user prompts that received an assistant response. */
   totalPrompts: number;
+  /**
+   * KPI-004: count of user prompts that got NO assistant response (a user
+   * turn immediately followed by another user turn). Excluded from
+   * totalPrompts/avgCost/distributions; surfaced so the average is not
+   * silently deflated.
+   */
+  promptsWithNoResponse: number;
   /** Average cost per prompt-response pair (USD). */
   avgCost: number;
   /** Maximum cost of a single prompt-response pair (USD). */
@@ -70,6 +77,32 @@ export interface PromptStats {
   costDistribution: DistributionBucket[];
   /** Complexity distribution histogram buckets. */
   complexityDistribution: DistributionBucket[];
+}
+
+// ---------------------------------------------------------------------------
+// Prompt Throughput (NEW-004)
+// ---------------------------------------------------------------------------
+
+/**
+ * NEW-004: throughput / agentic-depth metrics derived from v_prompt_analysis.
+ * Computed over RESPONDED prompts only (multi_turn_depth > 0), consistent with
+ * the KPI-004 rule applied across the rest of PromptAnalyzer.
+ *
+ *   promptsPerSession   = responded prompts / distinct sessions
+ *   turnsPerPrompt      = AVG(multi_turn_depth)  — assistant turns per prompt
+ *   toolCallsPerPrompt  = AVG(tool_call_count)   — tool calls per prompt
+ */
+export interface PromptThroughputStats {
+  /** Responded prompts (multi_turn_depth > 0) in the filtered range. */
+  totalPrompts: number;
+  /** Distinct sessions those prompts span. */
+  totalSessions: number;
+  /** Responded prompts per session. */
+  promptsPerSession: number;
+  /** Average assistant turns per prompt (agentic depth). */
+  turnsPerPrompt: number;
+  /** Average tool calls per prompt. */
+  toolCallsPerPrompt: number;
 }
 
 // ---------------------------------------------------------------------------

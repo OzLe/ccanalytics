@@ -35,4 +35,8 @@ export const DEFAULT_CONFIG: Readonly<CCAnalyticsConfig> = {
     memoryLimit: "256MB",
     threads: 0, // 0 = DuckDB auto-detect
   },
+  subscription: {
+    tier: "max-20x",
+    monthlyUSD: 200,
+  },
 };

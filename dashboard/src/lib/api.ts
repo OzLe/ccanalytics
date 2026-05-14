@@ -42,3 +42,10 @@ export function apiPost<T>(endpoint: string, body?: unknown): Promise<T> {
     body: body ? JSON.stringify(body) : undefined,
   });
 }
+
+export function apiPut<T>(endpoint: string, body?: unknown): Promise<T> {
+  return apiFetch<T>(endpoint, {
+    method: "PUT",
+    body: body ? JSON.stringify(body) : undefined,
+  });
+}

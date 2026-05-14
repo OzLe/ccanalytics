@@ -23,12 +23,14 @@ export interface DbResult<T = Record<string, unknown>> {
   durationMs: number;
 }
 
+/** The connected DuckDB connection type. */
+type DuckDBConnection = Awaited<ReturnType<InstanceType<typeof DuckDBInstance>["connect"]>>;
+
 /** Singleton database connection state. */
-let instance: InstanceType<typeof DuckDBInstance> | null = null;
-let connection: Awaited<ReturnType<InstanceType<typeof DuckDBInstance>["connect"]>> | null = null;
+let connection: DuckDBConnection | null = null;
 let dbPath: string | null = null;
 /** Deduplicates concurrent getConnection() calls. */
-let connectingPromise: Promise<typeof connection> | null = null;
+let connectingPromise: Promise<DuckDBConnection> | null = null;
 
 /**
  * Resolve the default database path.
@@ -57,10 +59,10 @@ function looksCorrupt(msg: string): boolean {
 }
 
 /** Try to create a DuckDB instance and connect. */
-async function openDb(p: string) {
+async function openDb(p: string): Promise<DuckDBConnection> {
   const inst = await DuckDBInstance.create(p);
   const conn = await inst.connect();
-  return { inst, conn };
+  return conn;
 }
 
 /**
@@ -90,9 +92,7 @@ async function initConnection() {
   const walPath = `${dbPath}.wal`;
 
   try {
-    const result = await openDb(dbPath);
-    instance = result.inst;
-    connection = result.conn;
+    connection = await openDb(dbPath);
   } catch (err) {
     const msg = (err as Error).message ?? "";
 
@@ -101,9 +101,7 @@ async function initConnection() {
       console.warn(`[db] Corrupt WAL detected — removing ${walPath} and retrying`);
       fs.unlinkSync(walPath);
       try {
-        const result = await openDb(dbPath);
-        instance = result.inst;
-        connection = result.conn;
+        connection = await openDb(dbPath);
       } catch (retryErr) {
         const retryMsg = (retryErr as Error).message ?? "";
         if (!looksCorrupt(retryMsg)) {
@@ -120,9 +118,7 @@ async function initConnection() {
       if (fs.existsSync(walPath)) {
         fs.unlinkSync(walPath);
       }
-      const result = await openDb(dbPath);
-      instance = result.inst;
-      connection = result.conn;
+      connection = await openDb(dbPath);
     }
 
     if (!connection) {
@@ -140,11 +136,8 @@ async function initConnection() {
     if (msg.includes("FATAL") || msg.includes("invalidated")) {
       console.warn("[db] Index rebuild caused FATAL error — reopening without indexes");
       try { connection.closeSync(); } catch { /* ignore */ }
-      instance = null;
       connection = null;
-      const result = await openDb(dbPath);
-      instance = result.inst;
-      connection = result.conn;
+      connection = await openDb(dbPath);
     }
   }
 
@@ -298,7 +291,7 @@ export async function query<T = Record<string, unknown>>(
 }
 
 /**
- * Close the database connection and instance.
+ * Close the database connection.
  * Safe to call multiple times. Used for graceful shutdown.
  */
 export async function closeDb(): Promise<void> {
@@ -307,11 +300,9 @@ export async function closeDb(): Promise<void> {
       connection.closeSync();
       connection = null;
     }
-    instance = null;
     dbPath = null;
   } catch {
     connection = null;
-    instance = null;
     dbPath = null;
   }
 }

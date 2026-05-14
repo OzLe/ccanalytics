@@ -121,6 +121,42 @@ export interface ApiEnvelope<T> {
 }
 
 // ---------------------------------------------------------------------------
+// Subscription settings (GET/PUT /api/settings)
+// ---------------------------------------------------------------------------
+
+/**
+ * The user's Claude subscription plan. Mirrors `SubscriptionTier` in
+ * src/types/config.ts — kept in sync manually because the dashboard build does
+ * not import the CLI source for types.
+ */
+export type SubscriptionTier = "none" | "pro" | "max-5x" | "max-20x";
+
+/** Resolved subscription settings returned by GET /api/settings. */
+export interface SubscriptionSettings {
+  tier: SubscriptionTier;
+  monthlyUSD: number;
+}
+
+/** A selectable subscription tier option for the Settings tier picker. */
+export interface SubscriptionTierOption {
+  id: SubscriptionTier;
+  label: string;
+  monthlyUSD: number;
+}
+
+/**
+ * Canonical tier list for the UI selector. Mirrors SUBSCRIPTION_TIERS in
+ * src/config/subscription.ts (the server-side single source of truth). The
+ * server still validates every PUT, so this is presentation-only.
+ */
+export const SUBSCRIPTION_TIER_OPTIONS: ReadonlyArray<SubscriptionTierOption> = [
+  { id: "none", label: "None (API pay-as-you-go)", monthlyUSD: 0 },
+  { id: "pro", label: "Pro", monthlyUSD: 20 },
+  { id: "max-5x", label: "MAX 5x", monthlyUSD: 100 },
+  { id: "max-20x", label: "MAX 20x", monthlyUSD: 200 },
+];
+
+// ---------------------------------------------------------------------------
 // Cost API responses
 // ---------------------------------------------------------------------------
 
@@ -207,6 +243,37 @@ export interface SessionStats {
   uniqueModels: string[];
 }
 
+/** NEW-001: per-session context-window utilization. */
+export interface SessionContextPressure {
+  sessionId: string;
+  assistantTurns: number;
+  /** MAX(context_utilization) across the session (0..n; >1 impossible given
+   *  the model-aware window). */
+  peakContextPct: number;
+  peakContextTokens: number;
+  avgContextPct: number;
+  turnsOver60: number;
+  turnsOver80: number;
+  pressureShare: number;
+  maxTokensTurns: number;
+}
+
+/** GET /api/sessions/context-pressure — dataset summary + per-session rows. */
+export interface ContextPressureData {
+  summary: {
+    totalSessions: number;
+    sessionsOver60: number;
+    sessionsOver80: number;
+    /** sessionsOver60 / totalSessions (the headline KPI). */
+    pressureRate: number;
+    /** sessionsOver80 / totalSessions ("critical" band). */
+    criticalRate: number;
+    worstPeakPct: number;
+    maxTokensTurns: number;
+  };
+  sessions: SessionContextPressure[];
+}
+
 // ---------------------------------------------------------------------------
 // Tools API responses
 // ---------------------------------------------------------------------------
@@ -222,6 +289,8 @@ export interface ToolUsageRow {
   successRate: number | null;
   avgDurationMs: number;
   sessionsUsingTool: number;
+  /** KPI-009: avg calls of this tool per session that used it. */
+  avgPerSession: number;
 }
 
 /** GET /api/tools/success-rates row */
@@ -230,7 +299,8 @@ export interface ToolSuccessRate {
   totalCalls: number;
   successCount: number;
   failureCount: number;
-  successRate: number;
+  /** KPI-006: null when the tool has only NULL-success calls ("no data"). */
+  successRate: number | null;
   avgDurationMs: number;
   commonErrors: string[];
 }
@@ -240,6 +310,45 @@ export interface ToolChain {
   chain: string[];
   occurrences: number;
   avgDurationMs: number;
+}
+
+/** NEW-002: failure stats for one tool class within a time bucket. */
+export interface ToolFailureTrendSeries {
+  totalCalls: number;
+  evaluatedCalls: number;
+  failureCount: number;
+  /** failureCount / evaluatedCalls, or null when no evaluated calls. */
+  failureRate: number | null;
+}
+
+/** GET /api/tools/failure-trend row — one point per time bucket. */
+export interface ToolFailureTrendPoint {
+  timestamp: string;
+  builtin: ToolFailureTrendSeries;
+  mcp: ToolFailureTrendSeries;
+  overall: ToolFailureTrendSeries;
+}
+
+/** NEW-003: per-session tool-failure-chain (rework) stats. */
+export interface SessionFailureChain {
+  sessionId: string;
+  maxFailureStreak: number;
+  failureChains2Plus: number;
+  failureChains3Plus: number;
+  totalFailedInChains: number;
+}
+
+/** GET /api/tools/failure-chains — dataset summary + worst-offender sessions. */
+export interface FailureChainsData {
+  summary: {
+    sessionsWithToolCalls: number;
+    sessionsWithChains2Plus: number;
+    sessionsWithChains3Plus: number;
+    /** sessionsWithChains3Plus / sessionsWithToolCalls (the headline KPI). */
+    chainRate3Plus: number;
+    worstStreak: number;
+  };
+  topSessions: SessionFailureChain[];
 }
 
 // ---------------------------------------------------------------------------
@@ -419,12 +528,38 @@ export interface PromptRankingRow {
 
 /** GET /api/prompts/stats — aggregate prompt statistics. */
 export interface PromptStatsData {
+  /** User prompts that received an assistant response (KPI-004). */
   totalPrompts: number;
+  /** KPI-004: user prompts with no assistant response (excluded from totals). */
+  promptsWithNoResponse: number;
   avgCost: number;
   maxCost: number;
   avgComplexity: number;
   costDistribution: DistributionBucket[];
   complexityDistribution: DistributionBucket[];
+}
+
+/** GET /api/prompts/throughput — agentic-depth / throughput metrics. */
+export interface PromptThroughputData {
+  /** Responded prompts (multi_turn_depth > 0) in the filtered range. */
+  totalPrompts: number;
+  /** Distinct sessions those prompts span. */
+  totalSessions: number;
+  /** Responded prompts per session. */
+  promptsPerSession: number;
+  /** Average assistant turns per prompt (agentic depth). */
+  turnsPerPrompt: number;
+  /** Average tool calls per prompt. */
+  toolCallsPerPrompt: number;
+}
+
+/** GET /api/prompts/throughput response shape. */
+export interface PromptThroughputResponse {
+  data: PromptThroughputData;
+  meta: {
+    period: string;
+    timestamp: string;
+  };
 }
 
 /** Tool call associated with a prompt detail. */

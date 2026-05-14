@@ -19,6 +19,25 @@ import type { QueryExecutor } from "../db/executor.js";
 import { buildTurnFilters, buildSessionFilters } from "./filter-builder.js";
 import { getPricing } from "../utils/pricing.js";
 
+/**
+ * Canonical row-inclusion predicate for cost aggregation (COST-005).
+ *
+ * Replaces the old implicit `cost_usd > 0` silent filter. Intent: "real
+ * assistant turns" — every assistant turn, explicitly excluding only the
+ * `<synthetic>` placeholder model (0 tokens, $0). Cost is never used as a
+ * proxy for "is this a real turn". Applied identically across getDailyCosts,
+ * getCostByModel, getCostByProject, getTotalCost and getCostTrend so the
+ * "total" and "daily" views reconcile on token/turn counts.
+ *
+ * Mirrors `costRowPredicate()` in dashboard/src/server/routes/cost.ts.
+ *
+ * @param alias - Table alias for conversation_turns ("" for the bare column form)
+ */
+function costRowPredicate(alias = ""): string {
+  const p = alias ? `${alias}.` : "";
+  return `${p}role = 'assistant' AND ${p}model IS NOT NULL AND ${p}model <> '<synthetic>'`;
+}
+
 /** Cost breakdown for a specific project. */
 export interface ProjectCostBreakdown {
   projectPath: string;
@@ -64,8 +83,7 @@ export class CostAnalyzer {
         COUNT(*) AS turn_count,
         COUNT(DISTINCT session_id) AS session_count
       FROM conversation_turns
-      WHERE role = 'assistant'
-        AND cost_usd > 0
+      WHERE ${costRowPredicate()}
         AND timestamp >= $1 AND timestamp < $2
         ${f.clauses.join("\n        ")}
       GROUP BY CAST(timestamp AS DATE), model
@@ -105,6 +123,10 @@ export class CostAnalyzer {
    */
   async getCostByModel(range: TimeRange, filters?: QueryFilters): Promise<ModelCostBreakdown[]> {
     const f = buildTurnFilters(filters, 3);
+    // COST-003: total_cost_usd is the SUM of the stored cost_usd column — the
+    // single canonical basis. Per-category costs are still rate-derived (the
+    // stored column is one combined total); after the COST-002 backfill the
+    // per-category sum reconciles with the stored total.
     const sql = `
       SELECT
         ct.model,
@@ -115,7 +137,7 @@ export class CostAnalyzer {
         COALESCE(SUM(ct.cache_creation_tokens), 0) AS total_cache_write_tokens,
         COALESCE(SUM(ct.cache_read_tokens), 0) AS total_cache_read_tokens
       FROM conversation_turns ct
-      WHERE ct.role = 'assistant'
+      WHERE ${costRowPredicate("ct")}
         AND ct.timestamp >= $1 AND ct.timestamp < $2
         ${f.clauses.map((c) => c.replace(/\bmodel\b/, "ct.model").replace(/\bsession_id\b/, "ct.session_id")).join("\n        ")}
       GROUP BY ct.model
@@ -143,7 +165,8 @@ export class CostAnalyzer {
       const outputCostUSD = (totalOutputTokens * p.outputPerM) / 1_000_000;
       const cacheWriteCostUSD = (totalCacheWriteTokens * p.cacheCreationPerM) / 1_000_000;
       const cacheReadCostUSD = (totalCacheReadTokens * p.cacheReadPerM) / 1_000_000;
-      const totalCostUSD = inputCostUSD + outputCostUSD + cacheWriteCostUSD + cacheReadCostUSD;
+      // Canonical total: stored cost_usd column (COST-003).
+      const totalCostUSD = Number(row.total_cost_usd);
 
       return {
         model: row.model,
@@ -170,18 +193,21 @@ export class CostAnalyzer {
    */
   async getCostByProject(range: TimeRange, filters?: QueryFilters): Promise<ProjectCostBreakdown[]> {
     const f = buildSessionFilters(filters, 3);
-    // Query tokens grouped by project and model so we can apply correct per-model rates
+    // Query tokens grouped by project and model so we can apply correct
+    // per-model rates for the per-category breakdown. cost_usd (stored) is
+    // also summed per group — it is the canonical total (COST-003).
     const sql = `
       SELECT
         COALESCE(s.project_path, 'unknown') AS project_path,
         ct.model,
         COUNT(DISTINCT s.session_id) AS session_count,
+        COALESCE(SUM(ct.cost_usd), 0) AS stored_cost_usd,
         COALESCE(SUM(ct.input_tokens), 0) AS total_input_tokens,
         COALESCE(SUM(ct.output_tokens), 0) AS total_output_tokens,
         COALESCE(SUM(ct.cache_creation_tokens), 0) AS total_cache_write_tokens,
         COALESCE(SUM(ct.cache_read_tokens), 0) AS total_cache_read_tokens
       FROM sessions s
-      JOIN conversation_turns ct ON ct.session_id = s.session_id AND ct.role = 'assistant'
+      JOIN conversation_turns ct ON ct.session_id = s.session_id AND ${costRowPredicate("ct")}
       WHERE s.start_time >= $1 AND s.start_time < $2
         ${f.clauses.join("\n        ")}
       GROUP BY s.project_path, ct.model
@@ -191,6 +217,7 @@ export class CostAnalyzer {
       project_path: string;
       model: string;
       session_count: number;
+      stored_cost_usd: number;
       total_input_tokens: number;
       total_output_tokens: number;
       total_cache_write_tokens: number;
@@ -201,6 +228,7 @@ export class CostAnalyzer {
     const projectMap = new Map<string, {
       sessionIds: Set<string>;
       sessionCount: number;
+      storedCostUSD: number;
       inputCostUSD: number;
       outputCostUSD: number;
       cacheWriteCostUSD: number;
@@ -218,6 +246,7 @@ export class CostAnalyzer {
         agg = {
           sessionIds: new Set(),
           sessionCount: 0,
+          storedCostUSD: 0,
           inputCostUSD: 0,
           outputCostUSD: 0,
           cacheWriteCostUSD: 0,
@@ -236,6 +265,7 @@ export class CostAnalyzer {
       const crTok = Number(row.total_cache_read_tokens);
 
       const p = getPricing(row.model);
+      agg.storedCostUSD += Number(row.stored_cost_usd);
       agg.inputCostUSD += (inTok * p.inputPerM) / 1_000_000;
       agg.outputCostUSD += (outTok * p.outputPerM) / 1_000_000;
       agg.cacheWriteCostUSD += (cwTok * p.cacheCreationPerM) / 1_000_000;
@@ -272,7 +302,8 @@ export class CostAnalyzer {
 
     const projects: ProjectCostBreakdown[] = [];
     for (const [projectPath, agg] of projectMap) {
-      const totalCostUSD = agg.inputCostUSD + agg.outputCostUSD + agg.cacheWriteCostUSD + agg.cacheReadCostUSD;
+      // Canonical total: SUM of the stored cost_usd column (COST-003).
+      const totalCostUSD = agg.storedCostUSD;
       projects.push({
         projectPath,
         totalCostUSD,
@@ -327,7 +358,7 @@ export class CostAnalyzer {
         COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens,
         COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens
       FROM conversation_turns
-      WHERE role = 'assistant'
+      WHERE ${costRowPredicate()}
         AND timestamp >= $1 AND timestamp < $2
         ${f.clauses.join("\n        ")}
       GROUP BY ts
@@ -361,22 +392,26 @@ export class CostAnalyzer {
    */
   async getTotalCost(range: TimeRange, filters?: QueryFilters): Promise<CostBreakdown> {
     const f = buildTurnFilters(filters, 3);
-    // Group by model so we can apply correct per-model rates
+    // Group by model so we can apply correct per-model rates for the
+    // per-category breakdown. cost_usd (stored) is summed too — it is the
+    // canonical total (COST-003), identical to the daily/trend paths.
     const sql = `
       SELECT
         model,
+        COALESCE(SUM(cost_usd), 0) AS stored_cost_usd,
         COALESCE(SUM(input_tokens), 0) AS total_input_tokens,
         COALESCE(SUM(output_tokens), 0) AS total_output_tokens,
         COALESCE(SUM(cache_creation_tokens), 0) AS total_cache_write_tokens,
         COALESCE(SUM(cache_read_tokens), 0) AS total_cache_read_tokens
       FROM conversation_turns
-      WHERE role = 'assistant'
+      WHERE ${costRowPredicate()}
         AND timestamp >= $1 AND timestamp < $2
         ${f.clauses.join("\n        ")}
       GROUP BY model
     `;
     const result = await this.executor.query<{
       model: string;
+      stored_cost_usd: number;
       total_input_tokens: number;
       total_output_tokens: number;
       total_cache_write_tokens: number;
@@ -405,6 +440,7 @@ export class CostAnalyzer {
     let outputCostUSD = 0;
     let cacheWriteCostUSD = 0;
     let cacheReadCostUSD = 0;
+    let storedCostUSD = 0;
 
     for (const row of result.rows) {
       const inTok = Number(row.total_input_tokens);
@@ -416,6 +452,7 @@ export class CostAnalyzer {
       totalOutputTokens += outTok;
       totalCacheWriteTokens += cwTok;
       totalCacheReadTokens += crTok;
+      storedCostUSD += Number(row.stored_cost_usd);
 
       const p = getPricing(row.model);
       inputCostUSD += (inTok * p.inputPerM) / 1_000_000;
@@ -425,7 +462,8 @@ export class CostAnalyzer {
     }
 
     return {
-      totalCostUSD: inputCostUSD + outputCostUSD + cacheWriteCostUSD + cacheReadCostUSD,
+      // Canonical total: SUM of the stored cost_usd column (COST-003).
+      totalCostUSD: storedCostUSD,
       inputCostUSD,
       outputCostUSD,
       cacheWriteCostUSD,

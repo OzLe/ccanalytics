@@ -4,8 +4,13 @@
  * Cache efficiency analytical queries.
  * Calculates cache hit rates, trends, and per-session/per-model breakdowns.
  *
- * Cache hit rate formula:
- *   cache_read / (cache_read + cache_write + uncached_input)
+ * Cache hit rate formula (KPI-001 — canonical, matches the SQL views):
+ *   cache_read / (cache_read + cache_creation + input_tokens)
+ *
+ * In the Anthropic API, cache_read_input_tokens and cache_creation_input_tokens
+ * are SEPARATE fields from input_tokens (input_tokens does NOT include cache
+ * reads). The adapters store them as separate quantities, so input_tokens is
+ * already the uncached-input figure — do NOT subtract cache_read from it.
  *
  * Interpretation:
  *   > 80% = "effective"
@@ -97,8 +102,11 @@ export class CacheAnalyzer {
       estimatedSavingsUSD += (crTok / 1_000_000) * savingsPerMTok;
     }
 
-    // Uncached input = total input - cache_read (cache reads are part of input)
-    const uncachedInputTokens = Math.max(0, totalInputTokens - cacheReadTokens);
+    // KPI-001: input_tokens is already the uncached-input figure (cache reads
+    // are a SEPARATE field in the Anthropic API, not a subset of input_tokens).
+    // Canonical denominator = cache_read + cache_creation + input_tokens,
+    // matching v_cache_efficiency / v_session_summary and getCacheTrend.
+    const uncachedInputTokens = totalInputTokens;
     const denominator = cacheReadTokens + cacheWriteTokens + uncachedInputTokens;
     const cacheHitRate = denominator > 0 ? cacheReadTokens / denominator : 0;
 
@@ -184,7 +192,9 @@ export class CacheAnalyzer {
         ct.model,
         COALESCE(SUM(ct.cache_read_tokens), 0) AS cache_read_tokens,
         COALESCE(SUM(ct.cache_creation_tokens), 0) AS cache_write_tokens,
-        GREATEST(COALESCE(SUM(ct.input_tokens), 0) - COALESCE(SUM(ct.cache_read_tokens), 0), 0) AS uncached_input_tokens
+        -- KPI-001: input_tokens is already the uncached-input figure; do not
+        -- subtract cache_read (they are separate Anthropic API fields).
+        COALESCE(SUM(ct.input_tokens), 0) AS uncached_input_tokens
       FROM v_session_summary s
       LEFT JOIN conversation_turns ct ON ct.session_id = s.session_id
       WHERE s.start_time >= $1 AND s.start_time < $2

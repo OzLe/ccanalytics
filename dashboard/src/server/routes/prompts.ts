@@ -152,6 +152,104 @@ function buildPromptPairsCTE(filterClauses: string[]): string {
     )`;
 }
 
+/**
+ * KPI-005: a self-contained `g_`-prefixed CTE chain that computes the GLOBAL
+ * complexity score for every prompt in the entire dataset (no model/project
+ * filter), so a given prompt's score is identical in the ranked list, the
+ * stats distributions, and the detail view regardless of the active filter.
+ *
+ * Produces a final CTE `g_scored_prompts (turn_id, complexity_score)`.
+ * Expects two bind params at $p / $p+1 for the global date range — callers
+ * pass a wide-open range (2000-01-01 .. 2099-12-31).
+ */
+function buildGlobalScoresCTE(p: number): string {
+  return `
+    g_ordered_turns AS (
+      SELECT
+        turn_id,
+        session_id,
+        role,
+        timestamp,
+        input_tokens,
+        output_tokens,
+        cache_creation_tokens,
+        cache_read_tokens,
+        content_text,
+        has_thinking,
+        ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY timestamp, turn_id) AS rn
+      FROM conversation_turns
+      WHERE timestamp >= $${p} AND timestamp < $${p + 1}
+    ),
+    g_user_turns AS (
+      SELECT * FROM g_ordered_turns
+      WHERE role = 'user' AND content_text IS NOT NULL
+    ),
+    g_user_bounds AS (
+      SELECT
+        ut.turn_id,
+        ut.session_id,
+        ut.rn AS user_rn,
+        LEAD(ut.rn) OVER (PARTITION BY ut.session_id ORDER BY ut.rn) AS next_user_rn
+      FROM g_user_turns ut
+    ),
+    g_assistant_agg AS (
+      SELECT
+        ub.turn_id AS user_turn_id,
+        ub.session_id,
+        COALESCE(SUM(ot.input_tokens), 0) + COALESCE(SUM(ot.output_tokens), 0)
+          + COALESCE(SUM(ot.cache_creation_tokens), 0)
+          + COALESCE(SUM(ot.cache_read_tokens), 0) AS total_tokens,
+        COUNT(ot.turn_id) AS multi_turn_depth,
+        MAX(CASE WHEN ot.has_thinking THEN 1 ELSE 0 END) AS has_thinking,
+        LIST(ot.turn_id) AS assistant_turn_ids
+      FROM g_user_bounds ub
+      JOIN g_ordered_turns ot
+        ON ot.session_id = ub.session_id
+        AND ot.rn > ub.user_rn
+        AND (ub.next_user_rn IS NULL OR ot.rn < ub.next_user_rn)
+        AND ot.role = 'assistant'
+      GROUP BY ub.turn_id, ub.session_id
+    ),
+    g_tool_counts AS (
+      SELECT
+        aa.user_turn_id,
+        aa.session_id,
+        COUNT(tc.tool_call_id) AS tool_call_count
+      FROM g_assistant_agg aa
+      JOIN LATERAL UNNEST(aa.assistant_turn_ids) AS t(aid) ON TRUE
+      LEFT JOIN tool_calls tc
+        ON tc.turn_id = t.aid
+        AND tc.session_id = aa.session_id
+      GROUP BY aa.user_turn_id, aa.session_id
+    ),
+    g_prompt_pairs AS (
+      SELECT
+        ub.turn_id,
+        COALESCE(aa.total_tokens, 0) AS total_tokens,
+        COALESCE(aa.multi_turn_depth, 0) AS multi_turn_depth,
+        COALESCE(aa.has_thinking, 0) AS has_thinking,
+        COALESCE(tc.tool_call_count, 0) AS tool_call_count
+      FROM g_user_bounds ub
+      LEFT JOIN g_assistant_agg aa
+        ON aa.user_turn_id = ub.turn_id AND aa.session_id = ub.session_id
+      LEFT JOIN g_tool_counts tc
+        ON tc.user_turn_id = ub.turn_id AND tc.session_id = ub.session_id
+    ),
+    g_scored_prompts AS (
+      SELECT
+        pp.turn_id,
+        ROUND(
+          (
+            COALESCE(PERCENT_RANK() OVER (ORDER BY pp.tool_call_count), 0) * 100
+            + COALESCE(PERCENT_RANK() OVER (ORDER BY pp.total_tokens), 0) * 100
+            + COALESCE(PERCENT_RANK() OVER (ORDER BY pp.multi_turn_depth), 0) * 100
+            + (CASE WHEN pp.has_thinking = 1 THEN 100 ELSE 0 END)
+          ) / 4.0
+        , 1) AS complexity_score
+      FROM g_prompt_pairs pp
+    )`;
+}
+
 // ---------------------------------------------------------------------------
 // GET /api/prompts/ranked
 // ---------------------------------------------------------------------------
@@ -187,25 +285,34 @@ router.get("/ranked", async (req, res, next) => {
     const sortColumn = sortColumnMap[sort] ?? "complexity_score";
 
     const f = buildTurnFilterClauses(filters, 3);
-    const paramOffset = 3 + f.params.length;
+    // KPI-005: the global-score CTE binds the full date range at these two
+    // indices; limit/offset follow. complexity_score comes from the global
+    // g_scored_prompts join, not the filtered scored_prompts.
+    const globalRangeIndex = 3 + f.params.length;
+    const paramOffset = globalRangeIndex + 2;
 
     const sql = `
-      WITH ${buildPromptPairsCTE(f.clauses)}
+      WITH ${buildPromptPairsCTE(f.clauses)},
+      ${buildGlobalScoresCTE(globalRangeIndex)}
       SELECT
-        turn_id,
-        session_id,
-        prompt_preview,
-        response_cost,
-        complexity_score,
-        tool_call_count,
-        total_tokens,
-        multi_turn_depth,
-        CASE WHEN has_thinking = 1 THEN TRUE ELSE FALSE END AS has_thinking,
-        model,
-        timestamp,
+        sp.turn_id,
+        sp.session_id,
+        sp.prompt_preview,
+        sp.response_cost,
+        gs.complexity_score,
+        sp.tool_call_count,
+        sp.total_tokens,
+        sp.multi_turn_depth,
+        CASE WHEN sp.has_thinking = 1 THEN TRUE ELSE FALSE END AS has_thinking,
+        sp.model,
+        sp.timestamp,
         COUNT(*) OVER () AS _total_count
-      FROM scored_prompts
-      ORDER BY ${sortColumn} ${order}, timestamp DESC
+      FROM scored_prompts sp
+      LEFT JOIN g_scored_prompts gs ON gs.turn_id = sp.turn_id
+      -- KPI-004: list only prompts that actually got an assistant response;
+      -- multi_turn_depth = 0 rows (consecutive user turns) are all-zero noise.
+      WHERE sp.multi_turn_depth > 0
+      ORDER BY ${sortColumn === "complexity_score" ? "gs.complexity_score" : `sp.${sortColumn}`} ${order}, sp.timestamp DESC
       LIMIT $${paramOffset} OFFSET $${paramOffset + 1}
     `;
 
@@ -213,6 +320,8 @@ router.get("/ranked", async (req, res, next) => {
       filters.range.start,
       filters.range.end,
       ...f.params,
+      new Date("2000-01-01"),
+      new Date("2099-12-31"),
       limit,
       offset,
     ]);
@@ -265,19 +374,38 @@ router.get("/stats", async (req, res, next) => {
   try {
     const filters = parseFilters(req);
     const f = buildTurnFilterClauses(filters, 3);
+    // KPI-005: the global-score CTE binds the full date range at these indices.
+    const globalRangeIndex = 3 + f.params.length;
+    const baseParams = [filters.range.start, filters.range.end, ...f.params];
+    const globalParams = [
+      ...baseParams,
+      new Date("2000-01-01"),
+      new Date("2099-12-31"),
+    ];
 
-    // Aggregate stats query
+    // KPI-004: a prompt with multi_turn_depth = 0 is a user turn immediately
+    // followed by another user turn (no assistant response). These all-zero
+    // rows previously inflated total_prompts, dragged AVG(response_cost) down
+    // ~28%, and still received a complexity score. The headline stats and the
+    // distributions below are computed over RESPONDED prompts only; the count
+    // of no-response prompts is surfaced separately as prompts_with_no_response.
+    //
+    // KPI-005: avg_complexity uses the GLOBAL percentile score (joined from
+    // g_scored_prompts) so it matches the ranked list and the detail view.
     const statsSql = `
-      WITH ${buildPromptPairsCTE(f.clauses)}
+      WITH ${buildPromptPairsCTE(f.clauses)},
+      ${buildGlobalScoresCTE(globalRangeIndex)}
       SELECT
-        COUNT(*) AS total_prompts,
-        COALESCE(AVG(response_cost), 0) AS avg_cost,
-        COALESCE(MAX(response_cost), 0) AS max_cost,
-        COALESCE(AVG(complexity_score), 0) AS avg_complexity
-      FROM scored_prompts
+        COUNT(*) FILTER (WHERE sp.multi_turn_depth > 0) AS total_prompts,
+        COUNT(*) FILTER (WHERE sp.multi_turn_depth = 0) AS prompts_with_no_response,
+        COALESCE(AVG(sp.response_cost) FILTER (WHERE sp.multi_turn_depth > 0), 0) AS avg_cost,
+        COALESCE(MAX(sp.response_cost), 0) AS max_cost,
+        COALESCE(AVG(gs.complexity_score) FILTER (WHERE sp.multi_turn_depth > 0), 0) AS avg_complexity
+      FROM scored_prompts sp
+      LEFT JOIN g_scored_prompts gs ON gs.turn_id = sp.turn_id
     `;
 
-    // Cost distribution query
+    // Cost distribution query — KPI-004: responded prompts only.
     const costDistSql = `
       WITH ${buildPromptPairsCTE(f.clauses)}
       SELECT
@@ -310,13 +438,22 @@ router.get("/stats", async (req, res, next) => {
         END AS bucket_max,
         COUNT(*) AS count
       FROM scored_prompts
+      WHERE multi_turn_depth > 0
       GROUP BY label, bucket_min, bucket_max
       ORDER BY bucket_min ASC
     `;
 
-    // Complexity distribution query
+    // Complexity distribution query — KPI-004: responded prompts only;
+    // KPI-005: bucketed on the GLOBAL percentile score.
     const complexityDistSql = `
-      WITH ${buildPromptPairsCTE(f.clauses)}
+      WITH ${buildPromptPairsCTE(f.clauses)},
+      ${buildGlobalScoresCTE(globalRangeIndex)},
+      filtered_scores AS (
+        SELECT gs.complexity_score
+        FROM scored_prompts sp
+        LEFT JOIN g_scored_prompts gs ON gs.turn_id = sp.turn_id
+        WHERE sp.multi_turn_depth > 0
+      )
       SELECT
         CASE
           WHEN complexity_score < 20 THEN '0-20'
@@ -340,17 +477,15 @@ router.get("/stats", async (req, res, next) => {
           ELSE 100
         END AS bucket_max,
         COUNT(*) AS count
-      FROM scored_prompts
+      FROM filtered_scores
       GROUP BY label, bucket_min, bucket_max
       ORDER BY bucket_min ASC
     `;
 
-    const baseParams = [filters.range.start, filters.range.end, ...f.params];
-
     const [statsResult, costDistResult, complexityDistResult] = await Promise.all([
-      query(statsSql, baseParams),
+      query(statsSql, globalParams),
       query(costDistSql, baseParams),
-      query(complexityDistSql, baseParams),
+      query(complexityDistSql, globalParams),
     ]);
 
     const stats = statsResult.rows[0] as Record<string, unknown> | undefined;
@@ -374,11 +509,78 @@ router.get("/stats", async (req, res, next) => {
     res.json({
       data: {
         totalPrompts: Number(stats?.total_prompts ?? 0),
+        // KPI-004: prompts whose user turn had no assistant response, surfaced
+        // so the headline average is not silently deflated by ~28%.
+        promptsWithNoResponse: Number(stats?.prompts_with_no_response ?? 0),
         avgCost: Number(stats?.avg_cost ?? 0),
         maxCost: Number(stats?.max_cost ?? 0),
         avgComplexity: Number(stats?.avg_complexity ?? 0),
         costDistribution,
         complexityDistribution,
+      },
+      meta: {
+        period: filters.period,
+        timestamp: new Date().toISOString(),
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/prompts/throughput
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/prompts/throughput
+ *
+ * NEW-004: throughput / agentic-depth metrics from the prompt pairs.
+ * v_prompt_analysis already computes multi_turn_depth and tool_call_count per
+ * prompt; this surfaces them as:
+ *   promptsPerSession  = responded prompts / distinct sessions
+ *   turnsPerPrompt     = AVG(multi_turn_depth)
+ *   toolCallsPerPrompt = AVG(tool_call_count)
+ * Computed over RESPONDED prompts only (multi_turn_depth > 0), consistent with
+ * the KPI-004 rule used by /stats and /ranked. Mirrors
+ * PromptAnalyzer.getPromptThroughput.
+ *
+ * Query params: ?period=7d&model=X&project=Y
+ *
+ * NOTE: must be declared BEFORE the "/:turnId" catch-all route below.
+ */
+router.get("/throughput", async (req, res, next) => {
+  try {
+    const filters = parseFilters(req);
+    const f = buildTurnFilterClauses(filters, 3);
+
+    const sql = `
+      WITH ${buildPromptPairsCTE(f.clauses)}
+      SELECT
+        COUNT(*) FILTER (WHERE multi_turn_depth > 0) AS total_prompts,
+        COUNT(DISTINCT session_id) FILTER (WHERE multi_turn_depth > 0) AS total_sessions,
+        COALESCE(AVG(multi_turn_depth) FILTER (WHERE multi_turn_depth > 0), 0) AS turns_per_prompt,
+        COALESCE(AVG(tool_call_count) FILTER (WHERE multi_turn_depth > 0), 0) AS tool_calls_per_prompt
+      FROM scored_prompts
+    `;
+
+    const result = await query(sql, [
+      filters.range.start,
+      filters.range.end,
+      ...f.params,
+    ]);
+
+    const row = result.rows[0] as Record<string, unknown> | undefined;
+    const totalPrompts = Number(row?.total_prompts ?? 0);
+    const totalSessions = Number(row?.total_sessions ?? 0);
+
+    res.json({
+      data: {
+        totalPrompts,
+        totalSessions,
+        promptsPerSession: totalSessions > 0 ? totalPrompts / totalSessions : 0,
+        turnsPerPrompt: Number(row?.turns_per_prompt ?? 0),
+        toolCallsPerPrompt: Number(row?.tool_calls_per_prompt ?? 0),
       },
       meta: {
         period: filters.period,

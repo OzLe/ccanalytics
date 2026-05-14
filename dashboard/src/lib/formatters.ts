@@ -1,11 +1,26 @@
 /**
  * Format a number as USD currency.
+ *
+ * Kept purely numeric — it is used inside chart tooltips/axes where a basis
+ * suffix would be noise. Labeling cost figures as "API-equivalent" is done at
+ * the component/heading level (see CostLabel.tsx), NOT inside formatCost.
  */
 export function formatCost(value: number, decimals = 4): string {
   if (value >= 1) {
     return `$${value.toFixed(2)}`;
   }
   return `$${value.toFixed(decimals)}`;
+}
+
+/**
+ * Format a cost with the "API-equiv." basis suffix baked in, for the few inline
+ * spots that want it inside a sentence (e.g. InsightCard descriptions).
+ *
+ * Most cost figures should use plain `formatCost` plus a `CostLabel` heading
+ * instead — this is only for prose where a separate label would not fit.
+ */
+export function formatCostWithBasis(value: number, decimals = 4): string {
+  return `${formatCost(value, decimals)} API-equiv.`;
 }
 
 /**

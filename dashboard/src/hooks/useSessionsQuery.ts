@@ -8,6 +8,7 @@ import type {
   SessionStats,
   SessionListResponse,
   SessionDetailEnvelope,
+  ContextPressureData,
 } from "@/lib/types";
 import { useFilterParams } from "./useFilterParams";
 
@@ -84,5 +85,22 @@ export function useSessionDetail(id: string | undefined) {
     queryFn: () => apiGet<SessionDetailEnvelope>(`/sessions/${id}`),
     select: (res) => res.data,
     enabled: !!id,
+  });
+}
+
+/**
+ * NEW-001: GET /api/sessions/context-pressure – per-session context-window
+ * utilization plus a dataset-level summary. Automatically includes the global
+ * filter params (period, model, project).
+ */
+export function useContextPressure(limit = 100) {
+  const { filters, qs } = useFilterParams();
+  return useQuery({
+    queryKey: ["sessions", "context-pressure", limit, filters],
+    queryFn: () =>
+      apiGet<ApiEnvelope<ContextPressureData>>(
+        `/sessions/context-pressure?limit=${limit}&${qs}`,
+      ),
+    select: (res) => res.data,
   });
 }

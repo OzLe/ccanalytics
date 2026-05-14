@@ -26,6 +26,7 @@ import { FileDiscovery } from "../file-discovery.js";
 import { JSONLParser } from "../jsonl-parser.js";
 import { Deduplicator } from "../deduplicator.js";
 import { calculateCost } from "../../utils/pricing.js";
+import { deriveErrorRows } from "./error-derivation.js";
 
 /**
  * Adapter for Claude Code CLI JSONL session files.
@@ -356,11 +357,16 @@ export class ClaudeCodeAdapter implements ISourceAdapter {
       });
     }
 
+    // KPI-003: derive errors table rows from already-parsed signals
+    // (tool_result is_error blocks + problematic assistant stop_reason values).
+    // Previously hardcoded `errors: []`, leaving the errors table empty.
+    const errors = deriveErrorRows(assistantMessages, userMessages);
+
     return {
       sessions,
       conversationTurns: turns,
       toolCalls,
-      errors: [],
+      errors,
     };
   }
 }

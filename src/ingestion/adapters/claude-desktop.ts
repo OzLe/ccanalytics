@@ -38,6 +38,7 @@ import type { InsertionBatch } from "../batch-inserter.js";
 import type { DiscoveredFile } from "../file-discovery.js";
 import { calculateCost } from "../../utils/pricing.js";
 import { expandHome } from "../../utils/paths.js";
+import { deriveErrorRows } from "./error-derivation.js";
 
 /** Maximum length of content_text stored per turn. */
 const CONTENT_TEXT_MAX_LENGTH = 10000;
@@ -595,11 +596,16 @@ export class ClaudeDesktopAdapter implements ISourceAdapter {
       });
     }
 
+    // KPI-003: derive errors table rows from already-parsed signals
+    // (tool_result is_error blocks + problematic assistant stop_reason values).
+    // Previously hardcoded `errors: []`, leaving the errors table empty.
+    const errors = deriveErrorRows(assistantMessages, userMessages);
+
     return {
       sessions,
       conversationTurns: turns,
       toolCalls,
-      errors: [],
+      errors,
     };
   }
 

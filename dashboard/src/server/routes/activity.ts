@@ -20,6 +20,10 @@ const router = Router();
  *
  * Get hourly activity distribution (24 rows, one per hour of day).
  * Query params: ?period=7d&model=X&project=Y
+ *
+ * KPI-002: filters role='assistant' to match v_hourly_activity, the CLI
+ * TimeSeriesAnalyzer.getHourlyActivity, and the daily/heatmap/weekly paths —
+ * "activity" is one consistent population (assistant turns) everywhere.
  */
 router.get("/hourly", async (req, res, next) => {
   try {
@@ -42,7 +46,8 @@ router.get("/hourly", async (req, res, next) => {
           ELSE 0
         END AS avg_tokens_per_turn
       FROM conversation_turns ct
-      WHERE ct.timestamp >= $1 AND ct.timestamp < $2
+      WHERE ct.role = 'assistant'
+        AND ct.timestamp >= $1 AND ct.timestamp < $2
         ${filterClauses.join("\n        ")}
       GROUP BY hour_of_day
       ORDER BY hour_of_day ASC
@@ -109,6 +114,9 @@ router.get("/daily", async (req, res, next) => {
  *
  * Get activity heatmap (hour-of-day x day-of-week).
  * Query params: ?period=7d
+ *
+ * KPI-002: counts role='assistant' turns only, so the heatmap shares the same
+ * population as /api/activity/hourly and /api/activity/daily.
  */
 router.get("/heatmap", async (req, res, next) => {
   try {
@@ -120,7 +128,8 @@ router.get("/heatmap", async (req, res, next) => {
         EXTRACT(HOUR FROM ct.timestamp)::INTEGER AS hour_of_day,
         COUNT(*) AS value
       FROM conversation_turns ct
-      WHERE ct.timestamp >= $1 AND ct.timestamp < $2
+      WHERE ct.role = 'assistant'
+        AND ct.timestamp >= $1 AND ct.timestamp < $2
       GROUP BY day_of_week, hour_of_day
       ORDER BY day_of_week ASC, hour_of_day ASC
     `;

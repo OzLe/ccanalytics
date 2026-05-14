@@ -11,6 +11,24 @@ import type { OutputFormat } from "./analytics.js";
 /** Discriminator for data source origin. */
 export type SourceType = "claude-code" | "claude-desktop";
 
+/**
+ * The user's Claude subscription plan.
+ *
+ * Used purely to reframe API-equivalent costs as subscription ROI — it has no
+ * effect on how cost is computed. Confirmed against claude.com/pricing
+ * (2026-05): none $0, pro $20, max-5x $100, max-20x $200. Team/Enterprise are
+ * intentionally omitted (this is a single-user local analytics tool).
+ */
+export type SubscriptionTier = "none" | "pro" | "max-5x" | "max-20x";
+
+/** User's Claude subscription, used to reframe API-equivalent costs as ROI. */
+export interface SubscriptionConfig {
+  /** Subscription plan the user is on. Default: "max-20x" */
+  tier: SubscriptionTier;
+  /** Flat monthly fee in USD for the chosen tier. Default: 200 */
+  monthlyUSD: number;
+}
+
 /** Top-level configuration for ccanalytics. */
 export interface CCAnalyticsConfig {
   /** Path to DuckDB database file. Default: ~/.ccanalytics/analytics.duckdb */
@@ -31,6 +49,8 @@ export interface CCAnalyticsConfig {
   watcher: WatcherConfig;
   /** Database-specific settings. */
   database: DatabaseConfig;
+  /** User's Claude subscription plan, for cost-vs-subscription ROI framing. */
+  subscription: SubscriptionConfig;
 }
 
 /** Configuration for the ingestion pipeline. */

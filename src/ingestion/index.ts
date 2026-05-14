@@ -21,6 +21,7 @@ import type { ISourceAdapter } from "./adapters/types.js";
 import { BatchInserter } from "./batch-inserter.js";
 import { IngestionTracker } from "./ingestion-tracker.js";
 import { FileBackup } from "./file-backup.js";
+import { reportUnknownModels } from "../utils/pricing.js";
 
 /**
  * Orchestrates the full ingestion pipeline using source adapters:
@@ -79,6 +80,12 @@ export class IngestionPipeline {
       parseErrors: 0,
       durationMs: 0,
     };
+
+    // COST-007: collect every distinct assistant model id seen this run so we
+    // can warn ONCE at the end about any that have no exact pricing entry and
+    // were therefore priced at the Sonnet DEFAULT rate. Surfacing this is the
+    // diagnostic that would have caught the claude-opus-4-7 mispricing.
+    const modelsSeen = new Set<string>();
 
     for (const adapter of this.adapters) {
       // 1. Discover files from this source
@@ -157,6 +164,13 @@ export class IngestionPipeline {
             parseResult.userMessages,
           );
 
+          // Track assistant turn models for the COST-007 unknown-model warning
+          for (const turn of batch.conversationTurns) {
+            if (turn.role === "assistant" && turn.model) {
+              modelsSeen.add(turn.model);
+            }
+          }
+
           // Insert batch into database
           await this.inserter.insert(batch);
 
@@ -179,6 +193,11 @@ export class IngestionPipeline {
         }
       }
     }
+
+    // COST-007: surface (once) any model id that fell through to DEFAULT
+    // pricing. reportUnknownModels() ignores the expected '<synthetic>'
+    // placeholder and logs nothing when every model has an exact entry.
+    reportUnknownModels(modelsSeen);
 
     result.durationMs = Date.now() - startTime;
     return result;

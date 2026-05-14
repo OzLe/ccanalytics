@@ -20,7 +20,11 @@ import ErrorBoundary from "@/components/ui/ErrorBoundary";
 import Badge from "@/components/ui/Badge";
 import DataTable from "@/components/ui/DataTable";
 import { cn } from "@/lib/utils";
-import { usePromptRanking, usePromptStats } from "@/hooks/usePrompts";
+import {
+  usePromptRanking,
+  usePromptStats,
+  usePromptThroughput,
+} from "@/hooks/usePrompts";
 import { formatCost, formatDateTime } from "@/lib/formatters";
 import {
   CHART_COLORS,
@@ -132,6 +136,9 @@ export default function PromptsPage() {
 
   // Data hooks
   const stats = usePromptStats();
+  // NEW-004: throughput / agentic-depth metrics (prompts/session, turns/prompt,
+  // tool calls/prompt) — v_prompt_analysis already had these, just unsurfaced.
+  const throughput = usePromptThroughput();
   const ranking = usePromptRanking({
     sort: sort.field,
     order: sort.order,
@@ -144,6 +151,7 @@ export default function PromptsPage() {
 
   const isStatsLoading = stats.isLoading;
   const statsData = stats.data;
+  const throughputData = throughput.data;
 
   // Model color map for scatter chart
   const modelColorMap = useModelColorMap(rows);
@@ -336,6 +344,11 @@ export default function PromptsPage() {
             value={statsData ? statsData.totalPrompts.toLocaleString() : "--"}
             type="sessions"
             loading={isStatsLoading}
+            hint={
+              statsData && statsData.promptsWithNoResponse > 0
+                ? `${statsData.promptsWithNoResponse.toLocaleString()} with no response (excluded)`
+                : undefined
+            }
           />
           <KPICard
             label="Avg Cost per Prompt"
@@ -354,6 +367,57 @@ export default function PromptsPage() {
             value={statsData ? `${statsData.avgComplexity.toFixed(0)}/100` : "--"}
             type="tools"
             loading={isStatsLoading}
+          />
+        </div>
+      </section>
+
+      {/* ════════════════════════════════════════════════════════ */}
+      {/* Section 1b: Throughput KPIs (NEW-004)                   */}
+      {/* v_prompt_analysis already computed multi_turn_depth and  */}
+      {/* tool_call_count per prompt — these surface the agentic   */}
+      {/* depth: how much work one human prompt actually costs.    */}
+      {/* ════════════════════════════════════════════════════════ */}
+      <section>
+        <div className="mb-[var(--space-5)]">
+          <SectionHeader
+            title="Throughput"
+            subtitle="Agentic depth — how much work a single prompt drives"
+          />
+        </div>
+        <div className="grid grid-cols-1 gap-[var(--space-5)] sm:grid-cols-3">
+          <KPICard
+            label="Prompts per Session"
+            labelTooltip="Average number of responded prompts per session in the selected period (prompts that received an assistant response)."
+            value={
+              throughputData ? throughputData.promptsPerSession.toFixed(1) : "--"
+            }
+            type="sessions"
+            loading={throughput.isLoading}
+            hint={
+              throughputData
+                ? `${throughputData.totalPrompts.toLocaleString()} prompts across ${throughputData.totalSessions.toLocaleString()} sessions`
+                : undefined
+            }
+          />
+          <KPICard
+            label="Turns per Prompt"
+            labelTooltip="Average assistant turns triggered by one human prompt (multi-turn depth). A rising number means prompts are getting heavier — vaguer instructions or harder tasks."
+            value={
+              throughputData ? throughputData.turnsPerPrompt.toFixed(1) : "--"
+            }
+            type="tools"
+            loading={throughput.isLoading}
+          />
+          <KPICard
+            label="Tool Calls per Prompt"
+            labelTooltip="Average tool calls triggered by one human prompt, across its assistant turns."
+            value={
+              throughputData
+                ? throughputData.toolCallsPerPrompt.toFixed(1)
+                : "--"
+            }
+            type="tools"
+            loading={throughput.isLoading}
           />
         </div>
       </section>

@@ -11,9 +11,31 @@ import type {
   TimeRange,
   SortOrder,
   QueryFilters,
+  SessionContextPressure,
+  ContextPressureStats,
 } from "../types/index.js";
 import type { QueryExecutor } from "../db/executor.js";
 import { buildSessionFilters } from "./filter-builder.js";
+
+/**
+ * NEW-001: model-aware, self-correcting context-window denominator.
+ *
+ * The 1M-context capability is NOT reliably encoded in the model id — in the
+ * data `claude-opus-4-7` (a plain id) legitimately reaches ~861k tokens/turn.
+ * So the window is 1,000,000 when EITHER the model id hints at a 1M variant
+ * ('-1m' / '1m-context') OR the turn's own context tokens already exceed
+ * 200,000 (which is only possible on the 1M-context variant); otherwise
+ * 200,000. This keeps utilization in a sane 0..1 range with no schema change
+ * and no brittle id heuristic. Mirrors the CASE in v_context_pressure.
+ */
+const CONTEXT_WINDOW_CASE = `
+        CASE
+          WHEN LOWER(COALESCE(ct.model, '')) LIKE '%-1m%'
+            OR LOWER(COALESCE(ct.model, '')) LIKE '%1m-context%'
+            OR (ct.input_tokens + ct.cache_read_tokens + ct.cache_creation_tokens) > 200000
+          THEN 1000000
+          ELSE 200000
+        END`;
 
 /** Aggregate statistics across all sessions in a time range. */
 export interface SessionAggregateStats {
@@ -307,6 +329,150 @@ export class SessionAnalyzer {
       totalCostUSD: Number(stats.total_cost_usd),
       avgCostPerSession: Number(stats.avg_cost_per_session),
       uniqueModels: modelsResult.rows.map((r) => r.model),
+    };
+  }
+
+  /**
+   * NEW-001: per-session context-window utilization ("context pressure").
+   *
+   * Per assistant turn the context proxy is input + cache_read +
+   * cache_creation tokens (separate fields in the Anthropic API); utilization
+   * = context_tokens / window, window being MODEL-AWARE (1M for 1M-context
+   * models, 200k otherwise — see CONTEXT_WINDOW_CASE). Mirrors the
+   * v_context_pressure view; re-implemented inline to support
+   * period/model/project filters.
+   *
+   * @param range - Time range (on conversation_turns.timestamp)
+   * @param filters - Optional model/project filters
+   * @param limit - Max sessions to return, ordered by peak utilization desc
+   * @returns Per-session context-pressure rows
+   */
+  async getContextPressure(
+    range: TimeRange,
+    filters?: QueryFilters,
+    limit: number = 100,
+  ): Promise<SessionContextPressure[]> {
+    const f = buildSessionFilters(filters, 4, "s");
+    const sql = `
+      WITH turn_util AS (
+        SELECT
+          ct.session_id,
+          ct.stop_reason,
+          (ct.input_tokens + ct.cache_read_tokens + ct.cache_creation_tokens) AS context_tokens,
+          (ct.input_tokens + ct.cache_read_tokens + ct.cache_creation_tokens)::DOUBLE
+            / (${CONTEXT_WINDOW_CASE})::DOUBLE AS context_utilization
+        FROM conversation_turns ct
+        JOIN sessions s ON s.session_id = ct.session_id
+        WHERE ct.role = 'assistant'
+          AND ct.timestamp >= $1 AND ct.timestamp < $2
+          ${f.clauses.join("\n          ")}
+      )
+      SELECT
+        session_id,
+        COUNT(*) AS assistant_turns,
+        MAX(context_utilization) AS peak_context_pct,
+        MAX(context_tokens) AS peak_context_tokens,
+        AVG(context_utilization) AS avg_context_pct,
+        COUNT(*) FILTER (WHERE context_utilization > 0.60) AS turns_over_60,
+        COUNT(*) FILTER (WHERE context_utilization > 0.80) AS turns_over_80,
+        COUNT(*) FILTER (WHERE context_utilization > 0.60)::DOUBLE
+          / NULLIF(COUNT(*), 0)::DOUBLE AS pressure_share,
+        COUNT(*) FILTER (WHERE stop_reason = 'max_tokens') AS max_tokens_turns
+      FROM turn_util
+      GROUP BY session_id
+      ORDER BY peak_context_pct DESC
+      LIMIT $3
+    `;
+    const result = await this.executor.query<{
+      session_id: string;
+      assistant_turns: number;
+      peak_context_pct: number;
+      peak_context_tokens: number;
+      avg_context_pct: number;
+      turns_over_60: number;
+      turns_over_80: number;
+      pressure_share: number;
+      max_tokens_turns: number;
+    }>(sql, [range.start, range.end, limit, ...f.params]);
+
+    return result.rows.map((row) => ({
+      sessionId: row.session_id,
+      assistantTurns: Number(row.assistant_turns),
+      peakContextPct: Number(row.peak_context_pct),
+      peakContextTokens: Number(row.peak_context_tokens),
+      avgContextPct: Number(row.avg_context_pct),
+      turnsOver60: Number(row.turns_over_60),
+      turnsOver80: Number(row.turns_over_80),
+      pressureShare: Number(row.pressure_share),
+      maxTokensTurns: Number(row.max_tokens_turns),
+    }));
+  }
+
+  /**
+   * NEW-001: dataset-level context-pressure summary — the Overview KPI.
+   * % of sessions whose peak context utilization exceeds 0.60 (and a stricter
+   * 0.80 "critical" band), plus the worst peak and a max_tokens truncation
+   * sub-stat. Uses the same model-aware window as {@link getContextPressure}.
+   *
+   * @param range - Time range (on conversation_turns.timestamp)
+   * @param filters - Optional model/project filters
+   * @returns Aggregate context-pressure statistics
+   */
+  async getContextPressureStats(
+    range: TimeRange,
+    filters?: QueryFilters,
+  ): Promise<ContextPressureStats> {
+    const f = buildSessionFilters(filters, 3, "s");
+    const sql = `
+      WITH turn_util AS (
+        SELECT
+          ct.session_id,
+          ct.stop_reason,
+          (ct.input_tokens + ct.cache_read_tokens + ct.cache_creation_tokens)::DOUBLE
+            / (${CONTEXT_WINDOW_CASE})::DOUBLE AS context_utilization
+        FROM conversation_turns ct
+        JOIN sessions s ON s.session_id = ct.session_id
+        WHERE ct.role = 'assistant'
+          AND ct.timestamp >= $1 AND ct.timestamp < $2
+          ${f.clauses.join("\n          ")}
+      ),
+      per_session AS (
+        SELECT
+          session_id,
+          MAX(context_utilization) AS peak_context_pct,
+          COUNT(*) FILTER (WHERE stop_reason = 'max_tokens') AS max_tokens_turns
+        FROM turn_util
+        GROUP BY session_id
+      )
+      SELECT
+        COUNT(*) AS total_sessions,
+        COUNT(*) FILTER (WHERE peak_context_pct > 0.60) AS sessions_over_60,
+        COUNT(*) FILTER (WHERE peak_context_pct > 0.80) AS sessions_over_80,
+        COALESCE(MAX(peak_context_pct), 0) AS worst_peak_pct,
+        COALESCE(SUM(max_tokens_turns), 0) AS max_tokens_turns
+      FROM per_session
+    `;
+    const result = await this.executor.query<{
+      total_sessions: number;
+      sessions_over_60: number;
+      sessions_over_80: number;
+      worst_peak_pct: number;
+      max_tokens_turns: number;
+    }>(sql, [range.start, range.end, ...f.params]);
+
+    const row = result.rows[0];
+    const totalSessions = Number(row?.total_sessions ?? 0);
+    const sessionsOver60 = Number(row?.sessions_over_60 ?? 0);
+    const sessionsOver80 = Number(row?.sessions_over_80 ?? 0);
+
+    return {
+      totalSessions,
+      sessionsOver60,
+      sessionsOver80,
+      pressureRate: totalSessions > 0 ? sessionsOver60 / totalSessions : 0,
+      criticalRate: totalSessions > 0 ? sessionsOver80 / totalSessions : 0,
+      worstPeakPct: Number(row?.worst_peak_pct ?? 0),
+      maxTokensTurns: Number(row?.max_tokens_turns ?? 0),
     };
   }
 }

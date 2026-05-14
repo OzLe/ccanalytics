@@ -51,7 +51,13 @@ export class TimeSeriesAnalyzer {
 
   /**
    * Get hourly activity distribution.
-   * Reads from the v_hourly_activity view.
+   * Mirrors the v_hourly_activity view.
+   *
+   * KPI-002: "activity" means ASSISTANT turns — the role='assistant' filter is
+   * applied here, in /api/activity/hourly, and in the heatmap/daily/weekly
+   * paths so every activity surface is computed on one population. Without it
+   * message_count doubles (user turns counted) and avg_cost is halved (user
+   * turns cost $0).
    *
    * @param range - Time range to query
    * @returns Hourly activity data (24 rows, one per hour of day)
@@ -75,7 +81,8 @@ export class TimeSeriesAnalyzer {
           ELSE 0
         END AS avg_tokens_per_turn
       FROM conversation_turns ct
-      WHERE ct.timestamp >= $1 AND ct.timestamp < $2
+      WHERE ct.role = 'assistant'
+        AND ct.timestamp >= $1 AND ct.timestamp < $2
         ${filterClauses.join("\n        ")}
       GROUP BY hour_of_day
       ORDER BY hour_of_day ASC
@@ -132,6 +139,10 @@ export class TimeSeriesAnalyzer {
   /**
    * Get an activity heatmap (hour-of-day x day-of-week).
    *
+   * KPI-002: counts ASSISTANT turns only, consistent with getHourlyActivity,
+   * getDailyActivity and getWeeklyTrend (previously this counted all turns,
+   * giving the heatmap a different base than the rest of the Activity page).
+   *
    * @param range - Time range to query
    * @returns Array of heatmap cells with day/hour/count
    */
@@ -142,7 +153,8 @@ export class TimeSeriesAnalyzer {
         EXTRACT(HOUR FROM ct.timestamp)::INTEGER AS hour_of_day,
         COUNT(*) AS value
       FROM conversation_turns ct
-      WHERE ct.timestamp >= $1 AND ct.timestamp < $2
+      WHERE ct.role = 'assistant'
+        AND ct.timestamp >= $1 AND ct.timestamp < $2
       GROUP BY day_of_week, hour_of_day
       ORDER BY day_of_week ASC, hour_of_day ASC
     `;

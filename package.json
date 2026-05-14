@@ -20,6 +20,7 @@
     "test:coverage": "vitest run --coverage",
     "lint": "tsc --noEmit",
     "build:dashboard": "cd dashboard && npm run build",
+    "backfill:costs": "dashboard/node_modules/.bin/tsx scripts/backfill-costs.ts",
     "prepublishOnly": "npm run build",
     "prepare": "git config core.hooksPath .githooks",
     "version:update": "bash scripts/update-version.sh"
