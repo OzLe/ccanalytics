@@ -157,11 +157,14 @@ export class IngestionPipeline {
           const dedupResult = adapter.deduplicate(parseResult.assistantMessages);
           result.duplicatesRemoved += dedupResult.duplicatesRemoved;
 
-          // Build InsertionBatch (adapter-specific mapping + source_type)
+          // Build InsertionBatch (adapter-specific mapping + source_type).
+          // P-05: pass through loadedSkills so skill_listing attachments
+          // parsed from this file become session_skills rows in the batch.
           const batch = adapter.buildInsertionBatch(
             file,
             dedupResult.unique,
             parseResult.userMessages,
+            parseResult.loadedSkills,
           );
 
           // Track assistant turn models for the COST-007 unknown-model warning

@@ -11,6 +11,7 @@ import type {
   ConversationTurnRow,
   ToolCallRow,
   ErrorRow,
+  SessionSkillRow,
 } from "../types/index.js";
 import type { ConnectionLike } from "../db/connection.js";
 
@@ -23,6 +24,11 @@ export interface InsertionBatch {
   conversationTurns: ConversationTurnRow[];
   toolCalls: ToolCallRow[];
   errors: ErrorRow[];
+  /**
+   * P-07: loaded-skill rows derived from `skill_listing` attachments. Always
+   * present (defaults to `[]` when a file carries no `skill_listing` record).
+   */
+  sessionSkills: SessionSkillRow[];
 }
 
 /** Result of a batch insertion operation. */
@@ -31,6 +37,7 @@ export interface InsertionResult {
   turnsInserted: number;
   toolCallsInserted: number;
   errorsInserted: number;
+  sessionSkillsInserted: number;
   durationMs: number;
 }
 
@@ -156,18 +163,55 @@ export class BatchInserter {
   async insertToolCalls(toolCalls: ToolCallRow[]): Promise<number> {
     let count = 0;
     for (const tc of toolCalls) {
+      // P-07: skill_name/skill_caller_type are populated only for Skill rows
+      // (NULL otherwise) and are included in the ON CONFLICT DO UPDATE SET so
+      // a Skill row first ingested before migration 5 gets its columns
+      // backfilled on re-ingest. COALESCE keeps any already-set value when a
+      // later re-ingest happens to pass NULL.
       const sql = `INSERT INTO tool_calls (
         tool_call_id, session_id, turn_id, tool_name, tool_type,
-        mcp_server, duration_ms, success, error_message, parameters
+        mcp_server, duration_ms, success, error_message, parameters,
+        skill_name, skill_caller_type
       ) VALUES (
         ${sqlVal(tc.tool_call_id)}, ${sqlVal(tc.session_id)}, ${sqlVal(tc.turn_id)},
         ${sqlVal(tc.tool_name)}, ${sqlVal(tc.tool_type)}, ${sqlVal(tc.mcp_server)},
         ${sqlVal(tc.duration_ms)}, ${sqlVal(tc.success)}, ${sqlVal(tc.error_message)},
-        ${sqlVal(tc.parameters)}
+        ${sqlVal(tc.parameters)},
+        ${sqlVal(tc.skill_name)}, ${sqlVal(tc.skill_caller_type)}
       ) ON CONFLICT(tool_call_id) DO UPDATE SET
         success = ${sqlVal(tc.success)},
         error_message = ${sqlVal(tc.error_message)},
-        duration_ms = COALESCE(${sqlVal(tc.duration_ms)}, tool_calls.duration_ms)`;
+        duration_ms = COALESCE(${sqlVal(tc.duration_ms)}, tool_calls.duration_ms),
+        skill_name = COALESCE(${sqlVal(tc.skill_name)}, tool_calls.skill_name),
+        skill_caller_type = COALESCE(${sqlVal(tc.skill_caller_type)}, tool_calls.skill_caller_type)`;
+      await this.conn.run(sql);
+      count++;
+    }
+    return count;
+  }
+
+  /**
+   * P-07: insert loaded-skill rows from `skill_listing` attachments.
+   * `ON CONFLICT(session_skill_id) DO NOTHING` makes re-ingest idempotent —
+   * the PK is deterministic (D4), so a re-listing already stored is a no-op
+   * while a genuinely new (mid-session) re-listing lands as additional rows.
+   *
+   * @param sessionSkills - Session-skill rows to insert
+   * @throws IngestionError on DuckDB write failure
+   */
+  private async insertSessionSkills(
+    sessionSkills: SessionSkillRow[],
+  ): Promise<number> {
+    let count = 0;
+    for (const ss of sessionSkills) {
+      const sql = `INSERT INTO session_skills (
+        session_skill_id, session_id, record_uuid, skill_name,
+        skill_description, skill_count, is_initial, captured_at, source
+      ) VALUES (
+        ${sqlVal(ss.session_skill_id)}, ${sqlVal(ss.session_id)}, ${sqlVal(ss.record_uuid)},
+        ${sqlVal(ss.skill_name)}, ${sqlVal(ss.skill_description)}, ${sqlVal(ss.skill_count)},
+        ${sqlVal(ss.is_initial)}, ${sqlVal(ss.captured_at)}, ${sqlVal(ss.source)}
+      ) ON CONFLICT(session_skill_id) DO NOTHING`;
       await this.conn.run(sql);
       count++;
     }
@@ -212,6 +256,11 @@ export class BatchInserter {
       const turnsInserted = await this.insertTurns(batch.conversationTurns);
       const toolCallsInserted = await this.insertToolCalls(batch.toolCalls);
       const errorsInserted = await this.insertErrors(batch.errors);
+      // P-07: session_skills inside the same transaction so the batch stays
+      // atomic. `?? []` guards batches built before the field was added.
+      const sessionSkillsInserted = await this.insertSessionSkills(
+        batch.sessionSkills ?? [],
+      );
 
       await this.conn.run("COMMIT");
 
@@ -220,6 +269,7 @@ export class BatchInserter {
         turnsInserted,
         toolCallsInserted,
         errorsInserted,
+        sessionSkillsInserted,
         durationMs: Date.now() - start,
       };
     } catch (err) {

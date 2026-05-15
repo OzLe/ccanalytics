@@ -26,6 +26,13 @@ export interface ToolUseBlock {
   name: string;
   /** Tool input parameters as a JSON object. */
   input: Record<string, unknown>;
+  /**
+   * P-01: sibling `caller` object present on `Skill` tool_use blocks.
+   * Observed 100% `{ type: "direct" }` today; captured into
+   * tool_calls.skill_caller_type as future-proofing for the
+   * "not-required invocation" heuristic. Optional — absent on non-Skill tools.
+   */
+  caller?: { type: string };
 }
 
 /** A text block containing the assistant's textual response. */
@@ -122,6 +129,43 @@ export interface QueueOperation extends BaseMessage {
   type: "queue-operation";
   operation: string;
   data?: Record<string, unknown>;
+}
+
+// ---------------------------------------------------------------------------
+// Attachment Records (P-01) — top-level `type:"attachment"` JSONL records
+// ---------------------------------------------------------------------------
+
+/**
+ * P-01: the `skill_listing` attachment payload — the available-skills list
+ * injected near the start of a session (and occasionally mid-session when the
+ * skill set changes). `content` is newline-delimited skill text parsed by
+ * {@link module:ingestion/skill-listing-parser}.
+ */
+export interface SkillListingAttachment {
+  type: "skill_listing";
+  /** Newline-delimited "- <name>: <description>" text, descriptions may wrap. */
+  content: string;
+  /** Upstream-reported number of skills in `content` (the integrity check). */
+  skillCount: number;
+  /** TRUE for the session-start injection; FALSE for a mid-session re-listing. */
+  isInitial: boolean;
+}
+
+/**
+ * P-01: top-level `type:"attachment"` JSONL record. Kept deliberately
+ * permissive (D13) — `attachment.type` is a moving target (23 observed
+ * values), so only `skill_listing` is typed; everything else falls through
+ * to the open `{ type: string; [k: string]: unknown }` shape and is skipped
+ * downstream.
+ */
+export interface AttachmentRecord extends BaseMessage {
+  type: "attachment";
+  attachment: SkillListingAttachment | { type: string; [k: string]: unknown };
+  uuid?: string;
+  parentUuid?: string;
+  cwd?: string;
+  version?: string;
+  gitBranch?: string;
 }
 
 /** Raw JSONL entry before type discrimination. */

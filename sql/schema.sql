@@ -116,3 +116,40 @@ CREATE INDEX IF NOT EXISTS idx_errors_session_time      ON errors (session_id, t
 INSERT INTO schema_migrations (version, description)
 VALUES (1, 'Initial schema: 5 tables, 14 indexes')
 ON CONFLICT (version) DO NOTHING;
+
+-- =============================================================================
+-- Migration 5 — Skill Analysis (F2D)
+-- Additive only: CREATE TABLE / CREATE INDEX / ALTER ADD COLUMN, all
+-- IF NOT EXISTS. Mirrors applyMigration5() in src/db/schema.ts (S-01..S-08);
+-- the v_skill_usage view (S-07) lives in sql/views.sql so it is re-created
+-- with the other views. Re-running this whole file is a no-op.
+-- =============================================================================
+
+-- S-01: loaded-skills table — one row per (session_id, record_uuid, skill_name).
+CREATE TABLE IF NOT EXISTS session_skills (
+    session_skill_id      VARCHAR     PRIMARY KEY,
+    session_id            VARCHAR     NOT NULL,
+    record_uuid           VARCHAR,
+    skill_name            VARCHAR     NOT NULL,
+    skill_description     TEXT,
+    skill_count           INTEGER,
+    is_initial            BOOLEAN     DEFAULT TRUE,
+    captured_at           TIMESTAMP,
+    source                VARCHAR     DEFAULT 'skill_listing'
+);
+
+-- S-02 / S-03: session_skills indexes
+CREATE INDEX IF NOT EXISTS idx_session_skills_session    ON session_skills (session_id);
+CREATE INDEX IF NOT EXISTS idx_session_skills_skill_name ON session_skills (skill_name);
+
+-- S-04 / S-05: invoked-skill columns on tool_calls (NULL for non-Skill rows)
+ALTER TABLE tool_calls ADD COLUMN IF NOT EXISTS skill_name        VARCHAR;
+ALTER TABLE tool_calls ADD COLUMN IF NOT EXISTS skill_caller_type VARCHAR;
+
+-- S-06: index for skill-name lookups on tool_calls
+CREATE INDEX IF NOT EXISTS idx_tools_skill_name          ON tool_calls (skill_name);
+
+-- S-08: record schema version 5
+INSERT INTO schema_migrations (version, description)
+VALUES (5, 'Skill Analysis: session_skills table + tool_calls.skill_name/skill_caller_type columns + v_skill_usage view')
+ON CONFLICT (version) DO NOTHING;

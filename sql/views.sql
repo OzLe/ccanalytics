@@ -47,6 +47,35 @@ GROUP BY
 ORDER BY date DESC, total_cost DESC;
 
 -- ---------------------------------------------------------------------------
+-- S-09 (F1) — v_token_totals: dataset-wide Total Tokens grand total.
+--
+-- ADVISORY / REFERENCE only — non-load-bearing. The Total Tokens KPI is served
+-- by TokenAnalyzer (src/queries/token-analyzer.ts) and the /api/tokens/total
+-- route, which re-implement this aggregate inline so they can apply
+-- period/model/project filters. This view is the canonical specification of
+-- the F1 row predicate: it is the SAME predicate v_daily_cost / the cost
+-- analyzer / the cost route use (role='assistant', model IS NOT NULL, model
+-- <> '<synthetic>'), NOT the looser assistant-only predicate of
+-- v_session_summary / v_hourly_activity. That is what makes Total Tokens
+-- reconcile 1:1 with Total Cost. F1 needs NO schema change — every token
+-- column already exists on conversation_turns; this view is the only
+-- sql/views.sql touch and it is purely documentary. When the F1 predicate
+-- changes, update BOTH the inline SQL and this view so they cannot drift.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE VIEW v_token_totals AS
+SELECT
+    SUM(input_tokens)                                       AS input_tokens,
+    SUM(output_tokens)                                      AS output_tokens,
+    SUM(cache_creation_tokens)                              AS cache_write_tokens,
+    SUM(cache_read_tokens)                                  AS cache_read_tokens,
+    SUM(input_tokens + output_tokens
+        + cache_creation_tokens + cache_read_tokens)        AS total_tokens
+FROM conversation_turns
+WHERE role = 'assistant'
+  AND model IS NOT NULL
+  AND model <> '<synthetic>';
+
+-- ---------------------------------------------------------------------------
 -- v_session_summary: Session-level summary with cache efficiency
 -- Powers session list view and detail drill-down
 --
@@ -475,3 +504,141 @@ SELECT
 FROM failure_streaks
 GROUP BY session_id
 ORDER BY max_failure_streak DESC;
+
+-- ---------------------------------------------------------------------------
+-- S-07 (Migration 5) — v_skill_usage: per (session, skill) loaded-vs-invoked.
+--
+-- LOADED side comes from session_skills (the parsed skill_listing attachments);
+-- INVOKED side from tool_calls WHERE tool_name = 'Skill', with the
+-- COALESCE(skill_name, parameters->>'skill') fallback so historical Skill rows
+-- ingested before migration 5 (skill_name IS NULL) still resolve. A
+-- FULL OUTER JOIN keeps skills that were loaded-but-never-invoked (dead weight)
+-- AND skills invoked-but-not-in-the-loaded-set. `was_loaded` distinguishes the
+-- two. This view is part of migration 5 and is also created by
+-- applyMigration5() in src/db/schema.ts for already-migrated databases.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE VIEW v_skill_usage AS
+WITH loaded AS (
+    SELECT
+        session_id,
+        skill_name,
+        MAX(skill_count)                                    AS skills_loaded_in_session
+    FROM session_skills
+    GROUP BY session_id, skill_name
+),
+invoked AS (
+    SELECT
+        session_id,
+        COALESCE(skill_name, parameters->>'skill')          AS skill_name,
+        COUNT(*)                                            AS invocations,
+        SUM(CASE WHEN success THEN 1 ELSE 0 END)            AS successes,
+        SUM(CASE
+                WHEN skill_caller_type IS NOT NULL
+                 AND skill_caller_type <> 'direct'
+                THEN 1 ELSE 0
+            END)                                            AS non_direct_invocations
+    FROM tool_calls
+    WHERE tool_name = 'Skill'
+    GROUP BY session_id, COALESCE(skill_name, parameters->>'skill')
+)
+SELECT
+    COALESCE(l.session_id, i.session_id)                    AS session_id,
+    COALESCE(l.skill_name, i.skill_name)                    AS skill_name,
+    (l.skill_name IS NOT NULL)                              AS was_loaded,
+    COALESCE(i.invocations, 0)                              AS invocations,
+    COALESCE(i.successes, 0)                                AS successes,
+    COALESCE(i.non_direct_invocations, 0)                   AS non_direct_invocations
+FROM loaded l
+FULL OUTER JOIN invoked i
+    ON l.session_id = i.session_id
+   AND l.skill_name = i.skill_name;
+
+-- ---------------------------------------------------------------------------
+-- Chunk C (F2K) — v_skill_loaded: per-skill loaded-vs-invoked roll-up.
+--
+-- ADVISORY / REFERENCE only — non-load-bearing. The Skill Analysis "Loaded
+-- Skills by Context Weight" table is served by SkillAnalyzer.getLoadedSkills
+-- (src/queries/skill-analyzer.ts) and the /api/skills/loaded route, which
+-- re-implement this inline so they can scope to the period-session set and
+-- apply model/project filters. This view is the canonical, dataset-wide spec
+-- of the aggregate:
+--   - LOADED side  : COUNT(DISTINCT session_id) over session_skills, grouped
+--                    by skill_name — i.e. "how many sessions loaded this skill".
+--   - INVOKED side : COUNT(*) over the `Skill` tool_calls, with the
+--                    COALESCE(skill_name, parameters->>'skill') fallback so
+--                    pre-migration-5 rows still resolve, kept INSIDE the `inv`
+--                    CTE (the Chunk-A DuckDB gotcha: a JSON predicate feeding a
+--                    join/group can drop the tool_name filter — extract first,
+--                    aggregate second).
+--   - est_context_tokens : loaded_in_sessions * 45, the flat per-skill estimate
+--                    (D10 — F2D ships no precise description_tokens column;
+--                    every token figure derived from it is "estimated").
+--   - is_dead_weight : loaded but with zero invocations (§4.3 row rule).
+-- When the loaded-skill KPI definition changes, update BOTH the inline SQL and
+-- this view so they cannot drift (KPI-009 / sql/views.sql header contract).
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE VIEW v_skill_loaded AS
+WITH loaded AS (
+    SELECT
+        sl.skill_name                                       AS skill,
+        COUNT(DISTINCT sl.session_id)                       AS loaded_in_sessions
+    FROM session_skills sl
+    GROUP BY sl.skill_name
+),
+inv AS (
+    SELECT
+        COALESCE(tc.skill_name, tc.parameters->>'skill')    AS skill,
+        COUNT(*)                                            AS invocations
+    FROM tool_calls tc
+    WHERE tc.tool_name = 'Skill'
+    GROUP BY COALESCE(tc.skill_name, tc.parameters->>'skill')
+)
+SELECT
+    l.skill,
+    l.loaded_in_sessions,
+    l.loaded_in_sessions * 45                               AS est_context_tokens,
+    COALESCE(i.invocations, 0)                              AS invocations,
+    (COALESCE(i.invocations, 0) = 0)                        AS is_dead_weight
+FROM loaded l
+LEFT JOIN inv i ON i.skill = l.skill
+ORDER BY l.loaded_in_sessions DESC, l.skill;
+
+-- ---------------------------------------------------------------------------
+-- Chunk C (F2K) — v_skill_not_required: the same-session skill thrash signal.
+--
+-- ADVISORY / REFERENCE only — non-load-bearing. The "Possibly-Unnecessary
+-- Invocations" table is served by SkillAnalyzer.getSkillThrash and the
+-- /api/skills/not-required route, which re-implement this inline to apply
+-- period/model/project filters and clamp a row limit. This view is the
+-- canonical, dataset-wide spec of the v1 "invocation not required" heuristic
+-- (D12): per (session_id, skill), COUNT(*) of `Skill` invocations, flagged when
+-- the count reaches SKILL_THRASH_MIN.
+--
+--   SKILL_THRASH_MIN = 2. *** Gate-1 decision: lowered from the originally-
+--   researched 3 (which matched only ONE row in the whole dataset) to 2. ***
+--   The constant lives in skillThresholds.ts / skill-thresholds.ts; this view
+--   hard-codes 2 to stay a faithful spec — if the constant changes, update
+--   this `HAVING` too.
+--
+-- The skill extraction + `tool_name = 'Skill'` filter stay INSIDE the `inv` CTE
+-- (the Chunk-A DuckDB gotcha). is_known_reentrant is NOT computed here — it is
+-- a presentation-layer flag (KNOWN_REENTRANT_SKILLS) the analyzer/route add in
+-- JS; this view intentionally surfaces every thrash row regardless.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE VIEW v_skill_not_required AS
+WITH inv AS (
+    SELECT
+        tc.session_id,
+        COALESCE(tc.skill_name, tc.parameters->>'skill')    AS skill
+    FROM tool_calls tc
+    WHERE tc.tool_name = 'Skill'
+)
+SELECT
+    session_id,
+    skill,
+    COUNT(*)                                                AS invocations_in_session
+FROM inv
+WHERE skill IS NOT NULL
+GROUP BY session_id, skill
+HAVING COUNT(*) >= 2
+ORDER BY invocations_in_session DESC, session_id, skill;

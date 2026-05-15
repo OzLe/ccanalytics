@@ -21,6 +21,7 @@
     "lint": "tsc --noEmit",
     "build:dashboard": "cd dashboard && npm run build",
     "backfill:costs": "dashboard/node_modules/.bin/tsx scripts/backfill-costs.ts",
+    "backfill:loaded-skills": "dashboard/node_modules/.bin/tsx scripts/backfill-loaded-skills.ts",
     "prepublishOnly": "npm run build",
     "version:update": "bash scripts/update-version.sh"
   },

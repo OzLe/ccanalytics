@@ -150,5 +150,111 @@ describe("ClaudeCodeAdapter", () => {
     if (mcpCall) {
       expect(mcpCall.mcp_server).toBeTruthy();
     }
+    // Non-Skill tool calls have NULL skill_name / skill_caller_type (S-04/S-05).
+    for (const tc of batch.toolCalls) {
+      if (tc.tool_name !== "Skill") {
+        expect(tc.skill_name).toBeNull();
+        expect(tc.skill_caller_type).toBeNull();
+      }
+    }
+  });
+
+  describe("skill_listing + Skill tool_use (P-05)", () => {
+    it("parseFile collects skill_listing attachments into loadedSkills", async () => {
+      const file = makeFile("skill-listing-session.jsonl", "sess-skill-001");
+      const parsed = await adapter.parseFile(file, 0);
+
+      expect(parsed.loadedSkills).toBeDefined();
+      expect(parsed.loadedSkills).toHaveLength(1);
+
+      const rec = parsed.loadedSkills![0];
+      expect(rec.sessionId).toBe("sess-skill-001");
+      expect(rec.recordUuid).toBe("uuid-att-001");
+      expect(rec.isInitial).toBe(true);
+      expect(rec.skillCount).toBe(4);
+      // 4 skill lines; the TRIGGER/SKIP lines are continuations of claude-api.
+      expect(rec.skills).toHaveLength(4);
+      expect(rec.skills.map((s) => s.name)).toEqual([
+        "simplify",
+        "babysitter:babysit",
+        "claude-api",
+        "chrome-devtools-mcp:chrome-devtools",
+      ]);
+      const claudeApi = rec.skills.find((s) => s.name === "claude-api")!;
+      expect(claudeApi.description).toContain("TRIGGER when:");
+      expect(claudeApi.description).toContain("SKIP:");
+    });
+
+    it("buildInsertionBatch emits sessionSkills rows with deterministic PKs", async () => {
+      const file = makeFile("skill-listing-session.jsonl", "sess-skill-001");
+      const parsed = await adapter.parseFile(file, 0);
+      const deduped = adapter.deduplicate(parsed.assistantMessages);
+      const batch = adapter.buildInsertionBatch(
+        file,
+        deduped.unique,
+        parsed.userMessages,
+        parsed.loadedSkills,
+      );
+
+      expect(batch.sessionSkills).toHaveLength(4);
+      const simplify = batch.sessionSkills.find((s) => s.skill_name === "simplify")!;
+      // D4: session_id || ':' || (record_uuid ?? timestamp) || ':' || skill_name
+      expect(simplify.session_skill_id).toBe(
+        "sess-skill-001:uuid-att-001:simplify",
+      );
+      expect(simplify.session_id).toBe("sess-skill-001");
+      expect(simplify.record_uuid).toBe("uuid-att-001");
+      expect(simplify.is_initial).toBe(true);
+      expect(simplify.skill_count).toBe(4);
+      expect(simplify.source).toBe("skill_listing");
+      expect(simplify.captured_at).toBeInstanceOf(Date);
+
+      // PKs are unique across the batch.
+      const ids = new Set(batch.sessionSkills.map((s) => s.session_skill_id));
+      expect(ids.size).toBe(4);
+    });
+
+    it("buildInsertionBatch tags Skill tool_calls with skill_name + skill_caller_type", async () => {
+      const file = makeFile("skill-listing-session.jsonl", "sess-skill-001");
+      const parsed = await adapter.parseFile(file, 0);
+      const deduped = adapter.deduplicate(parsed.assistantMessages);
+      const batch = adapter.buildInsertionBatch(
+        file,
+        deduped.unique,
+        parsed.userMessages,
+        parsed.loadedSkills,
+      );
+
+      const skillCalls = batch.toolCalls.filter((tc) => tc.tool_name === "Skill");
+      expect(skillCalls).toHaveLength(2);
+
+      const babysit = skillCalls.find((tc) => tc.tool_call_id === "toolu_skill_01")!;
+      expect(babysit.skill_name).toBe("babysitter:babysit");
+      expect(babysit.skill_caller_type).toBe("direct");
+
+      const simplify = skillCalls.find((tc) => tc.tool_call_id === "toolu_skill_02")!;
+      expect(simplify.skill_name).toBe("simplify");
+      expect(simplify.skill_caller_type).toBe("direct");
+
+      // The non-Skill Read call in the same turn stays NULL on both columns.
+      const read = batch.toolCalls.find((tc) => tc.tool_name === "Read")!;
+      expect(read.skill_name).toBeNull();
+      expect(read.skill_caller_type).toBeNull();
+    });
+
+    it("buildInsertionBatch with no loadedSkills yields an empty sessionSkills array", async () => {
+      const file = makeFile("minimal-session.jsonl", "sess-minimal-001");
+      const parsed = await adapter.parseFile(file, 0);
+      const deduped = adapter.deduplicate(parsed.assistantMessages);
+      const batch = adapter.buildInsertionBatch(
+        file,
+        deduped.unique,
+        parsed.userMessages,
+        parsed.loadedSkills,
+      );
+
+      expect(parsed.loadedSkills).toEqual([]);
+      expect(batch.sessionSkills).toEqual([]);
+    });
   });
 });

@@ -136,6 +136,177 @@ export interface DailyCost {
 }
 
 // ---------------------------------------------------------------------------
+// Token Analytics (F1)
+// ---------------------------------------------------------------------------
+
+/**
+ * F1: a token-count breakdown over the canonical cost-row population
+ * (`role='assistant' AND model IS NOT NULL AND model <> '<synthetic>'`) — the
+ * SAME predicate `CostBreakdown` aggregates, so token totals reconcile 1:1 with
+ * cost totals. `cacheWriteTokens` surfaces `cache_creation_tokens` under the
+ * "cache write" wording used everywhere else (matches
+ * `CostBreakdown.totalCacheWriteTokens`).
+ */
+export interface TokenBreakdown {
+  /** input + output + cacheWrite + cacheRead. */
+  totalTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  /** `cache_creation_tokens`, surfaced as "cache write". */
+  cacheWriteTokens: number;
+}
+
+/**
+ * F1: the Total Tokens KPI payload — both the filtered period block and the
+ * fully unfiltered, dataset-wide all-time block (D7). `allTime` is a fixed
+ * per-request constant: it never responds to the period/model/project filters.
+ */
+export interface TokenTotals {
+  /** Token breakdown for the selected period, respecting all active filters. */
+  period: TokenBreakdown;
+  /** Dataset-wide token breakdown — no timestamp bound, no filters (D7). */
+  allTime: TokenBreakdown;
+}
+
+// ---------------------------------------------------------------------------
+// Skill Analytics (F2K)
+// ---------------------------------------------------------------------------
+
+/**
+ * F2K: per-skill invocation stats — the INVOKED side of skill analysis.
+ *
+ * Sourced from `tool_calls` rows where `tool_name = 'Skill'`, with the skill
+ * name resolved via `COALESCE(skill_name, parameters->>'skill')` so historical
+ * rows ingested before migration 5 (no `skill_name`) still appear. `successRate`
+ * follows the KPI-006 NULL rule — NULL `success` is excluded from the
+ * denominator, and the rate is `null` when no row has a non-NULL `success`.
+ */
+export interface SkillInvocationStats {
+  /** Resolved skill name (`COALESCE(skill_name, parameters->>'skill')`). */
+  skill: string;
+  /** Total `Skill` tool calls of this skill in the period. */
+  invocations: number;
+  /** Distinct sessions that invoked this skill. */
+  sessionsUsing: number;
+  /** Invocations with `success = TRUE`. */
+  successCount: number;
+  /** Invocations with `success = FALSE`. */
+  failureCount: number;
+  /** successCount / (successCount + failureCount); `null` when no non-NULL success (KPI-006). */
+  successRate: number | null;
+  /** invocations / sessionsUsing. */
+  avgPerSession: number;
+}
+
+/**
+ * F2K: per-skill loaded-vs-invoked row — the LOADED side of skill analysis.
+ *
+ * The LOADED side comes from `session_skills` (parsed `skill_listing`
+ * attachments); `invocations` is joined from the INVOKED side. `estContextTokens`
+ * uses the flat `FLAT_SKILL_TOKEN_ESTIMATE` constant (D10) — it is an estimate,
+ * not a measured value. `isDeadWeight` is true when the skill was loaded in the
+ * period but never invoked in it (§4.3 row-granularity rule).
+ */
+export interface SkillLoadedStats {
+  /** Skill name from `session_skills`. */
+  skill: string;
+  /** Distinct sessions this skill was loaded into in the period. */
+  loadedInSessions: number;
+  /** `loadedInSessions * FLAT_SKILL_TOKEN_ESTIMATE` — estimated (flat model). */
+  estContextTokens: number;
+  /** `Skill` invocations of this skill in the period (0 = dead weight). */
+  invocations: number;
+  /** loaded-but-never-invoked in the period (§4.3). */
+  isDeadWeight: boolean;
+}
+
+/**
+ * F2K: a single same-session thrash row — the "invocation not required" v1
+ * signal (D12). A `(sessionId, skill)` pair whose `invocationsInSession` reached
+ * `SKILL_THRASH_MIN` (= 2). `isKnownReentrant` is true for skills in
+ * `KNOWN_REENTRANT_SKILLS` (orchestrators / loops) — those rows are still shown
+ * but should be de-emphasised.
+ */
+export interface SkillThrashRow {
+  sessionId: string;
+  skill: string;
+  /** `COUNT(*)` of `Skill` invocations of this skill within this session. */
+  invocationsInSession: number;
+  /** True when `skill` is in `KNOWN_REENTRANT_SKILLS` (legit re-entrant). */
+  isKnownReentrant: boolean;
+}
+
+/**
+ * F2K: the same-session thrash result — flagged rows plus a small summary.
+ */
+export interface SkillThrashResult {
+  /** Thrash rows, ordered by `invocationsInSession` desc. */
+  thrash: SkillThrashRow[];
+  summary: {
+    /** Total flagged `(session, skill)` pairs. */
+    flaggedRows: number;
+    /** Flagged pairs whose skill is NOT a known re-entrant skill. */
+    nonReentrantRows: number;
+    /** Distinct sessions appearing in the thrash list. */
+    sessionsAffected: number;
+  };
+}
+
+/**
+ * F2K: a single Skills-Per-Session trend point — one time bucket. Reveals
+ * whether the loaded set is creeping up while invocation stays flat.
+ */
+export interface SkillTrendPoint {
+  /** Start of the time bucket. */
+  timestamp: Date;
+  /** AVG over the bucket's sessions of distinct skills loaded per session. */
+  avgLoadedPerSession: number;
+  /** AVG over the bucket's sessions of distinct skills invoked per session. */
+  avgInvokedPerSession: number;
+}
+
+/**
+ * F2K: the page-level skill KPI bundle + the "too many skills active" flags.
+ *
+ * `skillSuccessRate` follows the KPI-006 NULL rule (`null` when no `Skill` row
+ * has a non-NULL `success`). `tooManySkillsActive` is
+ * `dead_weight_ratio > DEAD_WEIGHT_RATIO_THRESHOLD OR
+ *  loaded_context_share > LOADED_CONTEXT_SHARE_THRESHOLD` (D11);
+ * `tooManyReasons` carries one human-readable string per tripped sub-condition.
+ */
+export interface SkillSummary {
+  /** AVG over period sessions of distinct skills loaded per session. */
+  avgSkillsLoadedPerSession: number;
+  /** MAX over period sessions of distinct skills loaded per session. */
+  maxSkillsLoadedPerSession: number;
+  /** `COUNT(DISTINCT skill)` invoked in the period. */
+  distinctSkillsInvoked: number;
+  /** `COUNT(DISTINCT skill_name)` loaded in the period. */
+  distinctSkillsLoaded: number;
+  /** Total `Skill` tool calls in the period. */
+  totalInvocations: number;
+  /** Skill-invocation success rate (KPI-006 NULL rule); `null` = no data. */
+  skillSuccessRate: number | null;
+  /** Distinct skills loaded in the period but never invoked in it. */
+  deadWeightSkills: number;
+  /** distinctSkillsInvoked / distinctSkillsLoaded; `null` when nothing loaded. */
+  invocationRate: number | null;
+  /** `deadWeightSkills / distinctSkillsLoaded`; `null` when nothing loaded. */
+  deadWeightRatio: number | null;
+  /** Estimated avg context tokens spent on loaded skill descriptions / session. */
+  avgLoadedSkillTokens: number;
+  /** Avg session context tokens (input + cache_read + cache_creation proxy). */
+  avgSessionContextTokens: number;
+  /** `avgLoadedSkillTokens / avgSessionContextTokens`; `null` when no context. */
+  loadedContextShare: number | null;
+  /** D11: `deadWeightRatio > 0.50 OR loadedContextShare > 0.05`. */
+  tooManySkillsActive: boolean;
+  /** One human-readable reason per tripped D11 sub-condition (may be empty). */
+  tooManyReasons: string[];
+}
+
+// ---------------------------------------------------------------------------
 // Cache Analytics
 // ---------------------------------------------------------------------------
 
@@ -391,6 +562,46 @@ export interface ToolCallRow {
   success: boolean | null;
   error_message: string | null;
   parameters: Record<string, unknown> | null;
+  /**
+   * S-04: invoked skill name for `tool_name = 'Skill'` rows — `block.input.skill`
+   * captured at ingest. NULL for every non-Skill tool call (and for historical
+   * Skill rows ingested before migration 5, where the
+   * COALESCE(skill_name, parameters->>'skill') fallback applies).
+   */
+  skill_name: string | null;
+  /**
+   * S-05: the `caller.type` from the Skill tool_use block (100% `'direct'` on
+   * current data, captured as future-proofing). NULL for non-Skill rows.
+   */
+  skill_caller_type: string | null;
+}
+
+/**
+ * Row type for the `session_skills` table (S-01).
+ * One row per `(session_id, record_uuid, skill_name)` — i.e. one row per skill
+ * per `skill_listing` attachment record.
+ */
+export interface SessionSkillRow {
+  /**
+   * Deterministic primary key (D4):
+   * `session_id || ':' || (record_uuid ?? timestamp) || ':' || skill_name`.
+   * Deterministic so re-ingest is idempotent via ON CONFLICT DO NOTHING.
+   */
+  session_skill_id: string;
+  session_id: string;
+  /** The `skill_listing` record's `uuid`, or null when absent. */
+  record_uuid: string | null;
+  skill_name: string;
+  /** Skill description parsed from the attachment content (may be multi-line). */
+  skill_description: string | null;
+  /** Upstream-reported skill count of the source attachment record. */
+  skill_count: number | null;
+  /** TRUE for the session-start injection; FALSE for a mid-session re-listing. */
+  is_initial: boolean;
+  /** Timestamp of the source attachment record. */
+  captured_at: Date | null;
+  /** Provenance marker — always 'skill_listing' for now. */
+  source: string;
 }
 
 /** Row type for the errors table. */
