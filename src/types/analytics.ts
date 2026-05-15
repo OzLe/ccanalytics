@@ -203,17 +203,22 @@ export interface SkillInvocationStats {
  * F2K: per-skill loaded-vs-invoked row — the LOADED side of skill analysis.
  *
  * The LOADED side comes from `session_skills` (parsed `skill_listing`
- * attachments); `invocations` is joined from the INVOKED side. `estContextTokens`
- * uses the flat `FLAT_SKILL_TOKEN_ESTIMATE` constant (D10) — it is an estimate,
- * not a measured value. `isDeadWeight` is true when the skill was loaded in the
- * period but never invoked in it (§4.3 row-granularity rule).
+ * attachments); `invocations` is joined from the INVOKED side.
+ * `estContextTokens` is estimated from the skill description's character
+ * length via the 4-chars-per-token heuristic (SEM2-287 —
+ * `estimateSkillTokens`), with `FLAT_SKILL_TOKEN_ESTIMATE` as the documented
+ * NULL/empty-description fallback. `isDeadWeight` is true when the skill was
+ * loaded in the period but never invoked in it (§4.3 row-granularity rule).
  */
 export interface SkillLoadedStats {
   /** Skill name from `session_skills`. */
   skill: string;
   /** Distinct sessions this skill was loaded into in the period. */
   loadedInSessions: number;
-  /** `loadedInSessions * FLAT_SKILL_TOKEN_ESTIMATE` — estimated (flat model). */
+  /**
+   * `loadedInSessions × estimateSkillTokens(skill_description)` —
+   * `COALESCE(CEIL(LENGTH(description)/4), FLAT_SKILL_TOKEN_ESTIMATE)`.
+   */
   estContextTokens: number;
   /** `Skill` invocations of this skill in the period (0 = dead weight). */
   invocations: number;

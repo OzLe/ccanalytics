@@ -16,6 +16,33 @@ export interface TestDB {
 }
 
 /**
+ * SEM2-287: skill_description values used by {@link seedSkillData}. Each
+ * string is padded with a trailing-`x` filler so the byte length is exact and
+ * the new length-based estimate (`CEIL(LENGTH/4)`) produces a round token
+ * count. Exported so tests can compute expectations from these values via
+ * `estimateSkillTokens(SKILL_DESC.alpha)` rather than hardcoding the count.
+ *
+ *   alpha  → 200 chars → 50 tokens
+ *   beta   → 240 chars → 60 tokens
+ *   ghost  → 160 chars → 40 tokens
+ *   orphan → 120 chars → 30 tokens
+ */
+function padDesc(prefix: string, target: number): string {
+  if (prefix.length > target) {
+    throw new Error(
+      `padDesc: prefix '${prefix}' (${prefix.length}) > target ${target}`,
+    );
+  }
+  return prefix + "x".repeat(target - prefix.length);
+}
+export const SKILL_DESC = {
+  alpha: padDesc("Alpha skill: orchestrate multi-step research flows.", 200),
+  beta: padDesc("Beta skill: produce structured competitive intel briefs.", 240),
+  ghost: padDesc("Ghost skill: keep dormant datasets unloaded.", 160),
+  orphan: padDesc("Orphan skill: low-priority cleanup tasks.", 120),
+} as const;
+
+/**
  * Create an in-memory DuckDB instance with the full schema loaded.
  */
 export async function createTestDB(): Promise<TestDB> {
@@ -160,16 +187,27 @@ export async function seedSkillData(
 
   // LOADED side — session_skills (one row per (session, skill); skill_count
   // and the rest are not read by the analyzer but are populated for realism).
+  //
+  // SEM2-287: skill_description is padded to a known exact length so the new
+  // length-based estimate (CEIL(LENGTH/4)) produces predictable token counts:
+  //   skill-alpha  → 200 chars → 50 tokens
+  //   skill-beta   → 240 chars → 60 tokens
+  //   skill-ghost  → 160 chars → 40 tokens
+  //   skill-orphan → 120 chars → 30 tokens
+  // The natural-language prefix encodes the intent; the trailing `x` filler
+  // makes the exact byte length unambiguous for assertions. Tests assert
+  // against `SKILL_DESC.<skill>` / `estimateSkillTokens(...)` rather than
+  // hardcoding the token counts so the fixture and the formula stay coupled.
   await connection.run(`
     INSERT INTO session_skills (session_skill_id, session_id, record_uuid,
       skill_name, skill_description, skill_count, is_initial, captured_at, source)
     VALUES
-      ('ss-001', 'sess-001', 'rec-001', 'skill-alpha',  'Alpha skill',  4, TRUE,  '2026-02-20 10:00:00', 'skill_listing'),
-      ('ss-002', 'sess-001', 'rec-001', 'skill-beta',   'Beta skill',   4, TRUE,  '2026-02-20 10:00:00', 'skill_listing'),
-      ('ss-003', 'sess-002', 'rec-002', 'skill-ghost',  'Ghost skill',  2, TRUE,  '2026-02-20 14:00:00', 'skill_listing'),
-      ('ss-004', 'sess-003', 'rec-003', 'skill-alpha',  'Alpha skill',  3, TRUE,  '2026-02-21 09:00:00', 'skill_listing'),
-      ('ss-005', 'sess-003', 'rec-003', 'skill-ghost',  'Ghost skill',  3, TRUE,  '2026-02-21 09:00:00', 'skill_listing'),
-      ('ss-006', 'sess-003', 'rec-003', 'skill-orphan', 'Orphan skill', 3, TRUE,  '2026-02-21 09:00:00', 'skill_listing')
+      ('ss-001', 'sess-001', 'rec-001', 'skill-alpha',  '${SKILL_DESC.alpha}', 4, TRUE,  '2026-02-20 10:00:00', 'skill_listing'),
+      ('ss-002', 'sess-001', 'rec-001', 'skill-beta',   '${SKILL_DESC.beta}',  4, TRUE,  '2026-02-20 10:00:00', 'skill_listing'),
+      ('ss-003', 'sess-002', 'rec-002', 'skill-ghost',  '${SKILL_DESC.ghost}', 2, TRUE,  '2026-02-20 14:00:00', 'skill_listing'),
+      ('ss-004', 'sess-003', 'rec-003', 'skill-alpha',  '${SKILL_DESC.alpha}', 3, TRUE,  '2026-02-21 09:00:00', 'skill_listing'),
+      ('ss-005', 'sess-003', 'rec-003', 'skill-ghost',  '${SKILL_DESC.ghost}', 3, TRUE,  '2026-02-21 09:00:00', 'skill_listing'),
+      ('ss-006', 'sess-003', 'rec-003', 'skill-orphan', '${SKILL_DESC.orphan}',3, TRUE,  '2026-02-21 09:00:00', 'skill_listing')
   `);
 
   // INVOKED side — tool_calls where tool_name = 'Skill'. Some rows carry an

@@ -429,12 +429,17 @@ export interface SkillSummary {
 /**
  * GET /api/skills/loaded row — one loaded skill with its est. context weight,
  * how many sessions loaded it, its invocation count, and the dead-weight flag.
- * `estContextTokens` uses the flat `FLAT_SKILL_TOKEN_ESTIMATE` (D10) — estimated.
+ * `estContextTokens` is estimated from the skill description's character
+ * length via the 4-chars-per-token heuristic (SEM2-287), with
+ * `FLAT_SKILL_TOKEN_ESTIMATE` as the documented NULL/empty fallback.
  */
 export interface SkillLoadedRow {
   skill: string;
   loadedInSessions: number;
-  /** `loadedInSessions * 45` — estimated (flat model). */
+  /**
+   * `loadedInSessions × estimateSkillTokens(skill_description)` —
+   * `COALESCE(CEIL(LENGTH(description)/4), FLAT_SKILL_TOKEN_ESTIMATE)`.
+   */
   estContextTokens: number;
   invocations: number;
   /** loaded in the period but never invoked in it (§4.3). */

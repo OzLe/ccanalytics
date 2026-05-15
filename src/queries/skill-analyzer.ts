@@ -48,7 +48,7 @@ import {
   DEAD_WEIGHT_RATIO_THRESHOLD,
   LOADED_CONTEXT_SHARE_THRESHOLD,
   SKILL_THRASH_MIN,
-  FLAT_SKILL_TOKEN_ESTIMATE,
+  estimateSkillTokens,
   isKnownReentrantSkill,
 } from "./skill-thresholds.js";
 
@@ -139,7 +139,7 @@ export class SkillAnalyzer {
 
   /**
    * Per-skill LOADED stats — distinct sessions a skill was loaded into,
-   * estimated context tokens (flat model, D10), invocation count, and the
+   * estimated context tokens (length-based, SEM2-287), invocation count, and the
    * `isDeadWeight` flag (loaded in the period, never invoked in it — §4.3).
    *
    * Powers the "Loaded Skills by Context Weight" table. `session_skills` is
@@ -164,12 +164,17 @@ export class SkillAnalyzer {
           ${f.clauses.join("\n          ")}`;
     // LOADED side from session_skills (distinct (session, skill)); INVOKED side
     // from the `inv` CTE (GOTCHA mitigation: skill extraction inside the CTE).
+    // SEM2-287: also surface a representative skill_description per skill so
+    // estContextTokens uses CEIL(LEN/4) instead of the flat 45 estimate. The
+    // helper estimateSkillTokens() applies the same COALESCE fallback as the
+    // SQL view (`COALESCE(CEIL(LENGTH(skill_description)/4.0), 45)`).
     const sql = `
       WITH period_sessions AS (${periodSessions}),
       loaded AS (
         SELECT
           sl.skill_name AS skill,
-          COUNT(DISTINCT sl.session_id) AS loaded_in_sessions
+          COUNT(DISTINCT sl.session_id) AS loaded_in_sessions,
+          ANY_VALUE(sl.skill_description) AS skill_description
         FROM session_skills sl
         WHERE sl.session_id IN (SELECT session_id FROM period_sessions)
         GROUP BY sl.skill_name
@@ -186,6 +191,7 @@ export class SkillAnalyzer {
       SELECT
         l.skill,
         l.loaded_in_sessions,
+        l.skill_description,
         COALESCE(i.invocations, 0) AS invocations
       FROM loaded l
       LEFT JOIN inv i ON i.skill = l.skill
@@ -194,17 +200,20 @@ export class SkillAnalyzer {
     const result = await this.executor.query<{
       skill: string;
       loaded_in_sessions: number;
+      skill_description: string | null;
       invocations: number;
     }>(sql, [range.start, range.end, ...f.params]);
 
     return result.rows.map((row) => {
       const loadedInSessions = Number(row.loaded_in_sessions);
       const invocations = Number(row.invocations);
+      // SEM2-287: per-skill estimate × loadings — falls back to
+      // FLAT_SKILL_TOKEN_ESTIMATE (45) when skill_description is null/empty.
+      const perSkillEstimate = estimateSkillTokens(row.skill_description);
       return {
         skill: row.skill,
         loadedInSessions,
-        // D10: flat per-skill estimate — "estimated (flat model)".
-        estContextTokens: loadedInSessions * FLAT_SKILL_TOKEN_ESTIMATE,
+        estContextTokens: loadedInSessions * perSkillEstimate,
         invocations,
         // §4.3: loaded in the period AND not invoked in the period.
         isDeadWeight: invocations === 0,
@@ -234,10 +243,18 @@ export class SkillAnalyzer {
           ${f.clauses.join("\n          ")}`;
 
     // 1. LOADED side: distinct skills loaded + per-session loaded counts.
+    // SEM2-287: also sum the per-skill description-length estimate per session
+    // (`COALESCE(CEIL(LENGTH(skill_description)/4.0), 45)` — same expression
+    // as v_skill_loaded and estimateSkillTokens()) so the period-level
+    // avgLoadedSkillTokens reflects real descriptions rather than the flat 45.
     const loadedSql = `
       WITH period_sessions AS (${periodSessions}),
       per_session AS (
-        SELECT sl.session_id, COUNT(DISTINCT sl.skill_name) AS loaded_count
+        SELECT
+          sl.session_id,
+          COUNT(DISTINCT sl.skill_name) AS loaded_count,
+          SUM(COALESCE(CEIL(LENGTH(sl.skill_description) / 4.0), 45))
+            AS est_skill_tokens
         FROM session_skills sl
         WHERE sl.session_id IN (SELECT session_id FROM period_sessions)
         GROUP BY sl.session_id
@@ -245,6 +262,7 @@ export class SkillAnalyzer {
       SELECT
         COALESCE(AVG(loaded_count), 0) AS avg_loaded,
         COALESCE(MAX(loaded_count), 0) AS max_loaded,
+        COALESCE(AVG(est_skill_tokens), 0) AS avg_est_skill_tokens,
         (
           SELECT COUNT(DISTINCT sl.skill_name)
           FROM session_skills sl
@@ -255,6 +273,7 @@ export class SkillAnalyzer {
     const loadedResult = await this.executor.query<{
       avg_loaded: number;
       max_loaded: number;
+      avg_est_skill_tokens: number;
       distinct_loaded: number;
     }>(loadedSql, [range.start, range.end, ...f.params]);
 
@@ -339,6 +358,11 @@ export class SkillAnalyzer {
     const maxSkillsLoadedPerSession = Number(
       loadedResult.rows[0]?.max_loaded ?? 0,
     );
+    // SEM2-287: per-session AVG of SUM(per-skill estimate). Falls back to the
+    // flat 45 per-skill when descriptions are null/empty.
+    const avgLoadedSkillTokensRaw = Number(
+      loadedResult.rows[0]?.avg_est_skill_tokens ?? 0,
+    );
     const distinctSkillsLoaded = Number(
       loadedResult.rows[0]?.distinct_loaded ?? 0,
     );
@@ -366,9 +390,11 @@ export class SkillAnalyzer {
     const deadWeightRatio =
       distinctSkillsLoaded > 0 ? deadWeightSkills / distinctSkillsLoaded : null;
 
-    // D10: flat per-skill estimate for the avg context tokens spent on skills.
-    const avgLoadedSkillTokens =
-      avgSkillsLoadedPerSession * FLAT_SKILL_TOKEN_ESTIMATE;
+    // SEM2-287: avg per-session sum of per-skill description-length estimates
+    // (falling back to FLAT_SKILL_TOKEN_ESTIMATE when a description is null/
+    // empty). Replaces the old flat `avgSkillsLoadedPerSession * 45` model
+    // that systematically understated real descriptions by ~45%.
+    const avgLoadedSkillTokens = avgLoadedSkillTokensRaw;
     const loadedContextShare =
       avgSessionContextTokens > 0
         ? avgLoadedSkillTokens / avgSessionContextTokens
@@ -392,7 +418,7 @@ export class SkillAnalyzer {
     ) {
       tooManyReasons.push(
         `Skill descriptions account for ~${(loadedContextShare * 100).toFixed(1)}% of average session context ` +
-          `(> ${(LOADED_CONTEXT_SHARE_THRESHOLD * 100).toFixed(0)}% threshold, estimated flat model).`,
+          `(> ${(LOADED_CONTEXT_SHARE_THRESHOLD * 100).toFixed(0)}% threshold, length-based estimate).`,
       );
     }
 
