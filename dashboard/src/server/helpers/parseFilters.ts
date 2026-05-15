@@ -106,7 +106,15 @@ export function buildTurnFilterClauses(
   const params: unknown[] = [];
 
   if (filters.model) {
-    clauses.push(`AND model LIKE '%' || $${startIndex} || '%'`);
+    // SEM2-292 (F3-prompt): user turns have model IS NULL. NULL LIKE returns
+    // NULL (not TRUE), so a bare `AND model LIKE '%...%'` silently drops every
+    // user row — which broke /api/prompts/* (prompts pair a user turn with
+    // its assistant response). Letting role='user' rows through is harmless
+    // for the other callers (cost / cache / activity / tools) because they
+    // all constrain to role='assistant' or join through tool_calls (which
+    // only attach to assistant turns), so the extra disjunct never matches
+    // anything they don't already exclude. Mirrors src/queries/filter-builder.ts.
+    clauses.push(`AND (role = 'user' OR model LIKE '%' || $${startIndex} || '%')`);
     params.push(filters.model);
     startIndex++;
   }
