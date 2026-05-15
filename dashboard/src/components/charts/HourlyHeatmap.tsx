@@ -10,7 +10,7 @@ interface Props {
 const MIN_HEIGHT = 250;
 const CELL_GAP = 3;
 
-const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 // Every-3-hours labels (used as fallback for narrow widths)
 const HOUR_LABELS_SPARSE: { hour: number; label: string }[] = [
@@ -56,7 +56,7 @@ export default function HourlyHeatmap({ data }: Props) {
     const colorLabel = style.getPropertyValue("--heatmap-label").trim();
     const colorLabelAlt = style.getPropertyValue("--heatmap-label-alt").trim();
 
-    // Build value lookup: dayOfWeek (0=Mon..6=Sun) x hourOfDay (0..23)
+    // Build value lookup: dayOfWeek (0=Sun..6=Sat) x hourOfDay (0..23)
     const valueMap = new Map<string, number>();
     for (const d of data) {
       valueMap.set(`${d.dayOfWeek}-${d.hourOfDay}`, d.value);
