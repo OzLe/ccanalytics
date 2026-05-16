@@ -37,12 +37,42 @@ const CONTEXT_WINDOW_CASE = `
           ELSE 200000
         END`;
 
+/**
+ * SEM2-281: cap for the "engaged time" mean. Sessions that are never closed
+ * (zombie sessions — start_time set, end_time pulled forward to the last turn
+ * decades later, or just very long-lived background sessions) push the
+ * arithmetic mean of `duration_seconds` into multi-day territory and dominate
+ * the headline KPI. We clamp any single session's duration at 12 hours before
+ * averaging — gives a directional "average engaged time" that two unclosed
+ * sessions can't blow up. 12h is a deliberately generous upper bound: a long
+ * but plausible workday. Sessions naturally shorter than this are unchanged.
+ * Tooltip in the UI explains the cap.
+ */
+const SESSION_DURATION_CAP_SECONDS = 12 * 60 * 60; // 43200
+
 /** Aggregate statistics across all sessions in a time range. */
 export interface SessionAggregateStats {
   totalSessions: number;
   totalTurns: number;
   avgTurnsPerSession: number;
+  /**
+   * @deprecated SEM2-281: arithmetic mean of duration_seconds. Structurally
+   * misleading on a long-tailed distribution — a single ~37-day zombie session
+   * pulls it into the hundreds of minutes. Kept for back-compat with the CLI
+   * dashboard; new consumers should prefer {@link medianDurationMinutes}
+   * (primary) and {@link cappedMeanDurationMinutes} (secondary, robust mean).
+   */
   avgDurationMinutes: number;
+  /**
+   * SEM2-281: arithmetic mean with each session's duration clamped at 12h
+   * before averaging. The robust "secondary" KPI — survives one or two zombie
+   * sessions, still moves directionally with the bulk of the distribution.
+   */
+  cappedMeanDurationMinutes: number;
+  /**
+   * SEM2-281: median session duration in minutes. The robust "primary" KPI —
+   * read this on dashboards instead of the mean.
+   */
   medianDurationMinutes: number;
   totalCostUSD: number;
   avgCostPerSession: number;
@@ -281,6 +311,10 @@ export class SessionAnalyzer {
     // CostAnalyzer total (which sums conversation_turns.cost_usd directly).
     // The view exposes the same model / project_path / source_type columns the
     // filter clauses reference, so the swap is a pure source change.
+    // SEM2-281: compute MEDIAN, capped MEAN (12h clamp), and raw MEAN in a
+    // single round-trip. The dashboard surfaces MEDIAN as primary and capped
+    // MEAN as secondary; the raw MEAN stays for back-compat with the CLI and
+    // as a "sanity check" diagnostic that exposes the long-tail inflation.
     const f = buildSessionFilters(filters, 3, "v_session_summary");
     const sql = `
       SELECT
@@ -288,6 +322,8 @@ export class SessionAnalyzer {
         COALESCE(SUM(num_turns), 0) AS total_turns,
         COALESCE(AVG(num_turns), 0) AS avg_turns_per_session,
         COALESCE(AVG(duration_seconds) / 60.0, 0) AS avg_duration_minutes,
+        COALESCE(AVG(LEAST(duration_seconds, ${SESSION_DURATION_CAP_SECONDS})) / 60.0, 0)
+          AS capped_mean_duration_minutes,
         COALESCE(MEDIAN(duration_seconds) / 60.0, 0) AS median_duration_minutes,
         COALESCE(SUM(total_cost_usd), 0) AS total_cost_usd,
         COALESCE(AVG(total_cost_usd), 0) AS avg_cost_per_session
@@ -300,6 +336,7 @@ export class SessionAnalyzer {
       total_turns: number;
       avg_turns_per_session: number;
       avg_duration_minutes: number;
+      capped_mean_duration_minutes: number;
       median_duration_minutes: number;
       total_cost_usd: number;
       avg_cost_per_session: number;
@@ -322,6 +359,7 @@ export class SessionAnalyzer {
         totalTurns: 0,
         avgTurnsPerSession: 0,
         avgDurationMinutes: 0,
+        cappedMeanDurationMinutes: 0,
         medianDurationMinutes: 0,
         totalCostUSD: 0,
         avgCostPerSession: 0,
@@ -334,6 +372,7 @@ export class SessionAnalyzer {
       totalTurns: Number(stats.total_turns),
       avgTurnsPerSession: Number(stats.avg_turns_per_session),
       avgDurationMinutes: Number(stats.avg_duration_minutes),
+      cappedMeanDurationMinutes: Number(stats.capped_mean_duration_minutes),
       medianDurationMinutes: Number(stats.median_duration_minutes),
       totalCostUSD: Number(stats.total_cost_usd),
       avgCostPerSession: Number(stats.avg_cost_per_session),
