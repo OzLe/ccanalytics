@@ -135,8 +135,11 @@ export default function Sidebar({ mobileOpen, onMobileClose, onToggleRef }: Side
               <span className="truncate text-[var(--font-body-size)] font-semibold tracking-tight text-[var(--text-primary)]">
                 CC Analytics
               </span>
-              <span className="text-[length:var(--font-overline-size)] text-[var(--text-tertiary)]">
-                v0.1.0
+              <span
+                className="text-[length:var(--font-overline-size)] text-[var(--text-tertiary)]"
+                title={`v${__APP_FULL_VERSION__}`}
+              >
+                v{__APP_VERSION__}
               </span>
             </div>
           )}
