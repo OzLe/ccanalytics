@@ -43,7 +43,11 @@ router.get("/usage", async (req, res, next) => {
                COUNT(*) FILTER (WHERE tc.success IS NOT NULL)::DOUBLE
           ELSE NULL
         END AS success_rate,
-        COALESCE(AVG(tc.duration_ms), 0) AS avg_duration_ms,
+        -- TOOL-001 (SEM2-282): NULL — not 0 — when no rows have duration_ms.
+        -- Both ingestion adapters set duration_ms = NULL (claude-code.ts:280,
+        -- claude-desktop.ts:512), so coercing to 0 rendered "0s" in the UI and
+        -- pretended we had data. Mirrors the KPI-006 success_rate pattern.
+        AVG(tc.duration_ms) AS avg_duration_ms,
         COUNT(DISTINCT tc.session_id) AS sessions_using_tool,
         -- KPI-009: avg_per_session — surfaced so this route matches the
         -- v_tool_usage view instead of silently omitting the column.
@@ -71,7 +75,8 @@ router.get("/usage", async (req, res, next) => {
       successCount: Number(row.success_count),
       failureCount: Number(row.failure_count),
       successRate: row.success_rate != null ? Number(row.success_rate) : null,
-      avgDurationMs: Number(row.avg_duration_ms),
+      // TOOL-001 (SEM2-282): preserve NULL ("no data") rather than 0.
+      avgDurationMs: row.avg_duration_ms != null ? Number(row.avg_duration_ms) : null,
       sessionsUsingTool: Number(row.sessions_using_tool),
       avgPerSession: row.avg_per_session != null ? Number(row.avg_per_session) : 0,
     }));
@@ -106,7 +111,8 @@ router.get("/success-rates", async (req, res, next) => {
           -- v_tool_usage and /api/tools/usage. "No data", not a 0% tool.
           ELSE NULL
         END AS success_rate,
-        COALESCE(AVG(tc.duration_ms), 0) AS avg_duration_ms
+        -- TOOL-001 (SEM2-282): NULL — not 0 — when no rows have duration_ms.
+        AVG(tc.duration_ms) AS avg_duration_ms
       FROM tool_calls tc
       JOIN conversation_turns ct ON ct.turn_id = tc.turn_id AND ct.session_id = tc.session_id
       WHERE ct.timestamp >= $1 AND ct.timestamp < $2
@@ -146,7 +152,8 @@ router.get("/success-rates", async (req, res, next) => {
       failureCount: Number(row.failure_count),
       // KPI-006: preserve NULL (no data) instead of coercing to 0%.
       successRate: row.success_rate != null ? Number(row.success_rate) : null,
-      avgDurationMs: Number(row.avg_duration_ms),
+      // TOOL-001 (SEM2-282): preserve NULL ("no data") rather than 0.
+      avgDurationMs: row.avg_duration_ms != null ? Number(row.avg_duration_ms) : null,
       commonErrors: (errorsByTool.get(row.tool_name as string) ?? []).slice(0, 5),
     }));
 
@@ -170,7 +177,8 @@ router.get("/mcp-servers", async (req, res, next) => {
       SELECT
         tc.mcp_server AS server_name,
         COUNT(*) AS total_calls,
-        COALESCE(AVG(tc.duration_ms), 0) AS avg_duration_ms
+        -- TOOL-001 (SEM2-282): NULL — not 0 — when no rows have duration_ms.
+        AVG(tc.duration_ms) AS avg_duration_ms
       FROM tool_calls tc
       JOIN conversation_turns ct ON ct.turn_id = tc.turn_id AND ct.session_id = tc.session_id
       WHERE tc.tool_type = 'mcp'
@@ -207,7 +215,8 @@ router.get("/mcp-servers", async (req, res, next) => {
       totalCalls: Number(row.total_calls),
       uniqueTools: toolsByServer.get(row.server_name as string) ?? [],
       totalTokens: 0,
-      avgDurationMs: Number(row.avg_duration_ms),
+      // TOOL-001 (SEM2-282): preserve NULL ("no data") rather than 0.
+      avgDurationMs: row.avg_duration_ms != null ? Number(row.avg_duration_ms) : null,
     }));
 
     res.json(envelope(rows, filters.period));
@@ -461,7 +470,15 @@ router.get("/chains", async (req, res, next) => {
       chains AS (
         SELECT
           a.tool_name || ' -> ' || b.tool_name || ' -> ' || c.tool_name AS chain,
-          COALESCE(a.duration_ms, 0) + COALESCE(b.duration_ms, 0) + COALESCE(c.duration_ms, 0) AS total_duration_ms
+          -- TOOL-001 (SEM2-282): leg-level NULL → leave the total NULL so the
+          -- outer AVG yields NULL for chains where no leg ever captured a
+          -- duration. Partial-NULL chains still sum the known legs (matches
+          -- the prior leg-level COALESCE behavior).
+          CASE
+            WHEN a.duration_ms IS NULL AND b.duration_ms IS NULL AND c.duration_ms IS NULL
+            THEN NULL
+            ELSE COALESCE(a.duration_ms, 0) + COALESCE(b.duration_ms, 0) + COALESCE(c.duration_ms, 0)
+          END AS total_duration_ms
         FROM ordered_tools a
         JOIN ordered_tools b ON a.session_id = b.session_id AND b.rn = a.rn + 1
         JOIN ordered_tools c ON a.session_id = c.session_id AND c.rn = a.rn + 2
@@ -469,7 +486,9 @@ router.get("/chains", async (req, res, next) => {
       SELECT
         chain,
         COUNT(*) AS occurrences,
-        COALESCE(AVG(total_duration_ms), 0) AS avg_duration_ms
+        -- TOOL-001 (SEM2-282): NULL — not 0 — when no chain instance had any
+        -- captured duration. UI renders "n/a"; old "0s" was a fake datapoint.
+        AVG(total_duration_ms) AS avg_duration_ms
       FROM chains
       GROUP BY chain
       HAVING COUNT(*) >= $3
@@ -486,7 +505,8 @@ router.get("/chains", async (req, res, next) => {
     const rows = result.rows.map((row: Record<string, unknown>) => ({
       chain: (row.chain as string).split(" -> "),
       occurrences: Number(row.occurrences),
-      avgDurationMs: Number(row.avg_duration_ms),
+      // TOOL-001 (SEM2-282): preserve NULL ("no data") rather than 0.
+      avgDurationMs: row.avg_duration_ms != null ? Number(row.avg_duration_ms) : null,
     }));
 
     res.json(envelope(rows, filters.period));

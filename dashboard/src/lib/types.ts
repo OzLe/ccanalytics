@@ -330,7 +330,12 @@ export interface ToolUsageRow {
   successCount: number;
   failureCount: number;
   successRate: number | null;
-  avgDurationMs: number;
+  /**
+   * TOOL-001 (SEM2-282): null when every underlying tool_calls.duration_ms
+   * is NULL ("no data"). Both ingestion adapters currently write NULL, so
+   * every value is null today. UI renders "n/a".
+   */
+  avgDurationMs: number | null;
   sessionsUsingTool: number;
   /** KPI-009: avg calls of this tool per session that used it. */
   avgPerSession: number;
@@ -344,7 +349,8 @@ export interface ToolSuccessRate {
   failureCount: number;
   /** KPI-006: null when the tool has only NULL-success calls ("no data"). */
   successRate: number | null;
-  avgDurationMs: number;
+  /** TOOL-001 (SEM2-282): null when no duration_ms was captured. */
+  avgDurationMs: number | null;
   commonErrors: string[];
 }
 
@@ -352,7 +358,8 @@ export interface ToolSuccessRate {
 export interface ToolChain {
   chain: string[];
   occurrences: number;
-  avgDurationMs: number;
+  /** TOOL-001 (SEM2-282): null when no chain instance had captured durations. */
+  avgDurationMs: number | null;
 }
 
 /** NEW-002: failure stats for one tool class within a time bucket. */

@@ -26,7 +26,12 @@ export interface ToolSuccessRate {
   failureCount: number;
   /** KPI-006: null when the tool has only NULL-success calls ("no data"). */
   successRate: number | null;
-  avgDurationMs: number;
+  /**
+   * TOOL-001 (SEM2-282): null when every underlying row's duration_ms is
+   * NULL ("no data"). Mirrors the KPI-006 success_rate pattern — don't
+   * pretend with 0 when we never captured a duration.
+   */
+  avgDurationMs: number | null;
   commonErrors: string[];
 }
 
@@ -36,8 +41,11 @@ export interface ToolChain {
   chain: string[];
   /** Number of times this chain appeared. */
   occurrences: number;
-  /** Average total duration of the chain in ms. */
-  avgDurationMs: number;
+  /**
+   * Average total duration of the chain in ms. TOOL-001 (SEM2-282): null
+   * when every underlying tool_calls.duration_ms is NULL.
+   */
+  avgDurationMs: number | null;
 }
 
 /** Aggregated usage for an MCP server. */
@@ -46,7 +54,8 @@ export interface MCPServerUsage {
   totalCalls: number;
   uniqueTools: string[];
   totalTokens: number;
-  avgDurationMs: number;
+  /** TOOL-001 (SEM2-282): null when no duration_ms was captured. */
+  avgDurationMs: number | null;
 }
 
 /**
@@ -82,7 +91,11 @@ export class ToolAnalyzer {
                COUNT(*) FILTER (WHERE tc.success IS NOT NULL)::DOUBLE
           ELSE NULL
         END AS success_rate,
-        COALESCE(AVG(tc.duration_ms), 0) AS avg_duration_ms,
+        -- TOOL-001 (SEM2-282): NULL — not 0 — when no rows have duration_ms.
+        -- Both ingestion adapters set duration_ms = NULL (claude-code.ts:280,
+        -- claude-desktop.ts:512), so coercing to 0 rendered "0s" in the UI and
+        -- pretended we had data. Mirrors the KPI-006 success_rate pattern.
+        AVG(tc.duration_ms) AS avg_duration_ms,
         COUNT(DISTINCT tc.session_id) AS sessions_using_tool,
         -- KPI-009: avg_per_session — surfaced here so the analyzer matches
         -- the v_tool_usage view definition instead of silently omitting it.
@@ -103,7 +116,7 @@ export class ToolAnalyzer {
       success_count: number;
       failure_count: number;
       success_rate: number | null;
-      avg_duration_ms: number;
+      avg_duration_ms: number | null;
       sessions_using_tool: number;
       avg_per_session: number | null;
     }>(sql, [range.start, range.end, ...f.params]);
@@ -116,7 +129,10 @@ export class ToolAnalyzer {
       successCount: Number(row.success_count),
       failureCount: Number(row.failure_count),
       successRate: row.success_rate != null ? Number(row.success_rate) : null,
-      avgDurationMs: Number(row.avg_duration_ms),
+      // TOOL-001 (SEM2-282): preserve NULL ("no data") rather than coercing
+      // to 0. With both ingestion adapters writing duration_ms = NULL, this
+      // is the entire dataset's current truth.
+      avgDurationMs: row.avg_duration_ms != null ? Number(row.avg_duration_ms) : null,
       sessionsUsingTool: Number(row.sessions_using_tool),
       avgPerSession: row.avg_per_session != null ? Number(row.avg_per_session) : 0,
     }));
@@ -144,7 +160,8 @@ export class ToolAnalyzer {
           -- captured is "no data", not a 0% (total-failure) tool.
           ELSE NULL
         END AS success_rate,
-        COALESCE(AVG(tc.duration_ms), 0) AS avg_duration_ms
+        -- TOOL-001 (SEM2-282): NULL — not 0 — when no rows have duration_ms.
+        AVG(tc.duration_ms) AS avg_duration_ms
       FROM tool_calls tc
       JOIN conversation_turns ct ON ct.turn_id = tc.turn_id AND ct.session_id = tc.session_id
       WHERE ct.timestamp >= $1 AND ct.timestamp < $2
@@ -157,7 +174,7 @@ export class ToolAnalyzer {
       success_count: number;
       failure_count: number;
       success_rate: number | null;
-      avg_duration_ms: number;
+      avg_duration_ms: number | null;
     }>(sql, [range.start, range.end]);
 
     // Get common errors per tool
@@ -190,7 +207,8 @@ export class ToolAnalyzer {
       failureCount: Number(row.failure_count),
       // KPI-006: preserve NULL (no data) rather than coercing to 0.
       successRate: row.success_rate != null ? Number(row.success_rate) : null,
-      avgDurationMs: Number(row.avg_duration_ms),
+      // TOOL-001 (SEM2-282): preserve NULL ("no data") rather than 0.
+      avgDurationMs: row.avg_duration_ms != null ? Number(row.avg_duration_ms) : null,
       commonErrors: (errorsByTool.get(row.tool_name) ?? []).slice(0, 5),
     }));
   }
@@ -206,7 +224,8 @@ export class ToolAnalyzer {
       SELECT
         tc.mcp_server AS server_name,
         COUNT(*) AS total_calls,
-        COALESCE(AVG(tc.duration_ms), 0) AS avg_duration_ms
+        -- TOOL-001 (SEM2-282): NULL — not 0 — when no rows have duration_ms.
+        AVG(tc.duration_ms) AS avg_duration_ms
       FROM tool_calls tc
       JOIN conversation_turns ct ON ct.turn_id = tc.turn_id AND ct.session_id = tc.session_id
       WHERE tc.tool_type = 'mcp'
@@ -218,7 +237,7 @@ export class ToolAnalyzer {
     const result = await this.executor.query<{
       server_name: string;
       total_calls: number;
-      avg_duration_ms: number;
+      avg_duration_ms: number | null;
     }>(sql, [range.start, range.end]);
 
     // Get unique tools per server
@@ -247,7 +266,8 @@ export class ToolAnalyzer {
       totalCalls: Number(row.total_calls),
       uniqueTools: toolsByServer.get(row.server_name) ?? [],
       totalTokens: 0, // Tool calls don't track tokens directly
-      avgDurationMs: Number(row.avg_duration_ms),
+      // TOOL-001 (SEM2-282): preserve NULL ("no data") rather than 0.
+      avgDurationMs: row.avg_duration_ms != null ? Number(row.avg_duration_ms) : null,
     }));
   }
 
@@ -285,7 +305,15 @@ export class ToolAnalyzer {
       chains AS (
         SELECT
           a.tool_name || ' -> ' || b.tool_name || ' -> ' || c.tool_name AS chain,
-          COALESCE(a.duration_ms, 0) + COALESCE(b.duration_ms, 0) + COALESCE(c.duration_ms, 0) AS total_duration_ms
+          -- TOOL-001 (SEM2-282): leg-level NULL → leave the total NULL so the
+          -- outer AVG yields NULL for chains where no leg ever captured a
+          -- duration. Partial-NULL chains still sum the known legs (matches
+          -- the prior leg-level COALESCE behavior).
+          CASE
+            WHEN a.duration_ms IS NULL AND b.duration_ms IS NULL AND c.duration_ms IS NULL
+            THEN NULL
+            ELSE COALESCE(a.duration_ms, 0) + COALESCE(b.duration_ms, 0) + COALESCE(c.duration_ms, 0)
+          END AS total_duration_ms
         FROM ordered_tools a
         JOIN ordered_tools b ON a.session_id = b.session_id AND b.rn = a.rn + 1
         JOIN ordered_tools c ON a.session_id = c.session_id AND c.rn = a.rn + 2
@@ -293,7 +321,9 @@ export class ToolAnalyzer {
       SELECT
         chain,
         COUNT(*) AS occurrences,
-        COALESCE(AVG(total_duration_ms), 0) AS avg_duration_ms
+        -- TOOL-001 (SEM2-282): NULL — not 0 — when no chain instance had any
+        -- captured duration. UI renders "n/a"; old "0s" was a fake datapoint.
+        AVG(total_duration_ms) AS avg_duration_ms
       FROM chains
       GROUP BY chain
       HAVING COUNT(*) >= $3
@@ -303,20 +333,25 @@ export class ToolAnalyzer {
     const result = await this.executor.query<{
       chain: string;
       occurrences: number;
-      avg_duration_ms: number;
+      avg_duration_ms: number | null;
     }>(sql, [range.start, range.end, minOccurrences]);
 
     return result.rows.map((row) => ({
       chain: row.chain.split(" -> "),
       occurrences: Number(row.occurrences),
-      avgDurationMs: Number(row.avg_duration_ms),
+      // TOOL-001 (SEM2-282): preserve NULL ("no data") rather than 0.
+      avgDurationMs: row.avg_duration_ms != null ? Number(row.avg_duration_ms) : null,
     }));
   }
 
-  // NOTE (latent bug, deferred ingestion fix): getToolUsage, getToolSuccessRates,
-  // getMCPServerUsage and getToolChains above all AVG(tc.duration_ms) and
-  // COALESCE it to 0. tool_calls.duration_ms is 100% NULL in the data (the
-  // adapters never populate it), so every "Avg Time" figure is silently 0.
+  // TOOL-001 (SEM2-282): getToolUsage, getToolSuccessRates, getMCPServerUsage
+  // and getToolChains above all AVG(tc.duration_ms). tool_calls.duration_ms is
+  // currently 100% NULL in the data (both ingestion adapters set it to NULL —
+  // claude-code.ts:280, claude-desktop.ts:512). The previous COALESCE(...,0)
+  // wrappers rendered "0s" for every tool, pretending we had data. We now
+  // surface NULL through to the API, types, and UI ("n/a"), matching the
+  // KPI-006 success_rate pattern. Future option: backfill duration_ms from
+  // conversation_turns.timestamp deltas in a separate ticket.
   // The NEW-002/003 methods below deliberately do NOT touch duration_ms —
   // they are purely success/failure based and unaffected.
 
