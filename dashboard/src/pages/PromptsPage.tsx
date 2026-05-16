@@ -258,6 +258,11 @@ export default function PromptsPage() {
       header: "Complexity",
       align: "right" as const,
       sortable: true,
+      // F1/F2-prompt (SEM2-290, 291): the score is now the average of four
+      // PERCENT_RANK terms (tool_call_count, total_tokens, multi_turn_depth,
+      // distinct_tools_used). has_thinking is no longer weighted into it; it
+      // is surfaced as a categorical badge in the "Thinking" column below so
+      // the signal is still visible to the user — just not in the number.
       render: (row) => (
         <span className="tabular-nums text-[var(--text-secondary)]">
           {row.complexityScore}
@@ -300,6 +305,11 @@ export default function PromptsPage() {
     {
       key: "hasThinking",
       header: "Thinking",
+      // F1/F2-prompt (SEM2-290, 291): displayed as a categorical badge per
+      // Q-003. Previously this was the 4th term of complexity_score as a
+      // 25-pt step — 98.8% of prompts scored 0/25, so the score was
+      // effectively only seeing the 3 other dimensions. The signal is now
+      // surfaced here on its own so users can still see it.
       render: (row) => (
         <Badge variant={row.hasThinking ? "success" : "neutral"}>
           {row.hasThinking ? "Yes" : "No"}
