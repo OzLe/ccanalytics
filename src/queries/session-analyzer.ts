@@ -272,7 +272,16 @@ export class SessionAnalyzer {
    * @returns Aggregate statistics
    */
   async getSessionStats(range: TimeRange, filters?: QueryFilters): Promise<SessionAggregateStats> {
-    const f = buildSessionFilters(filters, 3, "sessions");
+    // COST-004 / SEM2-280: read aggregates from v_session_summary, NOT the
+    // sessions table. sessions.total_cost_usd (and num_turns) are stored
+    // aggregates that the ingestion upsert overwrites with the LATEST batch's
+    // recomputed value, so on incremental ingest they drift below the true
+    // per-session totals. v_session_summary derives both from
+    // conversation_turns (SUM(cost_usd), COUNT(*)) so it reconciles with the
+    // CostAnalyzer total (which sums conversation_turns.cost_usd directly).
+    // The view exposes the same model / project_path / source_type columns the
+    // filter clauses reference, so the swap is a pure source change.
+    const f = buildSessionFilters(filters, 3, "v_session_summary");
     const sql = `
       SELECT
         COUNT(*) AS total_sessions,
@@ -282,7 +291,7 @@ export class SessionAnalyzer {
         COALESCE(MEDIAN(duration_seconds) / 60.0, 0) AS median_duration_minutes,
         COALESCE(SUM(total_cost_usd), 0) AS total_cost_usd,
         COALESCE(AVG(total_cost_usd), 0) AS avg_cost_per_session
-      FROM sessions
+      FROM v_session_summary
       WHERE start_time >= $1 AND start_time < $2
         ${f.clauses.join("\n        ")}
     `;
@@ -296,10 +305,10 @@ export class SessionAnalyzer {
       avg_cost_per_session: number;
     }>(sql, [range.start, range.end, ...f.params]);
 
-    const f2 = buildSessionFilters(filters, 3, "sessions");
+    const f2 = buildSessionFilters(filters, 3, "v_session_summary");
     const modelsResult = await this.executor.query<{ model: string }>(
       `SELECT DISTINCT model
-       FROM sessions
+       FROM v_session_summary
        WHERE start_time >= $1 AND start_time < $2
          AND model IS NOT NULL
          ${f2.clauses.join("\n         ")}`,

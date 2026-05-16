@@ -113,7 +113,16 @@ router.get("/", async (req, res, next) => {
 router.get("/stats", async (req, res, next) => {
   try {
     const filters = parseFilters(req);
-    const f = buildSessionFilterClauses(filters, 3, "sessions");
+    // COST-004 / SEM2-280: read aggregates from v_session_summary, NOT the
+    // sessions table. sessions.total_cost_usd (and num_turns) are stored
+    // aggregates that the ingestion upsert overwrites with the LATEST batch's
+    // recomputed value, so on incremental ingest they drift below the true
+    // per-session totals. v_session_summary derives both from
+    // conversation_turns (SUM(cost_usd), COUNT(*)) so it reconciles with
+    // /api/cost/total (which sums conversation_turns.cost_usd directly). The
+    // view exposes the same model / project_path / source_type columns the
+    // filter clauses reference, so the swap is a pure source change.
+    const f = buildSessionFilterClauses(filters, 3, "v_session_summary");
 
     const statsSql = `
       SELECT
@@ -124,15 +133,15 @@ router.get("/stats", async (req, res, next) => {
         COALESCE(MEDIAN(duration_seconds) / 60.0, 0) AS median_duration_minutes,
         COALESCE(SUM(total_cost_usd), 0) AS total_cost_usd,
         COALESCE(AVG(total_cost_usd), 0) AS avg_cost_per_session
-      FROM sessions
+      FROM v_session_summary
       WHERE start_time >= $1 AND start_time < $2
         ${f.clauses.join("\n        ")}
     `;
 
-    const f2 = buildSessionFilterClauses(filters, 3, "sessions");
+    const f2 = buildSessionFilterClauses(filters, 3, "v_session_summary");
     const modelsSql = `
       SELECT DISTINCT model
-      FROM sessions
+      FROM v_session_summary
       WHERE start_time >= $1 AND start_time < $2
         AND model IS NOT NULL
         ${f2.clauses.join("\n        ")}
