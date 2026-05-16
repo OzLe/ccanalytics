@@ -22,6 +22,7 @@ import { buildRateCaseSql } from "../../../../src/utils/pricing.js";
 // stored UTC-wall-clock timestamp through the user's IANA zone. $3 is the
 // timezone bind everywhere; filter clauses therefore start at $4.
 import { wrapTimestampForTz } from "../../../../src/utils/timezone.js";
+import { costRowPredicateSql } from "../../../../src/utils/sqlPredicates.js";
 
 const router = Router();
 
@@ -43,23 +44,6 @@ const INPUT_RATE_CASE_CT = buildRateCaseSql("inputPerM", "ct.model");
 const OUTPUT_RATE_CASE_CT = buildRateCaseSql("outputPerM", "ct.model");
 const CACHE_CREATION_RATE_CASE_CT = buildRateCaseSql("cacheCreationPerM", "ct.model");
 const CACHE_READ_RATE_CASE_CT = buildRateCaseSql("cacheReadPerM", "ct.model");
-
-/**
- * Canonical row-inclusion predicate for cost aggregation (COST-005).
- *
- * Replaces the old implicit `cost_usd > 0` silent filter. The intent is
- * "real assistant turns" — every assistant turn, explicitly excluding only
- * the `<synthetic>` placeholder model (0 tokens, $0). Cost is never used as a
- * proxy for "is this a real turn". Applied uniformly across /total, /daily,
- * /by-model, /by-project and /trend so token/turn counts reconcile.
- *
- * @param alias - Table alias for conversation_turns; "" for the bare column
- *   form (default), or e.g. "ct" when the query joins/aliases the table.
- */
-function costRowPredicate(alias = ""): string {
-  const p = alias ? `${alias}.` : "";
-  return `${p}role = 'assistant' AND ${p}model IS NOT NULL AND ${p}model <> '<synthetic>'`;
-}
 
 /**
  * GET /api/cost/total
@@ -89,7 +73,7 @@ router.get("/total", async (req, res, next) => {
         COALESCE(SUM(cache_creation_tokens * ${CACHE_CREATION_RATE_CASE} / 1000000.0), 0) AS cache_write_cost_usd,
         COALESCE(SUM(cache_read_tokens * ${CACHE_READ_RATE_CASE} / 1000000.0), 0) AS cache_read_cost_usd
       FROM conversation_turns
-      WHERE ${costRowPredicate()}
+      WHERE ${costRowPredicateSql("")}
         AND timestamp >= $1 AND timestamp < $2
         ${f.clauses.join("\n        ")}
     `;
@@ -172,7 +156,7 @@ router.get("/daily", async (req, res, next) => {
         COUNT(*) AS turn_count,
         COUNT(DISTINCT session_id) AS session_count
       FROM conversation_turns
-      WHERE ${costRowPredicate()}
+      WHERE ${costRowPredicateSql("")}
         AND timestamp >= $1 AND timestamp < $2
         ${f.clauses.join("\n        ")}
       GROUP BY CAST(${localDate} AS VARCHAR), model
@@ -232,7 +216,7 @@ router.get("/by-model", async (req, res, next) => {
         COALESCE(SUM(ct.cache_creation_tokens * ${CACHE_CREATION_RATE_CASE_CT} / 1000000.0), 0) AS cache_write_cost_usd,
         COALESCE(SUM(ct.cache_read_tokens * ${CACHE_READ_RATE_CASE_CT} / 1000000.0), 0) AS cache_read_cost_usd
       FROM conversation_turns ct
-      WHERE ${costRowPredicate("ct")}
+      WHERE ${costRowPredicateSql("ct")}
         AND ct.timestamp >= $1 AND ct.timestamp < $2
         ${filterClauses.join("\n        ")}
       GROUP BY ct.model
@@ -300,7 +284,7 @@ router.get("/by-project", async (req, res, next) => {
         COALESCE(SUM(ct.cache_creation_tokens * ${CACHE_CREATION_RATE_CASE_CT} / 1000000.0), 0) AS cache_write_cost_usd,
         COALESCE(SUM(ct.cache_read_tokens * ${CACHE_READ_RATE_CASE_CT} / 1000000.0), 0) AS cache_read_cost_usd
       FROM sessions s
-      JOIN conversation_turns ct ON ct.session_id = s.session_id AND ${costRowPredicate("ct")}
+      JOIN conversation_turns ct ON ct.session_id = s.session_id AND ${costRowPredicateSql("ct")}
       WHERE s.start_time >= $1 AND s.start_time < $2
         ${f.clauses.join("\n        ")}
       GROUP BY s.project_path
@@ -382,7 +366,7 @@ router.get("/trend", async (req, res, next) => {
         COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens,
         COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens
       FROM conversation_turns
-      WHERE ${costRowPredicate()}
+      WHERE ${costRowPredicateSql("")}
         AND timestamp >= $1 AND timestamp < $2
         ${f.clauses.join("\n        ")}
       GROUP BY ts

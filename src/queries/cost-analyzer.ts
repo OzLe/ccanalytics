@@ -19,25 +19,7 @@ import type { QueryExecutor } from "../db/executor.js";
 import { buildTurnFilters, buildSessionFilters } from "./filter-builder.js";
 import { getPricing } from "../utils/pricing.js";
 import { resolveTimezone, wrapTimestampForTz } from "../utils/timezone.js";
-
-/**
- * Canonical row-inclusion predicate for cost aggregation (COST-005).
- *
- * Replaces the old implicit `cost_usd > 0` silent filter. Intent: "real
- * assistant turns" — every assistant turn, explicitly excluding only the
- * `<synthetic>` placeholder model (0 tokens, $0). Cost is never used as a
- * proxy for "is this a real turn". Applied identically across getDailyCosts,
- * getCostByModel, getCostByProject, getTotalCost and getCostTrend so the
- * "total" and "daily" views reconcile on token/turn counts.
- *
- * Mirrors `costRowPredicate()` in dashboard/src/server/routes/cost.ts.
- *
- * @param alias - Table alias for conversation_turns ("" for the bare column form)
- */
-function costRowPredicate(alias = ""): string {
-  const p = alias ? `${alias}.` : "";
-  return `${p}role = 'assistant' AND ${p}model IS NOT NULL AND ${p}model <> '<synthetic>'`;
-}
+import { costRowPredicateSql } from "../utils/sqlPredicates.js";
 
 /** Cost breakdown for a specific project. */
 export interface ProjectCostBreakdown {
@@ -88,7 +70,7 @@ export class CostAnalyzer {
         COUNT(*) AS turn_count,
         COUNT(DISTINCT session_id) AS session_count
       FROM conversation_turns
-      WHERE ${costRowPredicate()}
+      WHERE ${costRowPredicateSql("")}
         AND timestamp >= $1 AND timestamp < $2
         ${f.clauses.join("\n        ")}
       GROUP BY ${localDate}, model
@@ -142,7 +124,7 @@ export class CostAnalyzer {
         COALESCE(SUM(ct.cache_creation_tokens), 0) AS total_cache_write_tokens,
         COALESCE(SUM(ct.cache_read_tokens), 0) AS total_cache_read_tokens
       FROM conversation_turns ct
-      WHERE ${costRowPredicate("ct")}
+      WHERE ${costRowPredicateSql("ct")}
         AND ct.timestamp >= $1 AND ct.timestamp < $2
         ${f.clauses.map((c) => c.replace(/\bmodel\b/, "ct.model").replace(/\bsession_id\b/, "ct.session_id")).join("\n        ")}
       GROUP BY ct.model
@@ -212,7 +194,7 @@ export class CostAnalyzer {
         COALESCE(SUM(ct.cache_creation_tokens), 0) AS total_cache_write_tokens,
         COALESCE(SUM(ct.cache_read_tokens), 0) AS total_cache_read_tokens
       FROM sessions s
-      JOIN conversation_turns ct ON ct.session_id = s.session_id AND ${costRowPredicate("ct")}
+      JOIN conversation_turns ct ON ct.session_id = s.session_id AND ${costRowPredicateSql("ct")}
       WHERE s.start_time >= $1 AND s.start_time < $2
         ${f.clauses.join("\n        ")}
       GROUP BY s.project_path, ct.model
@@ -367,7 +349,7 @@ export class CostAnalyzer {
         COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens,
         COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens
       FROM conversation_turns
-      WHERE ${costRowPredicate()}
+      WHERE ${costRowPredicateSql("")}
         AND timestamp >= $1 AND timestamp < $2
         ${f.clauses.join("\n        ")}
       GROUP BY ts
@@ -413,7 +395,7 @@ export class CostAnalyzer {
         COALESCE(SUM(cache_creation_tokens), 0) AS total_cache_write_tokens,
         COALESCE(SUM(cache_read_tokens), 0) AS total_cache_read_tokens
       FROM conversation_turns
-      WHERE ${costRowPredicate()}
+      WHERE ${costRowPredicateSql("")}
         AND timestamp >= $1 AND timestamp < $2
         ${f.clauses.join("\n        ")}
       GROUP BY model

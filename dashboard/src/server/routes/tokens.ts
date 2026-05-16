@@ -4,7 +4,7 @@
  * F1 — Total Tokens KPI API endpoint.
  *
  * Mirrors `TokenAnalyzer.getTotalTokens` with raw SQL against DuckDB. Uses the
- * SAME `costRowPredicate()` the cost route uses (`role='assistant' AND model IS
+ * SAME `costRowPredicateSql()` the cost route uses (`role='assistant' AND model IS
  * NOT NULL AND model <> '<synthetic>'`) so Total Tokens reconciles 1:1 with
  * `/api/cost/total`. A new route file per the one-route-file-per-domain
  * structure (`cost.ts`, `cache.ts`, `activity.ts`…) and the `/api/cost/total`
@@ -15,24 +15,9 @@ import { Router } from "express";
 import { query } from "../helpers/db.js";
 import { parseFilters, buildTurnFilterClauses, envelope } from "../helpers/parseFilters.js";
 import { buildTokenSumSql } from "../../../../src/utils/tokenSums.js";
+import { costRowPredicateSql } from "../../../../src/utils/sqlPredicates.js";
 
 const router = Router();
-
-/**
- * Canonical row-inclusion predicate for token aggregation (F1 / D6).
- *
- * The SAME predicate `costRowPredicate()` uses in `routes/cost.ts` and the CLI
- * `cost-analyzer.ts` / `token-analyzer.ts` — "real assistant turns", excluding
- * only the `<synthetic>` placeholder model. F1 intentionally mirrors the COST
- * predicate (not the looser `v_session_summary` / `v_hourly_activity`
- * `assistant`-only predicate) so the headline reconciles with Total Cost.
- *
- * @param alias - Table alias for conversation_turns; "" for the bare column form.
- */
-function costRowPredicate(alias = ""): string {
-  const p = alias ? `${alias}.` : "";
-  return `${p}role = 'assistant' AND ${p}model IS NOT NULL AND ${p}model <> '<synthetic>'`;
-}
 
 /**
  * The SUM columns the period and all-time queries share — generated from the
@@ -83,7 +68,7 @@ function toBreakdown(row: Record<string, unknown> | undefined) {
  *
  * - `data.period` — `timestamp >= $1 AND timestamp < $2` plus the active
  *   model/project/source filters.
- * - `data.allTime` — the same `costRowPredicate()`, but NO timestamp bound and
+ * - `data.allTime` — the same `costRowPredicateSql()`, but NO timestamp bound and
  *   NO filters (D7). A fixed per-request constant — changing the period or a
  *   filter never alters it.
  */
@@ -96,7 +81,7 @@ router.get("/total", async (req, res, next) => {
     const periodSql = `
       SELECT${TOKEN_SUM_COLUMNS}
       FROM conversation_turns
-      WHERE ${costRowPredicate()}
+      WHERE ${costRowPredicateSql("")}
         AND timestamp >= $1 AND timestamp < $2
         ${f.clauses.join("\n        ")}
     `;
@@ -110,7 +95,7 @@ router.get("/total", async (req, res, next) => {
     const allTimeSql = `
       SELECT${TOKEN_SUM_COLUMNS}
       FROM conversation_turns
-      WHERE ${costRowPredicate()}
+      WHERE ${costRowPredicateSql("")}
     `;
     const allTimeResult = await query(allTimeSql, []);
 
