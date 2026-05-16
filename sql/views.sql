@@ -457,24 +457,62 @@ ORDER BY date DESC, tool_class;
 -- NEW-003 — v_session_failure_chains: consecutive tool-call failure streaks
 -- per session ("the agent got stuck and thrashed" — a rework signal).
 --
--- Within a session, tool_calls are ordered by tool_call_id (the same ordering
--- proxy getToolChains uses). A classic gaps-and-islands pattern: subtract a
--- ROW_NUMBER partitioned by success from the global ROW_NUMBER to group
--- maximal consecutive runs of the same success value; the runs WHERE
--- success = FALSE are the failure streaks. Per session this reports the
--- longest failure streak and the count of failure streaks of length >= 2.
--- The dataset-level KPI (% of sessions with a streak >= 3) is computed by the
--- ToolAnalyzer getFailureChains method / the /api/tools/failure-chains route,
--- which re-implement this inline to support period/model/project filters.
+-- ORDERING (TOOL-002/003/004, SEM2-283/284/285) — Within a session,
+-- tool_calls MUST be ordered by conversation_turns.timestamp (chronological).
+-- The previous version of this view ORDER BY'd on tc.tool_call_id, which is
+-- a random base62 identifier with no chronological relationship to call
+-- order; the resulting "adjacency" was essentially random and undercounted
+-- both max_failure_streak (showed 6 vs the real 8) and chained-tool counts
+-- (Bash->Bash->Bash showed 7,307 vs the real 13,656 — ~half).
+--
+-- TIEBREAKER (TOOL-004, SEM2-285) — When the same assistant turn dispatches
+-- multiple tool_use blocks in parallel, every resulting tool_calls row shares
+-- the hosting turn's timestamp. We append tc.tool_call_id as a secondary
+-- ORDER BY key to make the row-numbering deterministic across runs. The
+-- tiebreaker order has no chronological meaning — it is just a stable proxy
+-- for "same-turn parallel tool calls" — but a stable order is required for
+-- the gaps-and-islands streak math to be reproducible. The contribution of
+-- parallel same-turn calls to a streak is the same regardless of tiebreaker
+-- direction, because the streak is over consecutive identical success
+-- values; reversing the tiebreaker only swaps which row within a same-turn
+-- block sits at which rn.
+--
+-- DENOMINATOR (TOOL-005, SEM2-286) — Sessions with ZERO failures must stay
+-- in the view as failure_count = 0 rows so that dataset-level rates ("% of
+-- sessions with a failure chain") compute against the full session
+-- population, not just sessions that already had at least one failure. The
+-- view is built bottom-up: `sessions_in_scope` is every session that had at
+-- least one evaluated tool call (success IS NOT NULL); `failures` aggregates
+-- only the failure streaks; a LEFT JOIN preserves the 0-failure sessions
+-- with COALESCEd zero values.
+--
+-- The gaps-and-islands pattern itself: subtract a ROW_NUMBER partitioned by
+-- success from the global ROW_NUMBER to group maximal consecutive runs of
+-- the same success value; the runs WHERE success = FALSE are the failure
+-- streaks. Per session this reports the longest failure streak and the
+-- count of failure streaks of length >= 2 / >= 3.
+--
+-- The dataset-level KPI (% of sessions with a streak >= 3) is computed by
+-- the ToolAnalyzer getFailureChains method / the /api/tools/failure-chains
+-- route, which re-implement this inline to support period/model/project
+-- filters; those callers carry the same fixes.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE VIEW v_session_failure_chains AS
 WITH ordered_tools AS (
     SELECT
         tc.session_id,
         tc.success,
-        ROW_NUMBER() OVER (PARTITION BY tc.session_id ORDER BY tc.tool_call_id) AS rn
+        ROW_NUMBER() OVER (
+            PARTITION BY tc.session_id
+            ORDER BY ct.timestamp, tc.tool_call_id
+        )                                                   AS rn
     FROM tool_calls tc
+    JOIN conversation_turns ct
+        ON ct.turn_id = tc.turn_id AND ct.session_id = tc.session_id
     WHERE tc.success IS NOT NULL
+),
+sessions_in_scope AS (
+    SELECT DISTINCT session_id FROM ordered_tools
 ),
 streak_groups AS (
     SELECT
@@ -494,15 +532,25 @@ failure_streaks AS (
     FROM streak_groups
     WHERE success = FALSE
     GROUP BY session_id, streak_group
+),
+failures AS (
+    SELECT
+        session_id,
+        COALESCE(MAX(streak_len), 0)                        AS max_failure_streak,
+        COUNT(*) FILTER (WHERE streak_len >= 2)             AS failure_chains_2plus,
+        COUNT(*) FILTER (WHERE streak_len >= 3)             AS failure_chains_3plus,
+        COALESCE(SUM(streak_len), 0)                        AS total_failed_in_chains
+    FROM failure_streaks
+    GROUP BY session_id
 )
 SELECT
-    session_id,
-    COALESCE(MAX(streak_len), 0)                            AS max_failure_streak,
-    COUNT(*) FILTER (WHERE streak_len >= 2)                 AS failure_chains_2plus,
-    COUNT(*) FILTER (WHERE streak_len >= 3)                 AS failure_chains_3plus,
-    COALESCE(SUM(streak_len), 0)                            AS total_failed_in_chains
-FROM failure_streaks
-GROUP BY session_id
+    s.session_id,
+    COALESCE(f.max_failure_streak, 0)                       AS max_failure_streak,
+    COALESCE(f.failure_chains_2plus, 0)                     AS failure_chains_2plus,
+    COALESCE(f.failure_chains_3plus, 0)                     AS failure_chains_3plus,
+    COALESCE(f.total_failed_in_chains, 0)                   AS total_failed_in_chains
+FROM sessions_in_scope s
+LEFT JOIN failures f USING (session_id)
 ORDER BY max_failure_streak DESC;
 
 -- ---------------------------------------------------------------------------

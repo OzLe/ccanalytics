@@ -263,13 +263,21 @@ export class ToolAnalyzer {
     range: TimeRange,
     minOccurrences: number = 3,
   ): Promise<ToolChain[]> {
+    // TOOL-002 (SEM2-283) / TOOL-004 (SEM2-285): chronological ordering.
+    // ROW_NUMBER must ORDER BY ct.timestamp — tc.tool_call_id is a random
+    // base62 string, NOT a chronological key, so ordering by it alone sorted
+    // adjacent rows essentially at random and ~halved the real chain counts
+    // (e.g. Bash->Bash->Bash showed 7,307 vs the real 13,656 occurrences).
+    // tc.tool_call_id remains as a stable, deterministic tiebreaker for
+    // parallel tool_use blocks within the same assistant turn that share an
+    // identical timestamp.
     const sql = `
       WITH ordered_tools AS (
         SELECT
           tc.session_id,
           tc.tool_name,
           tc.duration_ms,
-          ROW_NUMBER() OVER (PARTITION BY tc.session_id ORDER BY tc.tool_call_id) AS rn
+          ROW_NUMBER() OVER (PARTITION BY tc.session_id ORDER BY ct.timestamp, tc.tool_call_id) AS rn
         FROM tool_calls tc
         JOIN conversation_turns ct ON ct.turn_id = tc.turn_id AND ct.session_id = tc.session_id
         WHERE ct.timestamp >= $1 AND ct.timestamp < $2
@@ -411,12 +419,14 @@ export class ToolAnalyzer {
    * NEW-003: tool-failure chains / rework signal — consecutive runs of
    * success = FALSE tool calls within a session.
    *
-   * Within a session, tool_calls are ordered by tool_call_id (the same
-   * ordering proxy getToolChains uses). A gaps-and-islands window query finds
-   * maximal consecutive failure runs; per session it reports the longest
-   * streak and counts of streaks >= 2 and >= 3. The dataset KPI is the share
-   * of sessions (with evaluated tool calls) that contain a streak >= 3.
-   * Mirrors v_session_failure_chains; re-implemented inline for the
+   * Within a session, tool_calls are ordered by conversation_turns.timestamp
+   * (chronological), with tool_call_id as a stable tiebreaker for parallel
+   * tool_use blocks within the same assistant turn (see TOOL-004,
+   * SEM2-285). A gaps-and-islands window query finds maximal consecutive
+   * failure runs; per session it reports the longest streak and counts of
+   * streaks >= 2 and >= 3. The dataset KPI is the share of sessions (with
+   * evaluated tool calls) that contain a streak >= 3. Mirrors
+   * v_session_failure_chains; re-implemented inline for the
    * period/model/project filters.
    *
    * @param range - Time range to query
@@ -429,17 +439,24 @@ export class ToolAnalyzer {
     filters?: QueryFilters,
     topLimit: number = 20,
   ): Promise<FailureChainSummary> {
-    const f = buildTurnFilters(filters, 4);
+    // startIndex = 3: $1 = range.start, $2 = range.end, filters start at $3.
+    const f = buildTurnFilters(filters, 3);
     const filterClauses = f.clauses.map((c) =>
       c.replace(/\bAND model\b/, "AND ct.model").replace(/\bAND session_id\b/, "AND ct.session_id"),
     );
-    // Per-session chain stats: gaps-and-islands over tool_call_id ordering.
+    // Per-session chain stats: gaps-and-islands over chronological ordering.
+    // TOOL-003 (SEM2-284) / TOOL-004 (SEM2-285): the ORDER BY MUST use
+    // ct.timestamp (chronological) — tc.tool_call_id is a random base62
+    // string, so ordering by it produced essentially random adjacency and
+    // undercounted max_failure_streak (e.g. 6 vs the real 8). tc.tool_call_id
+    // remains as a stable tiebreaker for parallel tool_use blocks within the
+    // same assistant turn that share the same timestamp.
     const sql = `
       WITH ordered_tools AS (
         SELECT
           tc.session_id,
           tc.success,
-          ROW_NUMBER() OVER (PARTITION BY tc.session_id ORDER BY tc.tool_call_id) AS rn
+          ROW_NUMBER() OVER (PARTITION BY tc.session_id ORDER BY ct.timestamp, tc.tool_call_id) AS rn
         FROM tool_calls tc
         JOIN conversation_turns ct ON ct.turn_id = tc.turn_id AND ct.session_id = tc.session_id
         WHERE ct.timestamp >= $1 AND ct.timestamp < $2
@@ -479,13 +496,18 @@ export class ToolAnalyzer {
       FROM per_session
       ORDER BY max_failure_streak DESC, failure_chains_2plus DESC
     `;
+    // topLimit is applied in JS below (slice), not in SQL — the bind array
+    // therefore omits it. (Previously this slot was passed but the SQL never
+    // referenced $3, which only worked by accident when callers happened to
+    // supply non-empty filters and the param "shifted left" into the first
+    // filter slot. With empty filters the bind would fail.)
     const result = await this.executor.query<{
       session_id: string;
       max_failure_streak: number;
       failure_chains_2plus: number;
       failure_chains_3plus: number;
       total_failed_in_chains: number;
-    }>(sql, [range.start, range.end, topLimit, ...f.params]);
+    }>(sql, [range.start, range.end, ...f.params]);
 
     const rows: SessionFailureChainStats[] = result.rows.map((row) => ({
       sessionId: row.session_id,
