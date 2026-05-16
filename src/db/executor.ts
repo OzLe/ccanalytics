@@ -52,9 +52,22 @@ function bindParams(
 /**
  * Executes parameterized SQL queries against a DuckDB connection.
  * Uses prepared statements to prevent SQL injection.
+ *
+ * Concurrency: a single `DuckDBConnection` is not safe for concurrent
+ * `prepare → bind → run` cycles. Firing several `query()` calls in
+ * parallel against the same connection (e.g. via `Promise.all`) races
+ * on the underlying statement state and intermittently throws
+ * "Failed to execute prepared statement" — observed flakily on Linux
+ * Node 22 in CI and reproducible on macOS Node 22 (~2-4% of trials).
+ *
+ * To make concurrent callers safe, each `query()`/`run()` acquires a
+ * per-executor FIFO lock so prepared-statement work runs serially.
+ * Callers that need real parallelism should open separate connections.
  */
 export class QueryExecutor {
   private connection: DuckDBConnection;
+  /** FIFO mutex serializing prepared-statement work on `connection`. */
+  private queryLock: Promise<unknown> = Promise.resolve();
 
   /**
    * Create a QueryExecutor bound to a DuckDB connection.
@@ -62,6 +75,27 @@ export class QueryExecutor {
    */
   constructor(connection: unknown) {
     this.connection = connection as DuckDBConnection;
+  }
+
+  /**
+   * Run `fn` after any prior locked work completes, ensuring at most one
+   * prepared-statement cycle is in flight on `this.connection` at a time.
+   * Rejections of `fn` do not poison the lock — the next waiter still runs.
+   */
+  private async withLock<T>(fn: () => Promise<T>): Promise<T> {
+    const prev = this.queryLock;
+    let release!: () => void;
+    this.queryLock = new Promise<void>((r) => (release = r));
+    try {
+      await prev;
+    } catch {
+      // Prior holder failed; we still take the lock.
+    }
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
   }
 
   /**
@@ -73,17 +107,19 @@ export class QueryExecutor {
    */
   async run(sql: string, params?: unknown[]): Promise<void> {
     try {
-      if (params && params.length > 0) {
-        const stmt = await this.connection.prepare(sql);
-        try {
-          bindParams(stmt, params);
-          await stmt.run();
-        } finally {
-          stmt.destroySync();
+      await this.withLock(async () => {
+        if (params && params.length > 0) {
+          const stmt = await this.connection.prepare(sql);
+          try {
+            bindParams(stmt, params);
+            await stmt.run();
+          } finally {
+            stmt.destroySync();
+          }
+        } else {
+          await this.connection.run(sql);
         }
-      } else {
-        await this.connection.run(sql);
-      }
+      });
     } catch (err) {
       if (err instanceof QueryExecutionError) {
         throw err;
@@ -110,28 +146,30 @@ export class QueryExecutor {
   ): Promise<QueryResult<T>> {
     const start = performance.now();
     try {
-      let reader;
-      if (params && params.length > 0) {
-        const stmt = await this.connection.prepare(sql);
-        try {
-          bindParams(stmt, params);
-          reader = await stmt.runAndReadAll();
-        } finally {
-          stmt.destroySync();
+      return await this.withLock(async () => {
+        let reader;
+        if (params && params.length > 0) {
+          const stmt = await this.connection.prepare(sql);
+          try {
+            bindParams(stmt, params);
+            reader = await stmt.runAndReadAll();
+          } finally {
+            stmt.destroySync();
+          }
+        } else {
+          reader = await this.connection.runAndReadAll(sql);
         }
-      } else {
-        reader = await this.connection.runAndReadAll(sql);
-      }
 
-      const rows = reader.getRowObjectsJS() as T[];
-      const durationMs = performance.now() - start;
+        const rows = reader.getRowObjectsJS() as T[];
+        const durationMs = performance.now() - start;
 
-      return {
-        rows,
-        rowCount: reader.currentRowCount,
-        columnNames: reader.columnNames(),
-        durationMs,
-      };
+        return {
+          rows,
+          rowCount: reader.currentRowCount,
+          columnNames: reader.columnNames(),
+          durationMs,
+        };
+      });
     } catch (err) {
       if (err instanceof QueryExecutionError) {
         throw err;
