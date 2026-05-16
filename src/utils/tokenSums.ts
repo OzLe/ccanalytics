@@ -73,22 +73,27 @@ export interface TokenSumSql {
  * The expressions are deliberately plain string literals (not template-driven)
  * so they are easy to grep for and impossible to misconfigure at the call site.
  *
+ * @param alias - Optional table alias to prefix each column with (e.g. `"ct"`
+ *   yields `ct.input_tokens`). Pass `""` (the default) for the bare-column
+ *   form used by queries whose `FROM` clause has no alias on
+ *   `conversation_turns`. Matches the alias-prefix convention of
+ *   `costRowPredicateSql()` in `sqlPredicates.ts`.
  * @returns A frozen {@link TokenSumSql} record of SUM expressions.
  */
-export function buildTokenSumSql(): TokenSumSql {
+export function buildTokenSumSql(alias: string = ""): TokenSumSql {
+  const prefix = alias ? `${alias}.` : "";
   return Object.freeze({
     // Canonical headline — Anthropic-API style. The 2-way sum the cost
     // population reconciles against (TOK-001).
-    totalTokensSql: "COALESCE(SUM(input_tokens + output_tokens), 0)",
+    totalTokensSql: `COALESCE(SUM(${prefix}input_tokens + ${prefix}output_tokens), 0)`,
     // 4-way "context volume" — what the model processed including cache
     // replay. Kept and surfaced as a SECONDARY metric (TOK-002).
-    contextVolumeTokensSql:
-      "COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0)",
+    contextVolumeTokensSql: `COALESCE(SUM(${prefix}input_tokens + ${prefix}output_tokens + ${prefix}cache_creation_tokens + ${prefix}cache_read_tokens), 0)`,
     // Per-category SUMs — exported so any consumer (the In/Out subtitle,
     // the cache hit-rate route) reads them from the same single place.
-    inputTokensSql: "COALESCE(SUM(input_tokens), 0)",
-    outputTokensSql: "COALESCE(SUM(output_tokens), 0)",
-    cacheCreationTokensSql: "COALESCE(SUM(cache_creation_tokens), 0)",
-    cacheReadTokensSql: "COALESCE(SUM(cache_read_tokens), 0)",
+    inputTokensSql: `COALESCE(SUM(${prefix}input_tokens), 0)`,
+    outputTokensSql: `COALESCE(SUM(${prefix}output_tokens), 0)`,
+    cacheCreationTokensSql: `COALESCE(SUM(${prefix}cache_creation_tokens), 0)`,
+    cacheReadTokensSql: `COALESCE(SUM(${prefix}cache_read_tokens), 0)`,
   });
 }
