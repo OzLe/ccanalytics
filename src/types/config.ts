@@ -29,6 +29,20 @@ export interface SubscriptionConfig {
   monthlyUSD: number;
 }
 
+/**
+ * Display preferences. Affects how time math (hour-of-day, day-of-week,
+ * local-date, date-truncation) is projected onto the user's wall clock. Stored
+ * timestamps are tz-naive UTC wall-clock (see ACT-001 / SEM2-293).
+ */
+export interface DisplayConfig {
+  /**
+   * IANA timezone the dashboard/CLI should project local-time math into. Empty
+   * or absent falls back to `'UTC'`. Examples: 'UTC', 'Asia/Jerusalem',
+   * 'America/New_York'.
+   */
+  userTimezone?: string;
+}
+
 /** Top-level configuration for ccanalytics. */
 export interface CCAnalyticsConfig {
   /** Path to DuckDB database file. Default: ~/.ccanalytics/analytics.duckdb */
@@ -51,6 +65,8 @@ export interface CCAnalyticsConfig {
   database: DatabaseConfig;
   /** User's Claude subscription plan, for cost-vs-subscription ROI framing. */
   subscription: SubscriptionConfig;
+  /** Display / projection preferences (user timezone, etc.). */
+  display?: DisplayConfig;
 }
 
 /** Configuration for the ingestion pipeline. */
