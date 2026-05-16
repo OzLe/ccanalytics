@@ -23,6 +23,7 @@ import {
   closeTestDB,
   seedTestData,
   seedSkillData,
+  SKILL_DESC,
   type TestDB,
 } from "../helpers/db-setup.js";
 import { QueryExecutor } from "../../src/db/executor.js";
@@ -32,6 +33,7 @@ import {
   LOADED_CONTEXT_SHARE_THRESHOLD,
   SKILL_THRASH_MIN,
   FLAT_SKILL_TOKEN_ESTIMATE,
+  estimateSkillTokens,
 } from "../../src/queries/skill-thresholds.js";
 import type { TimeRange } from "../../src/types/index.js";
 
@@ -172,15 +174,40 @@ describe("SkillAnalyzer", () => {
       expect(byName["skill-beta"].invocations).toBe(2);
     });
 
-    it("estimates context tokens with the flat per-skill model (D10)", async () => {
+    it("estimates context tokens with the per-skill description-length model (SEM2-287)", async () => {
+      // Fixture descriptions are padded to known lengths so each skill has a
+      // round per-skill estimate: alpha=50, beta=60, ghost=40, orphan=30.
+      const expectedTokens: Record<string, number> = {
+        "skill-alpha": estimateSkillTokens(SKILL_DESC.alpha), // 50
+        "skill-beta": estimateSkillTokens(SKILL_DESC.beta), // 60
+        "skill-ghost": estimateSkillTokens(SKILL_DESC.ghost), // 40
+        "skill-orphan": estimateSkillTokens(SKILL_DESC.orphan), // 30
+      };
       const rows = await analyzer.getLoadedSkills(testRange);
       for (const row of rows) {
         expect(row.estContextTokens).toBe(
-          row.loadedInSessions * FLAT_SKILL_TOKEN_ESTIMATE,
+          row.loadedInSessions * expectedTokens[row.skill],
         );
       }
       const alpha = rows.find((r) => r.skill === "skill-alpha")!;
+      // loaded in 2 sessions × 50 tokens = 100
+      expect(alpha.estContextTokens).toBe(
+        2 * estimateSkillTokens(SKILL_DESC.alpha),
+      );
+      expect(alpha.estContextTokens).toBe(100);
+    });
+
+    it("falls back to FLAT_SKILL_TOKEN_ESTIMATE when skill_description is NULL (SEM2-287)", async () => {
+      // Wipe skill-alpha's description on both its loaded rows → ANY_VALUE
+      // in the loaded CTE returns NULL → JS helper returns the flat 45.
+      await db.connection.run(
+        `UPDATE session_skills SET skill_description = NULL WHERE skill_name = 'skill-alpha'`,
+      );
+      const rows = await analyzer.getLoadedSkills(testRange);
+      const alpha = rows.find((r) => r.skill === "skill-alpha")!;
+      // loaded in 2 sessions × 45 fallback = 90
       expect(alpha.estContextTokens).toBe(2 * FLAT_SKILL_TOKEN_ESTIMATE);
+      expect(alpha.estContextTokens).toBe(90);
     });
 
     it("scopes both loaded and invoked sides to the filtered period sessions", async () => {
@@ -237,10 +264,24 @@ describe("SkillAnalyzer", () => {
       expect(s.deadWeightRatio).toBeCloseTo(2 / 4, 10); // deadWeight / distinctLoaded
     });
 
-    it("computes loadedContextShare from the flat token estimate over the context proxy", async () => {
+    it("computes loadedContextShare from the per-skill length-based estimate over the context proxy (SEM2-287)", async () => {
       const s = await analyzer.getSkillSummary(testRange);
-      // avgSkillsLoadedPerSession (2) * FLAT_SKILL_TOKEN_ESTIMATE (45) = 90.
-      expect(s.avgLoadedSkillTokens).toBe(2 * FLAT_SKILL_TOKEN_ESTIMATE);
+      // SEM2-287: per-session SUM of CEIL(LEN(desc)/4) — each skill's
+      // description has a fixed length so the per-skill token count is
+      // deterministic (alpha=50, beta=60, ghost=40, orphan=30):
+      //   sess-001: alpha(50) + beta(60)          = 110
+      //   sess-002: ghost(40)                     =  40
+      //   sess-003: alpha(50) + ghost(40) + orphan(30) = 120
+      //   AVG = (110 + 40 + 120) / 3              =  90
+      const sumA = estimateSkillTokens(SKILL_DESC.alpha) +
+        estimateSkillTokens(SKILL_DESC.beta);
+      const sumB = estimateSkillTokens(SKILL_DESC.ghost);
+      const sumC = estimateSkillTokens(SKILL_DESC.alpha) +
+        estimateSkillTokens(SKILL_DESC.ghost) +
+        estimateSkillTokens(SKILL_DESC.orphan);
+      const expectedAvg = (sumA + sumB + sumC) / 3; // 90
+      expect(s.avgLoadedSkillTokens).toBeCloseTo(expectedAvg, 10);
+      expect(s.avgLoadedSkillTokens).toBe(90);
       // Context proxy = AVG over the 5 base assistant turns of
       // (input + cache_read + cache_creation): (700+800+2600+1100+1900)/5 = 1420.
       expect(s.avgSessionContextTokens).toBeCloseTo(1420, 6);
@@ -272,8 +313,9 @@ describe("SkillAnalyzer", () => {
       const s = await analyzer.getSkillSummary(testRange);
       expect(s.deadWeightSkills).toBe(0);
       expect(s.deadWeightRatio).toBe(0);
-      // 1 skill loaded in 1 session → avgLoaded 1 → 45 tokens over a ~1420
-      // context proxy ≈ 3.2%, under the 5% threshold.
+      // SEM2-287: skill-alpha (200-char description → 50 tokens) loaded in
+      // 1 session → avgLoadedSkillTokens ≈ 50 over a ~1420 context proxy
+      // ≈ 3.5%, under the 5% threshold.
       expect(s.loadedContextShare!).toBeLessThan(LOADED_CONTEXT_SHARE_THRESHOLD);
       expect(s.tooManySkillsActive).toBe(false);
       expect(s.tooManyReasons).toEqual([]);
@@ -460,6 +502,100 @@ describe("SkillAnalyzer", () => {
       };
       const points = await analyzer.getSkillTrend(futureRange, "day");
       expect(points).toEqual([]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // v_skill_loaded — the SQL view's per-skill est_context_tokens column.
+  //
+  // SEM2-287: the view's est_context_tokens column was a flat
+  // `loaded_in_sessions * 45` and is now
+  // `loaded_in_sessions * COALESCE(CEIL(LENGTH(skill_description)/4.0), 45)`.
+  // These tests assert the SQL behaviour directly so the SQL spec and the
+  // TS analyzer (`SkillAnalyzer.getLoadedSkills`) can never silently drift.
+  // -------------------------------------------------------------------------
+  describe("v_skill_loaded view (SEM2-287)", () => {
+    async function readView(): Promise<
+      Array<{
+        skill: string;
+        loaded_in_sessions: number;
+        est_context_tokens: number;
+        invocations: number;
+        is_dead_weight: boolean;
+      }>
+    > {
+      const reader = await db.connection.runAndReadAll(
+        `SELECT skill, loaded_in_sessions, est_context_tokens, invocations, is_dead_weight
+         FROM v_skill_loaded ORDER BY skill ASC`,
+      );
+      return (reader.getRowObjectsJS() as Array<Record<string, unknown>>).map(
+        (r) => ({
+          skill: String(r.skill),
+          loaded_in_sessions: Number(r.loaded_in_sessions),
+          est_context_tokens: Number(r.est_context_tokens),
+          invocations: Number(r.invocations),
+          is_dead_weight: Boolean(r.is_dead_weight),
+        }),
+      );
+    }
+
+    it("computes est_context_tokens as loaded_in_sessions × CEIL(LENGTH(description)/4)", async () => {
+      const rows = await readView();
+      const byName = Object.fromEntries(rows.map((r) => [r.skill, r]));
+      // Fixture descriptions are exact-length: alpha=50, beta=60, ghost=40,
+      // orphan=30 tokens per skill. Loaded-session counts come from the
+      // fixture: alpha=2, beta=1, ghost=2, orphan=1.
+      expect(byName["skill-alpha"].loaded_in_sessions).toBe(2);
+      expect(byName["skill-alpha"].est_context_tokens).toBe(
+        2 * estimateSkillTokens(SKILL_DESC.alpha),
+      );
+      expect(byName["skill-alpha"].est_context_tokens).toBe(100);
+
+      expect(byName["skill-beta"].loaded_in_sessions).toBe(1);
+      expect(byName["skill-beta"].est_context_tokens).toBe(
+        1 * estimateSkillTokens(SKILL_DESC.beta),
+      );
+      expect(byName["skill-beta"].est_context_tokens).toBe(60);
+
+      expect(byName["skill-ghost"].loaded_in_sessions).toBe(2);
+      expect(byName["skill-ghost"].est_context_tokens).toBe(
+        2 * estimateSkillTokens(SKILL_DESC.ghost),
+      );
+      expect(byName["skill-ghost"].est_context_tokens).toBe(80);
+
+      expect(byName["skill-orphan"].loaded_in_sessions).toBe(1);
+      expect(byName["skill-orphan"].est_context_tokens).toBe(
+        1 * estimateSkillTokens(SKILL_DESC.orphan),
+      );
+      expect(byName["skill-orphan"].est_context_tokens).toBe(30);
+    });
+
+    it("falls back to 45 per loading when skill_description is NULL", async () => {
+      // Wipe the description on every row of skill-orphan → ANY_VALUE in
+      // the loaded CTE returns NULL → COALESCE(..., 45) kicks in. The
+      // multiplier stays at the loaded_in_sessions count (1).
+      await db.connection.run(
+        `UPDATE session_skills SET skill_description = NULL WHERE skill_name = 'skill-orphan'`,
+      );
+      const rows = await readView();
+      const orphan = rows.find((r) => r.skill === "skill-orphan")!;
+      expect(orphan.loaded_in_sessions).toBe(1);
+      expect(orphan.est_context_tokens).toBe(1 * FLAT_SKILL_TOKEN_ESTIMATE);
+      expect(orphan.est_context_tokens).toBe(45);
+    });
+
+    it("returns an INTEGER (not a fractional) est_context_tokens column", async () => {
+      // The view CASTs to INTEGER so downstream readers can treat it as a
+      // count. Use a description whose LENGTH/4 is non-integer to exercise
+      // both the CEIL and the cast.
+      await db.connection.run(
+        `UPDATE session_skills SET skill_description = 'abcde' WHERE skill_name = 'skill-orphan'`,
+      );
+      const rows = await readView();
+      const orphan = rows.find((r) => r.skill === "skill-orphan")!;
+      // CEIL(5/4) = 2; loaded_in_sessions = 1 → est_context_tokens = 2.
+      expect(orphan.est_context_tokens).toBe(2);
+      expect(Number.isInteger(orphan.est_context_tokens)).toBe(true);
     });
   });
 });

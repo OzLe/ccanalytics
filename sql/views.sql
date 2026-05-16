@@ -570,9 +570,14 @@ FULL OUTER JOIN invoked i
 --                    CTE (the Chunk-A DuckDB gotcha: a JSON predicate feeding a
 --                    join/group can drop the tool_name filter — extract first,
 --                    aggregate second).
---   - est_context_tokens : loaded_in_sessions * 45, the flat per-skill estimate
---                    (D10 — F2D ships no precise description_tokens column;
---                    every token figure derived from it is "estimated").
+--   - est_context_tokens : loaded_in_sessions * COALESCE(CEIL(LENGTH(skill_description)/4.0), 45)
+--                    — the per-skill estimate derived from the parsed
+--                    description's character length (4 chars/token heuristic),
+--                    falling back to the flat 45 when the description is NULL
+--                    or empty. The flat constant systematically understated
+--                    real descriptions by ~45%; SEM2-287 swapped the flat
+--                    formula for the length-based one across SQL + TS
+--                    surfaces. Still "estimated", just less wrong.
 --   - is_dead_weight : loaded but with zero invocations (§4.3 row rule).
 -- When the loaded-skill KPI definition changes, update BOTH the inline SQL and
 -- this view so they cannot drift (KPI-009 / sql/views.sql header contract).
@@ -581,7 +586,13 @@ CREATE OR REPLACE VIEW v_skill_loaded AS
 WITH loaded AS (
     SELECT
         sl.skill_name                                       AS skill,
-        COUNT(DISTINCT sl.session_id)                       AS loaded_in_sessions
+        COUNT(DISTINCT sl.session_id)                       AS loaded_in_sessions,
+        -- SEM2-287: pick a representative description per skill_name so the
+        -- est_context_tokens expression can compute CEIL(LEN/4) without
+        -- expanding the GROUP BY grain. ANY_VALUE keeps the aggregate on a
+        -- single row per skill_name — descriptions for the same skill are
+        -- expected to be stable across loadings.
+        ANY_VALUE(sl.skill_description)                     AS skill_description
     FROM session_skills sl
     GROUP BY sl.skill_name
 ),
@@ -596,7 +607,13 @@ inv AS (
 SELECT
     l.skill,
     l.loaded_in_sessions,
-    l.loaded_in_sessions * 45                               AS est_context_tokens,
+    -- SEM2-287: COALESCE(CEIL(LEN/4.0), 45) per-skill estimate × loadings.
+    -- The flat 45 stays as the NULL/empty fallback for parity with the TS
+    -- helper estimateSkillTokens(); CAST to INTEGER preserves the column
+    -- type the existing view contract advertises.
+    (l.loaded_in_sessions
+        * COALESCE(CEIL(LENGTH(l.skill_description) / 4.0), 45))::INTEGER
+                                                            AS est_context_tokens,
     COALESCE(i.invocations, 0)                              AS invocations,
     (COALESCE(i.invocations, 0) = 0)                        AS is_dead_weight
 FROM loaded l

@@ -38,7 +38,7 @@ import {
   DEAD_WEIGHT_RATIO_THRESHOLD,
   LOADED_CONTEXT_SHARE_THRESHOLD,
   SKILL_THRASH_MIN,
-  FLAT_SKILL_TOKEN_ESTIMATE,
+  estimateSkillTokens,
   isKnownReentrantSkill,
 } from "../../lib/skillThresholds.js";
 
@@ -80,10 +80,18 @@ router.get("/summary", async (req, res, next) => {
           ${f.clauses.join("\n          ")}`;
 
     // 1. LOADED side: distinct skills loaded + per-session loaded counts.
+    // SEM2-287: also sum the per-skill description-length estimate per session
+    // (`COALESCE(CEIL(LENGTH(skill_description)/4.0), 45)` — same expression
+    // as v_skill_loaded and estimateSkillTokens()) so the period-level
+    // avgLoadedSkillTokens reflects real descriptions, not the flat 45.
     const loadedSql = `
       WITH period_sessions AS (${periodSessions}),
       per_session AS (
-        SELECT sl.session_id, COUNT(DISTINCT sl.skill_name) AS loaded_count
+        SELECT
+          sl.session_id,
+          COUNT(DISTINCT sl.skill_name) AS loaded_count,
+          SUM(COALESCE(CEIL(LENGTH(sl.skill_description) / 4.0), 45))
+            AS est_skill_tokens
         FROM session_skills sl
         WHERE sl.session_id IN (SELECT session_id FROM period_sessions)
         GROUP BY sl.session_id
@@ -91,6 +99,7 @@ router.get("/summary", async (req, res, next) => {
       SELECT
         COALESCE(AVG(loaded_count), 0) AS avg_loaded,
         COALESCE(MAX(loaded_count), 0) AS max_loaded,
+        COALESCE(AVG(est_skill_tokens), 0) AS avg_est_skill_tokens,
         (
           SELECT COUNT(DISTINCT sl.skill_name)
           FROM session_skills sl
@@ -168,6 +177,9 @@ router.get("/summary", async (req, res, next) => {
 
     const avgSkillsLoadedPerSession = Number(lRow?.avg_loaded ?? 0);
     const maxSkillsLoadedPerSession = Number(lRow?.max_loaded ?? 0);
+    // SEM2-287: per-session AVG of SUM(per-skill estimate). Falls back to the
+    // flat 45 per-skill when descriptions are null/empty.
+    const avgLoadedSkillTokensRaw = Number(lRow?.avg_est_skill_tokens ?? 0);
     const distinctSkillsLoaded = Number(lRow?.distinct_loaded ?? 0);
     const distinctSkillsInvoked = Number(iRow?.distinct_invoked ?? 0);
     const totalInvocations = Number(iRow?.total_invocations ?? 0);
@@ -187,9 +199,11 @@ router.get("/summary", async (req, res, next) => {
     const deadWeightRatio =
       distinctSkillsLoaded > 0 ? deadWeightSkills / distinctSkillsLoaded : null;
 
-    // D10: flat per-skill estimate for the avg context tokens spent on skills.
-    const avgLoadedSkillTokens =
-      avgSkillsLoadedPerSession * FLAT_SKILL_TOKEN_ESTIMATE;
+    // SEM2-287: avg per-session sum of per-skill description-length estimates
+    // (falling back to FLAT_SKILL_TOKEN_ESTIMATE when a description is null/
+    // empty). Replaces the old flat `avgSkillsLoadedPerSession * 45` model
+    // that systematically understated real descriptions by ~45%.
+    const avgLoadedSkillTokens = avgLoadedSkillTokensRaw;
     const loadedContextShare =
       avgSessionContextTokens > 0
         ? avgLoadedSkillTokens / avgSessionContextTokens
@@ -213,7 +227,7 @@ router.get("/summary", async (req, res, next) => {
     ) {
       tooManyReasons.push(
         `Skill descriptions account for ~${(loadedContextShare * 100).toFixed(1)}% of average session context ` +
-          `(> ${(LOADED_CONTEXT_SHARE_THRESHOLD * 100).toFixed(0)}% threshold, estimated flat model).`,
+          `(> ${(LOADED_CONTEXT_SHARE_THRESHOLD * 100).toFixed(0)}% threshold, length-based estimate).`,
       );
     }
 
@@ -246,7 +260,7 @@ router.get("/summary", async (req, res, next) => {
 /**
  * GET /api/skills/loaded
  *
- * Every loaded skill with `estContextTokens` (flat model, D10),
+ * Every loaded skill with `estContextTokens` (length-based, SEM2-287),
  * `loadedInSessions`, `invocations`, and `isDeadWeight`. Powers the
  * "Loaded Skills by Context Weight" table. `session_skills` is scoped to the
  * period sessions. Mirrors `v_skill_loaded` and `SkillAnalyzer.getLoadedSkills`.
@@ -265,12 +279,17 @@ router.get("/loaded", async (req, res, next) => {
         WHERE timestamp >= $1 AND timestamp < $2
           ${f.clauses.join("\n          ")}`;
 
+    // SEM2-287: surface a representative skill_description per skill so
+    // estContextTokens uses the length-based estimate, falling back to
+    // FLAT_SKILL_TOKEN_ESTIMATE (45) for null/empty descriptions. Mirrors
+    // v_skill_loaded and SkillAnalyzer.getLoadedSkills.
     const sql = `
       WITH period_sessions AS (${periodSessions}),
       loaded AS (
         SELECT
           sl.skill_name AS skill,
-          COUNT(DISTINCT sl.session_id) AS loaded_in_sessions
+          COUNT(DISTINCT sl.session_id) AS loaded_in_sessions,
+          ANY_VALUE(sl.skill_description) AS skill_description
         FROM session_skills sl
         WHERE sl.session_id IN (SELECT session_id FROM period_sessions)
         GROUP BY sl.skill_name
@@ -287,6 +306,7 @@ router.get("/loaded", async (req, res, next) => {
       SELECT
         l.skill,
         l.loaded_in_sessions,
+        l.skill_description,
         COALESCE(i.invocations, 0) AS invocations
       FROM loaded l
       LEFT JOIN inv i ON i.skill = l.skill
@@ -298,11 +318,15 @@ router.get("/loaded", async (req, res, next) => {
     const rows = result.rows.map((row: Record<string, unknown>) => {
       const loadedInSessions = Number(row.loaded_in_sessions);
       const invocations = Number(row.invocations);
+      // SEM2-287: per-skill description-length estimate × loadings; falls
+      // back to FLAT_SKILL_TOKEN_ESTIMATE when the description is null/empty.
+      const perSkillEstimate = estimateSkillTokens(
+        row.skill_description as string | null,
+      );
       return {
         skill: row.skill as string,
         loadedInSessions,
-        // D10: flat per-skill estimate — "estimated (flat model)".
-        estContextTokens: loadedInSessions * FLAT_SKILL_TOKEN_ESTIMATE,
+        estContextTokens: loadedInSessions * perSkillEstimate,
         invocations,
         // §4.3: loaded in the period AND not invoked in the period.
         isDeadWeight: invocations === 0,
