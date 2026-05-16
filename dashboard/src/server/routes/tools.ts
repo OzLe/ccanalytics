@@ -321,8 +321,10 @@ router.get("/failure-trend", async (req, res, next) => {
  *
  * NEW-003: tool-failure chains / rework signal — consecutive runs of
  * success = FALSE tool calls within a session, found with a gaps-and-islands
- * window query over tool_call_id ordering. Returns a dataset summary plus the
- * worst-offender sessions. Mirrors v_session_failure_chains and
+ * window query over chronological (ct.timestamp) ordering, with
+ * tc.tool_call_id as a stable tiebreaker for parallel tool_use blocks within
+ * the same assistant turn (TOOL-004, SEM2-285). Returns a dataset summary
+ * plus the worst-offender sessions. Mirrors v_session_failure_chains and
  * ToolAnalyzer.getFailureChains.
  *
  * Query params: ?period=7d&model=X&project=Y&limit=20
@@ -336,12 +338,17 @@ router.get("/failure-chains", async (req, res, next) => {
       c.replace(/\bAND model\b/, "AND ct.model").replace(/\bAND session_id\b/, "AND ct.session_id"),
     );
 
+    // TOOL-003 (SEM2-284) / TOOL-004 (SEM2-285): see tool-analyzer.ts
+    // getFailureChains for the full explanation. Chronological ordering must
+    // use ct.timestamp; tc.tool_call_id is a random base62 string and is
+    // retained only as a stable tiebreaker for parallel tool_use blocks
+    // within the same assistant turn.
     const sql = `
       WITH ordered_tools AS (
         SELECT
           tc.session_id,
           tc.success,
-          ROW_NUMBER() OVER (PARTITION BY tc.session_id ORDER BY tc.tool_call_id) AS rn
+          ROW_NUMBER() OVER (PARTITION BY tc.session_id ORDER BY ct.timestamp, tc.tool_call_id) AS rn
         FROM tool_calls tc
         JOIN conversation_turns ct ON ct.turn_id = tc.turn_id AND ct.session_id = tc.session_id
         WHERE ct.timestamp >= $1 AND ct.timestamp < $2
@@ -435,13 +442,18 @@ router.get("/chains", async (req, res, next) => {
     const filters = parseFilters(req);
     const minOccurrences = Math.max(parseInt(req.query.minOccurrences as string) || 3, 1);
 
+    // TOOL-002 (SEM2-283) / TOOL-004 (SEM2-285): see tool-analyzer.ts
+    // getToolChains for the full explanation. Chronological ordering must
+    // use ct.timestamp; tc.tool_call_id is a random base62 string and is
+    // retained only as a stable tiebreaker for parallel tool_use blocks
+    // within the same assistant turn.
     const sql = `
       WITH ordered_tools AS (
         SELECT
           tc.session_id,
           tc.tool_name,
           tc.duration_ms,
-          ROW_NUMBER() OVER (PARTITION BY tc.session_id ORDER BY tc.tool_call_id) AS rn
+          ROW_NUMBER() OVER (PARTITION BY tc.session_id ORDER BY ct.timestamp, tc.tool_call_id) AS rn
         FROM tool_calls tc
         JOIN conversation_turns ct ON ct.turn_id = tc.turn_id AND ct.session_id = tc.session_id
         WHERE ct.timestamp >= $1 AND ct.timestamp < $2
