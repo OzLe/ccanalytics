@@ -46,6 +46,18 @@ export class PromptAnalyzer {
    * Build dynamic WHERE clauses from PromptFilterOptions, translating them
    * into the QueryFilters shape expected by buildTurnFilters.
    *
+   * SEM2-292 (F3-prompt): prompts pair a user turn with its assistant
+   * response(s). The shared filter-builder applies `AND model LIKE '%X%'`
+   * directly against `conversation_turns`; user turns have `model IS NULL`,
+   * and `NULL LIKE ...` evaluates to NULL (not TRUE), so the strict form
+   * silently drops every user turn — which makes `?model=opus` return zero
+   * prompts. Here (and ONLY here, because the assistant pass of the join
+   * still constrains the response side correctly) we rewrite the model
+   * clause to let user rows through with `(role = 'user' OR model LIKE …)`.
+   * The strict form is preserved everywhere else (skill-analyzer's distinct
+   * counts, cost / cache aggregations, etc.) where letting user rows
+   * through would over-count.
+   *
    * Returns { clauses, params, startIndex } for composing into SQL.
    */
   private buildFilters(options?: PromptFilterOptions, startIndex: number = 1) {
@@ -53,7 +65,15 @@ export class PromptAnalyzer {
       options?.model || options?.project
         ? { model: options.model, project: options.project }
         : undefined;
-    return buildTurnFilters(filters, startIndex);
+    const result = buildTurnFilters(filters, startIndex);
+    return {
+      ...result,
+      clauses: result.clauses.map((clause) =>
+        clause.startsWith("AND model LIKE")
+          ? `AND (role = 'user' OR ${clause.slice(4)})`
+          : clause,
+      ),
+    };
   }
 
   /**
