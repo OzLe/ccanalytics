@@ -28,6 +28,7 @@ import type {
 import type { QueryExecutor } from "../db/executor.js";
 import { buildTurnFilters } from "./filter-builder.js";
 import { getPricing } from "../utils/pricing.js";
+import { resolveTimezone, wrapTimestampForTz } from "../utils/timezone.js";
 
 /** Cache metrics for a single session. */
 export interface SessionCacheMetrics {
@@ -142,11 +143,14 @@ export class CacheAnalyzer {
     _bucket?: TimeBucket,
     filters?: QueryFilters,
   ): Promise<CacheEfficiencyTrend[]> {
-    const f = buildTurnFilters(filters, 3);
+    // ACT-001: per-day buckets follow the user's local midnight.
+    const userTimezone = resolveTimezone(filters?.userTimezone);
+    const f = buildTurnFilters(filters, 4);
+    const localDate = `CAST(${wrapTimestampForTz("timestamp", "$3")} AS DATE)`;
     // Query conversation_turns directly (instead of the view) to support filters
     const sql = `
       SELECT
-        CAST(timestamp AS DATE) AS date,
+        ${localDate} AS date,
         CASE
           WHEN (SUM(cache_read_tokens) + SUM(cache_creation_tokens) + SUM(input_tokens)) > 0
           THEN SUM(cache_read_tokens)::DOUBLE /
@@ -159,7 +163,7 @@ export class CacheAnalyzer {
       WHERE role = 'assistant'
         AND timestamp >= $1 AND timestamp < $2
         ${f.clauses.join("\n        ")}
-      GROUP BY CAST(timestamp AS DATE)
+      GROUP BY ${localDate}
       ORDER BY date ASC
     `;
     const result = await this.executor.query<{
@@ -167,7 +171,7 @@ export class CacheAnalyzer {
       cache_hit_rate: number;
       cache_read_tokens: number;
       cache_write_tokens: number;
-    }>(sql, [range.start, range.end, ...f.params]);
+    }>(sql, [range.start, range.end, userTimezone, ...f.params]);
 
     return result.rows.map((row) => ({
       timestamp: new Date(row.date),

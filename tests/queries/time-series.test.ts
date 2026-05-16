@@ -2,6 +2,12 @@
  * @module tests/queries/time-series
  *
  * Integration tests for the TimeSeriesAnalyzer class.
+ *
+ * The ACT-001 / SEM2-293 suite (`describe("timezone projection (ACT-001)")`)
+ * is the load-bearing one: it asserts that the same row lands in different
+ * hour-of-day / DOW / local-date buckets depending on the resolved
+ * `userTimezone`, plus the cardinality invariant (the number of turns is
+ * partition-shifted, not lost) and DST boundary behaviour.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -93,6 +99,200 @@ describe("TimeSeriesAnalyzer", () => {
       const futureRange: TimeRange = { start: new Date("2030-01-01"), end: new Date("2030-01-02") };
       const results = await analyzer.getActivityHeatmap(futureRange);
       expect(results).toEqual([]);
+    });
+  });
+
+  describe("timezone projection (ACT-001)", () => {
+    /**
+     * Reset the DB and seed only the rows under test — keeps the asserts
+     * single-row clean, since the baseline `seedTestData` set already has
+     * unrelated assistant turns that would muddy hour/DOW counts.
+     */
+    async function reseedEmpty(): Promise<void> {
+      await closeTestDB(db);
+      db = await createTestDB();
+      executor = new QueryExecutor(db.connection);
+      analyzer = new TimeSeriesAnalyzer(executor);
+    }
+
+    async function insertTurn(
+      turnId: string,
+      sessionId: string,
+      isoZ: string,
+      model = "claude-sonnet-4-5",
+    ): Promise<void> {
+      // session row first (FK is implicit by query joins, but the analyzer
+      // uses session_id COUNT DISTINCT and view JOINs reach for sessions).
+      await db.connection.run(`
+        INSERT INTO sessions (session_id, start_time, end_time, duration_seconds, model,
+          input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+          total_cost_usd, num_turns, num_tool_calls, project_path)
+        VALUES ('${sessionId}', '${isoZ}', '${isoZ}', 1, '${model}', 100, 50, 0, 0, 0.01, 1, 0, '/p')
+        ON CONFLICT DO NOTHING
+      `);
+      await db.connection.run(`
+        INSERT INTO conversation_turns (turn_id, session_id, role, timestamp,
+          input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+          cost_usd, model, stop_reason, request_id, has_tool_use, has_thinking)
+        VALUES ('${turnId}', '${sessionId}', 'assistant', '${isoZ}',
+          100, 50, 0, 0, 0.01, '${model}', 'end_turn', 'req-${turnId}', FALSE, FALSE)
+      `);
+    }
+
+    it("Israel-tz hour boundary: 22:30Z (2026-05-13) → hour 1 / date 2026-05-14 for Asia/Jerusalem; hour 22 / date 2026-05-13 for UTC", async () => {
+      await reseedEmpty();
+      await insertTurn("t-il-boundary", "sess-il", "2026-05-13T22:30:00.000Z");
+
+      const range: TimeRange = {
+        start: new Date("2026-05-13T00:00:00Z"),
+        end: new Date("2026-05-15T00:00:00Z"),
+      };
+
+      const hourlyIL = await analyzer.getHourlyActivity(range, {
+        userTimezone: "Asia/Jerusalem",
+      });
+      expect(hourlyIL).toHaveLength(1);
+      expect(hourlyIL[0]?.hourOfDay).toBe(1);
+      expect(hourlyIL[0]?.messageCount).toBe(1);
+
+      const hourlyUTC = await analyzer.getHourlyActivity(range, {
+        userTimezone: "UTC",
+      });
+      expect(hourlyUTC).toHaveLength(1);
+      expect(hourlyUTC[0]?.hourOfDay).toBe(22);
+
+      const dailyIL = await analyzer.getDailyActivity(range, {
+        userTimezone: "Asia/Jerusalem",
+      });
+      expect(dailyIL).toHaveLength(1);
+      expect(dailyIL[0]?.timestamp.toISOString().slice(0, 10)).toBe("2026-05-14");
+
+      const dailyUTC = await analyzer.getDailyActivity(range, {
+        userTimezone: "UTC",
+      });
+      expect(dailyUTC[0]?.timestamp.toISOString().slice(0, 10)).toBe("2026-05-13");
+    });
+
+    it("heatmap: 22:30Z Wednesday → Thursday (DOW=4) hour 1 in Asia/Jerusalem; Wednesday (DOW=3) hour 22 in UTC", async () => {
+      await reseedEmpty();
+      // 2026-05-13 is a Wednesday → DOW 3 in UTC; 2026-05-14 in Israel is Thursday → DOW 4.
+      await insertTurn("t-il-dow", "sess-il-dow", "2026-05-13T22:30:00.000Z");
+
+      const range: TimeRange = {
+        start: new Date("2026-05-13T00:00:00Z"),
+        end: new Date("2026-05-15T00:00:00Z"),
+      };
+
+      const heatmapIL = await analyzer.getActivityHeatmap(range, {
+        userTimezone: "Asia/Jerusalem",
+      });
+      expect(heatmapIL).toHaveLength(1);
+      expect(heatmapIL[0]?.dayOfWeek).toBe(4); // Thursday
+      expect(heatmapIL[0]?.hourOfDay).toBe(1);
+
+      const heatmapUTC = await analyzer.getActivityHeatmap(range, {
+        userTimezone: "UTC",
+      });
+      expect(heatmapUTC[0]?.dayOfWeek).toBe(3); // Wednesday
+      expect(heatmapUTC[0]?.hourOfDay).toBe(22);
+    });
+
+    it("DST spring-forward (Israel 2026-03-27 transition): a turn at 02:30Z lands at local hour 5 (post-transition)", async () => {
+      await reseedEmpty();
+      // Israel 2026 spring-forward: Fri 2026-03-27 at 02:00 IST (UTC+2)
+      // → 03:00 IDT (UTC+3). A turn at 02:30Z falls after the transition
+      // and should map to 02:30 + 3 = 05:30 local → hour 5.
+      await insertTurn("t-dst-spring", "sess-dst-spring", "2026-03-27T02:30:00.000Z");
+
+      const range: TimeRange = {
+        start: new Date("2026-03-26T00:00:00Z"),
+        end: new Date("2026-03-28T00:00:00Z"),
+      };
+      const hourly = await analyzer.getHourlyActivity(range, {
+        userTimezone: "Asia/Jerusalem",
+      });
+      expect(hourly).toHaveLength(1);
+      expect(hourly[0]?.hourOfDay).toBe(5);
+    });
+
+    it("DST fall-back (Israel 2026-10-25 transition): two turns straddling the boundary land in distinct local hours", async () => {
+      await reseedEmpty();
+      // Israel 2026 fall-back happens at 23:00Z on 2026-10-24 (= 02:00 IDT
+      // → 01:00 IST). Both fixture timestamps are AFTER the transition, so
+      // both are evaluated at UTC+2:
+      //   22:00Z (10-24) → 01:00 IDT (still DST, last DST hour) → hour 1
+      //   00:30Z (10-25) → 02:30 IST (post-transition)          → hour 2
+      //   02:30Z (10-25) → 04:30 IST (post-transition)          → hour 4
+      // Using the 00:30Z / 02:30Z pair exercises one row before and one row
+      // a couple of hours after the rollback.
+      await insertTurn("t-dst-pre", "sess-dst-fall-pre", "2026-10-25T00:30:00.000Z");
+      await insertTurn("t-dst-post", "sess-dst-fall-post", "2026-10-25T02:30:00.000Z");
+
+      const range: TimeRange = {
+        start: new Date("2026-10-25T00:00:00Z"),
+        end: new Date("2026-10-26T00:00:00Z"),
+      };
+      const hourly = await analyzer.getHourlyActivity(range, {
+        userTimezone: "Asia/Jerusalem",
+      });
+      const hours = hourly.map((r) => r.hourOfDay).sort((a, b) => a - b);
+      expect(hours).toEqual([2, 4]);
+
+      // Sanity: UTC sees them at hours 0 and 2.
+      const hoursUTC = (
+        await analyzer.getHourlyActivity(range, { userTimezone: "UTC" })
+      )
+        .map((r) => r.hourOfDay)
+        .sort((a, b) => a - b);
+      expect(hoursUTC).toEqual([0, 2]);
+    });
+
+    it("cardinality invariant: switching tz only re-partitions the bucket — total messageCount is unchanged", async () => {
+      // Use the seedTestData fixture (4 assistant turns across two days).
+      const totalUTC = (
+        await analyzer.getHourlyActivity(testRange, { userTimezone: "UTC" })
+      ).reduce((s, r) => s + r.messageCount, 0);
+      const totalIL = (
+        await analyzer.getHourlyActivity(testRange, { userTimezone: "Asia/Jerusalem" })
+      ).reduce((s, r) => s + r.messageCount, 0);
+      const totalNY = (
+        await analyzer.getHourlyActivity(testRange, { userTimezone: "America/New_York" })
+      ).reduce((s, r) => s + r.messageCount, 0);
+      expect(totalUTC).toBeGreaterThan(0);
+      expect(totalIL).toBe(totalUTC);
+      expect(totalNY).toBe(totalUTC);
+    });
+
+    it("invalid tz string silently degrades to UTC (analyzer-side defence; the dashboard route rejects it earlier)", async () => {
+      const utcRows = await analyzer.getHourlyActivity(testRange, {
+        userTimezone: "UTC",
+      });
+      const bogusRows = await analyzer.getHourlyActivity(testRange, {
+        userTimezone: "Bogus/NotReal",
+      });
+      expect(bogusRows).toEqual(utcRows);
+    });
+
+    it("weekly trend buckets at the LOCAL week boundary (DATE_TRUNC tz-projected)", async () => {
+      await reseedEmpty();
+      // 2026-05-13T22:30:00Z is Wed (UTC) but Thu in Israel.
+      // DuckDB's DATE_TRUNC('week', ...) is Monday-anchored — Mon 2026-05-11.
+      // The point: both UTC and Israel land on the same week (2026-05-11) for
+      // this row, but for a Sunday-night roll case (e.g. 2026-05-17T22:30:00Z
+      // is Sun in UTC, Mon in Israel) the two should differ. Use the latter.
+      await insertTurn("t-week-il", "sess-week-il", "2026-05-17T22:30:00.000Z");
+
+      const range: TimeRange = {
+        start: new Date("2026-05-10T00:00:00Z"),
+        end: new Date("2026-05-19T00:00:00Z"),
+      };
+      const weeklyUTC = await analyzer.getWeeklyTrend(range, { userTimezone: "UTC" });
+      const weeklyIL = await analyzer.getWeeklyTrend(range, { userTimezone: "Asia/Jerusalem" });
+
+      // UTC: 2026-05-17 is Sunday → week starts Mon 2026-05-11.
+      // Israel: local is 2026-05-18 Monday → week starts Mon 2026-05-18.
+      expect(weeklyUTC[0]?.timestamp.toISOString().slice(0, 10)).toBe("2026-05-11");
+      expect(weeklyIL[0]?.timestamp.toISOString().slice(0, 10)).toBe("2026-05-18");
     });
   });
 });
