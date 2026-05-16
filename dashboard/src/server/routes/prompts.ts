@@ -14,8 +14,38 @@ import {
   parseFilters,
   buildTurnFilterClauses,
 } from "../helpers/parseFilters.js";
+import type { ParsedFilters } from "../helpers/parseFilters.js";
 
 const router = Router();
+
+/**
+ * Prompt-path wrapper around buildTurnFilterClauses (SEM2-292 / F3-prompt).
+ *
+ * Prompts pair a user turn with its assistant response(s). The shared
+ * filter-builder applies `AND model LIKE '%X%'` directly against
+ * `conversation_turns`; user turns have `model IS NULL`, and `NULL LIKE …`
+ * evaluates to NULL (not TRUE), so the strict form silently drops every user
+ * turn — which makes `?model=opus` return zero prompts. Here (and ONLY here,
+ * because the assistant pass of the join still constrains the response side
+ * correctly) we rewrite the model clause to let user rows through with
+ * `(role = 'user' OR model LIKE …)`. The strict form is preserved everywhere
+ * else (skill-analyzer's distinct counts, cost / cache aggregations, etc.)
+ * where letting user rows through would over-count.
+ */
+function buildPromptTurnFilterClauses(
+  filters: ParsedFilters,
+  startIndex: number,
+): { clauses: string[]; params: unknown[] } {
+  const result = buildTurnFilterClauses(filters, startIndex);
+  return {
+    ...result,
+    clauses: result.clauses.map((clause) =>
+      clause.startsWith("AND model LIKE")
+        ? `AND (role = 'user' OR ${clause.slice(4)})`
+        : clause,
+    ),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Shared CTE builder
@@ -284,7 +314,7 @@ router.get("/ranked", async (req, res, next) => {
     };
     const sortColumn = sortColumnMap[sort] ?? "complexity_score";
 
-    const f = buildTurnFilterClauses(filters, 3);
+    const f = buildPromptTurnFilterClauses(filters, 3);
     // KPI-005: the global-score CTE binds the full date range at these two
     // indices; limit/offset follow. complexity_score comes from the global
     // g_scored_prompts join, not the filtered scored_prompts.
@@ -373,7 +403,7 @@ router.get("/ranked", async (req, res, next) => {
 router.get("/stats", async (req, res, next) => {
   try {
     const filters = parseFilters(req);
-    const f = buildTurnFilterClauses(filters, 3);
+    const f = buildPromptTurnFilterClauses(filters, 3);
     // KPI-005: the global-score CTE binds the full date range at these indices.
     const globalRangeIndex = 3 + f.params.length;
     const baseParams = [filters.range.start, filters.range.end, ...f.params];
@@ -552,7 +582,7 @@ router.get("/stats", async (req, res, next) => {
 router.get("/throughput", async (req, res, next) => {
   try {
     const filters = parseFilters(req);
-    const f = buildTurnFilterClauses(filters, 3);
+    const f = buildPromptTurnFilterClauses(filters, 3);
 
     const sql = `
       WITH ${buildPromptPairsCTE(f.clauses)}
