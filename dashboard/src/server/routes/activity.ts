@@ -3,6 +3,13 @@
  *
  * Activity / time-series API endpoints.
  * Mirrors TimeSeriesAnalyzer queries with raw SQL against DuckDB.
+ *
+ * ACT-001 / SEM2-293: every hour-of-day, day-of-week, and local-date
+ * expression projects the stored UTC-wall-clock TIMESTAMP through the user's
+ * IANA zone using
+ *   `(ts AT TIME ZONE 'UTC') AT TIME ZONE $userTz`
+ * so the dashboard surfaces match the user's local clock. `$3` is reserved for
+ * the timezone bind; filter clauses therefore start at `$4`.
  */
 
 import { Router } from "express";
@@ -12,6 +19,7 @@ import {
   buildTurnFilterClauses,
   envelope,
 } from "../helpers/parseFilters.js";
+import { wrapTimestampForTz } from "../../../../src/utils/timezone.js";
 
 const router = Router();
 
@@ -24,18 +32,22 @@ const router = Router();
  * KPI-002: filters role='assistant' to match v_hourly_activity, the CLI
  * TimeSeriesAnalyzer.getHourlyActivity, and the daily/heatmap/weekly paths —
  * "activity" is one consistent population (assistant turns) everywhere.
+ *
+ * ACT-001: hour is in the user's IANA zone (resolved by parseFilters).
  */
 router.get("/hourly", async (req, res, next) => {
   try {
     const filters = parseFilters(req);
-    const f = buildTurnFilterClauses(filters, 3);
+    // $3 is the user timezone; filter binds start at $4.
+    const f = buildTurnFilterClauses(filters, 4);
     const filterClauses = f.clauses.map((c) =>
       c.replace(/\bAND model\b/, "AND ct.model").replace(/\bAND session_id\b/, "AND ct.session_id"),
     );
+    const localTs = wrapTimestampForTz("ct.timestamp", "$3");
 
     const sql = `
       SELECT
-        EXTRACT(HOUR FROM ct.timestamp)::INTEGER AS hour_of_day,
+        EXTRACT(HOUR FROM ${localTs})::INTEGER AS hour_of_day,
         COUNT(*) AS message_count,
         COUNT(DISTINCT ct.session_id) AS session_count,
         COALESCE(AVG(ct.cost_usd), 0) AS avg_cost,
@@ -56,6 +68,7 @@ router.get("/hourly", async (req, res, next) => {
     const result = await query(sql, [
       filters.range.start,
       filters.range.end,
+      filters.userTimezone,
       ...f.params,
     ]);
 
@@ -80,14 +93,17 @@ router.get("/hourly", async (req, res, next) => {
  *
  * Get daily activity aggregation (turn counts per day).
  * Query params: ?period=7d
+ *
+ * ACT-001: the local date is computed in the user's IANA zone.
  */
 router.get("/daily", async (req, res, next) => {
   try {
     const filters = parseFilters(req);
+    const localTs = wrapTimestampForTz("timestamp", "$3");
 
     const sql = `
       SELECT
-        CAST(timestamp AS DATE) AS date,
+        CAST(${localTs} AS DATE) AS date,
         COUNT(*) AS value
       FROM conversation_turns
       WHERE role = 'assistant'
@@ -96,7 +112,11 @@ router.get("/daily", async (req, res, next) => {
       ORDER BY date ASC
     `;
 
-    const result = await query(sql, [filters.range.start, filters.range.end]);
+    const result = await query(sql, [
+      filters.range.start,
+      filters.range.end,
+      filters.userTimezone,
+    ]);
 
     const rows = result.rows.map((row: Record<string, unknown>) => ({
       timestamp: new Date(row.date as string).toISOString(),
@@ -117,15 +137,20 @@ router.get("/daily", async (req, res, next) => {
  *
  * KPI-002: counts role='assistant' turns only, so the heatmap shares the same
  * population as /api/activity/hourly and /api/activity/daily.
+ *
+ * ACT-001: both DOW and hour are projected through the user's IANA zone, so a
+ * turn at 22:30Z on a Wednesday correctly lands in Thursday's bucket for an
+ * Asia/Jerusalem user.
  */
 router.get("/heatmap", async (req, res, next) => {
   try {
     const filters = parseFilters(req);
+    const localTs = wrapTimestampForTz("ct.timestamp", "$3");
 
     const sql = `
       SELECT
-        EXTRACT(DOW FROM ct.timestamp)::INTEGER AS day_of_week,
-        EXTRACT(HOUR FROM ct.timestamp)::INTEGER AS hour_of_day,
+        EXTRACT(DOW FROM ${localTs})::INTEGER AS day_of_week,
+        EXTRACT(HOUR FROM ${localTs})::INTEGER AS hour_of_day,
         COUNT(*) AS value
       FROM conversation_turns ct
       WHERE ct.role = 'assistant'
@@ -134,7 +159,11 @@ router.get("/heatmap", async (req, res, next) => {
       ORDER BY day_of_week ASC, hour_of_day ASC
     `;
 
-    const result = await query(sql, [filters.range.start, filters.range.end]);
+    const result = await query(sql, [
+      filters.range.start,
+      filters.range.end,
+      filters.userTimezone,
+    ]);
 
     const rows = result.rows.map((row: Record<string, unknown>) => ({
       dayOfWeek: Number(row.day_of_week),
