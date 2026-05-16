@@ -9,7 +9,14 @@
  *   1. Tool calls triggered          (PERCENT_RANK)
  *   2. Total tokens consumed          (PERCENT_RANK)
  *   3. Multi-turn depth               (PERCENT_RANK)
- *   4. Thinking tokens used           (boolean: 0 or 100)
+ *   4. Distinct tools used            (PERCENT_RANK)
+ *
+ * F1/F2-prompt (SEM2-290, 291): the 4th dimension used to be a `has_thinking`
+ * 25-pt step, which scored 0/25 for 98.8% of prompts. It is now the percentile
+ * rank of `COUNT(DISTINCT tool_name)` over the prompt's assistant turns, which
+ * decollinearizes from `tool_call_count` (a 30-call `Read` loop and a 5-tool
+ * fan-out score very differently). `has_thinking` is still surfaced as a
+ * categorical badge on the ranked row — just not weighted into the number.
  *
  * KPI-005: the complexity score is a GLOBAL percentile — PERCENT_RANK is
  * always computed over the entire prompt population (full date range, no
@@ -162,12 +169,18 @@ export class PromptAnalyzer {
         GROUP BY ub.turn_id, ub.session_id
       ),
 
-      -- Count tool calls across assistant turns for each prompt
+      -- Count tool calls across assistant turns for each prompt.
+      -- F1/F2-prompt (SEM2-290, 291): distinct_tools_used is the 4th composite
+      -- dimension, replacing the has_thinking 25-pt step (which scored 0/25 for
+      -- 98.8% of prompts) and decollinearizing from tool_call_count (r=0.995
+      -- with multi_turn_depth — a 30-call Read loop and a 5-tool fan-out score
+      -- very differently on this axis).
       tool_counts AS (
         SELECT
           aa.user_turn_id,
           aa.session_id,
-          COUNT(tc.tool_call_id) AS tool_call_count
+          COUNT(tc.tool_call_id) AS tool_call_count,
+          COUNT(DISTINCT tc.tool_name) AS distinct_tools_used
         FROM assistant_agg aa
         JOIN LATERAL UNNEST(aa.assistant_turn_ids) AS t(aid) ON TRUE
         LEFT JOIN tool_calls tc
@@ -192,7 +205,8 @@ export class PromptAnalyzer {
           COALESCE(aa.multi_turn_depth, 0) AS multi_turn_depth,
           COALESCE(aa.has_thinking, 0) AS has_thinking,
           COALESCE(aa.model, 'unknown') AS model,
-          COALESCE(tc.tool_call_count, 0) AS tool_call_count
+          COALESCE(tc.tool_call_count, 0) AS tool_call_count,
+          COALESCE(tc.distinct_tools_used, 0) AS distinct_tools_used
         FROM user_bounds ub
         LEFT JOIN assistant_agg aa
           ON aa.user_turn_id = ub.turn_id AND aa.session_id = ub.session_id
@@ -200,7 +214,11 @@ export class PromptAnalyzer {
           ON tc.user_turn_id = ub.turn_id AND tc.session_id = ub.session_id
       ),
 
-      -- Compute percentile ranks and composite complexity score
+      -- Compute percentile ranks and composite complexity score.
+      -- F1/F2-prompt (SEM2-290, 291): the 4th term is the percentile rank of
+      -- distinct_tools_used, not the has_thinking step. has_thinking is now
+      -- surfaced as a categorical badge in the UI (not weighted into the
+      -- score). Equal weights preserved 25/25/25/25.
       scored_prompts AS (
         SELECT
           pp.*,
@@ -210,7 +228,7 @@ export class PromptAnalyzer {
               COALESCE(PERCENT_RANK() OVER (ORDER BY pp.tool_call_count), 0) * 100
               + COALESCE(PERCENT_RANK() OVER (ORDER BY pp.total_tokens), 0) * 100
               + COALESCE(PERCENT_RANK() OVER (ORDER BY pp.multi_turn_depth), 0) * 100
-              + (CASE WHEN pp.has_thinking = 1 THEN 100 ELSE 0 END)
+              + COALESCE(PERCENT_RANK() OVER (ORDER BY pp.distinct_tools_used), 0) * 100
             ) / 4.0
           , 1) AS complexity_score
         FROM prompt_pairs pp
@@ -280,11 +298,14 @@ export class PromptAnalyzer {
           AND ot.role = 'assistant'
         GROUP BY ub.turn_id, ub.session_id
       ),
+      -- F1/F2-prompt (SEM2-290, 291): mirror the filtered tool_counts CTE —
+      -- distinct_tools_used is the 4th composite dimension in g_scored_prompts.
       g_tool_counts AS (
         SELECT
           aa.user_turn_id,
           aa.session_id,
-          COUNT(tc.tool_call_id) AS tool_call_count
+          COUNT(tc.tool_call_id) AS tool_call_count,
+          COUNT(DISTINCT tc.tool_name) AS distinct_tools_used
         FROM g_assistant_agg aa
         JOIN LATERAL UNNEST(aa.assistant_turn_ids) AS t(aid) ON TRUE
         LEFT JOIN tool_calls tc
@@ -298,13 +319,17 @@ export class PromptAnalyzer {
           COALESCE(aa.total_tokens, 0) AS total_tokens,
           COALESCE(aa.multi_turn_depth, 0) AS multi_turn_depth,
           COALESCE(aa.has_thinking, 0) AS has_thinking,
-          COALESCE(tc.tool_call_count, 0) AS tool_call_count
+          COALESCE(tc.tool_call_count, 0) AS tool_call_count,
+          COALESCE(tc.distinct_tools_used, 0) AS distinct_tools_used
         FROM g_user_bounds ub
         LEFT JOIN g_assistant_agg aa
           ON aa.user_turn_id = ub.turn_id AND aa.session_id = ub.session_id
         LEFT JOIN g_tool_counts tc
           ON tc.user_turn_id = ub.turn_id AND tc.session_id = ub.session_id
       ),
+      -- F1/F2-prompt (SEM2-290, 291): mirror the filtered scored_prompts
+      -- composite — 4th term is the percentile rank of distinct_tools_used,
+      -- not the has_thinking step. Equal weights preserved 25/25/25/25.
       g_scored_prompts AS (
         SELECT
           pp.turn_id,
@@ -313,7 +338,7 @@ export class PromptAnalyzer {
               COALESCE(PERCENT_RANK() OVER (ORDER BY pp.tool_call_count), 0) * 100
               + COALESCE(PERCENT_RANK() OVER (ORDER BY pp.total_tokens), 0) * 100
               + COALESCE(PERCENT_RANK() OVER (ORDER BY pp.multi_turn_depth), 0) * 100
-              + (CASE WHEN pp.has_thinking = 1 THEN 100 ELSE 0 END)
+              + COALESCE(PERCENT_RANK() OVER (ORDER BY pp.distinct_tools_used), 0) * 100
             ) / 4.0
           , 1) AS complexity_score
         FROM g_prompt_pairs pp

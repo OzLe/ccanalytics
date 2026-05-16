@@ -131,12 +131,17 @@ function buildPromptPairsCTE(filterClauses: string[]): string {
       GROUP BY ub.turn_id, ub.session_id
     ),
 
-    -- Count tool calls across assistant turns for each prompt
+    -- Count tool calls across assistant turns for each prompt.
+    -- F1/F2-prompt (SEM2-290, 291): distinct_tools_used is the 4th composite
+    -- dimension, replacing the has_thinking 25-pt step (which scored 0/25 for
+    -- 98.8% of prompts) and decollinearizing from tool_call_count (r=0.995
+    -- with multi_turn_depth). Mirrors src/queries/prompt-analyzer.ts.
     tool_counts AS (
       SELECT
         aa.user_turn_id,
         aa.session_id,
-        COUNT(tc.tool_call_id) AS tool_call_count
+        COUNT(tc.tool_call_id) AS tool_call_count,
+        COUNT(DISTINCT tc.tool_name) AS distinct_tools_used
       FROM assistant_agg aa
       JOIN LATERAL UNNEST(aa.assistant_turn_ids) AS t(aid) ON TRUE
       LEFT JOIN tool_calls tc
@@ -161,7 +166,8 @@ function buildPromptPairsCTE(filterClauses: string[]): string {
         COALESCE(aa.multi_turn_depth, 0) AS multi_turn_depth,
         COALESCE(aa.has_thinking, 0) AS has_thinking,
         COALESCE(aa.model, 'unknown') AS model,
-        COALESCE(tc.tool_call_count, 0) AS tool_call_count
+        COALESCE(tc.tool_call_count, 0) AS tool_call_count,
+        COALESCE(tc.distinct_tools_used, 0) AS distinct_tools_used
       FROM user_bounds ub
       LEFT JOIN assistant_agg aa
         ON aa.user_turn_id = ub.turn_id AND aa.session_id = ub.session_id
@@ -169,7 +175,10 @@ function buildPromptPairsCTE(filterClauses: string[]): string {
         ON tc.user_turn_id = ub.turn_id AND tc.session_id = ub.session_id
     ),
 
-    -- Compute percentile ranks and composite complexity score
+    -- Compute percentile ranks and composite complexity score.
+    -- F1/F2-prompt (SEM2-290, 291): the 4th term is the percentile rank of
+    -- distinct_tools_used, not the has_thinking step. has_thinking is still
+    -- surfaced as a categorical badge in the UI. Equal weights 25/25/25/25.
     scored_prompts AS (
       SELECT
         pp.*,
@@ -179,7 +188,7 @@ function buildPromptPairsCTE(filterClauses: string[]): string {
             COALESCE(PERCENT_RANK() OVER (ORDER BY pp.tool_call_count), 0) * 100
             + COALESCE(PERCENT_RANK() OVER (ORDER BY pp.total_tokens), 0) * 100
             + COALESCE(PERCENT_RANK() OVER (ORDER BY pp.multi_turn_depth), 0) * 100
-            + (CASE WHEN pp.has_thinking = 1 THEN 100 ELSE 0 END)
+            + COALESCE(PERCENT_RANK() OVER (ORDER BY pp.distinct_tools_used), 0) * 100
           ) / 4.0
         , 1) AS complexity_score
       FROM prompt_pairs pp
@@ -245,11 +254,14 @@ function buildGlobalScoresCTE(p: number): string {
         AND ot.role = 'assistant'
       GROUP BY ub.turn_id, ub.session_id
     ),
+    -- F1/F2-prompt (SEM2-290, 291): mirror the filtered tool_counts CTE —
+    -- distinct_tools_used is the 4th composite dimension in g_scored_prompts.
     g_tool_counts AS (
       SELECT
         aa.user_turn_id,
         aa.session_id,
-        COUNT(tc.tool_call_id) AS tool_call_count
+        COUNT(tc.tool_call_id) AS tool_call_count,
+        COUNT(DISTINCT tc.tool_name) AS distinct_tools_used
       FROM g_assistant_agg aa
       JOIN LATERAL UNNEST(aa.assistant_turn_ids) AS t(aid) ON TRUE
       LEFT JOIN tool_calls tc
@@ -263,13 +275,17 @@ function buildGlobalScoresCTE(p: number): string {
         COALESCE(aa.total_tokens, 0) AS total_tokens,
         COALESCE(aa.multi_turn_depth, 0) AS multi_turn_depth,
         COALESCE(aa.has_thinking, 0) AS has_thinking,
-        COALESCE(tc.tool_call_count, 0) AS tool_call_count
+        COALESCE(tc.tool_call_count, 0) AS tool_call_count,
+        COALESCE(tc.distinct_tools_used, 0) AS distinct_tools_used
       FROM g_user_bounds ub
       LEFT JOIN g_assistant_agg aa
         ON aa.user_turn_id = ub.turn_id AND aa.session_id = ub.session_id
       LEFT JOIN g_tool_counts tc
         ON tc.user_turn_id = ub.turn_id AND tc.session_id = ub.session_id
     ),
+    -- F1/F2-prompt (SEM2-290, 291): mirror the filtered scored_prompts
+    -- composite — 4th term is the percentile rank of distinct_tools_used,
+    -- not the has_thinking step. Equal weights preserved 25/25/25/25.
     g_scored_prompts AS (
       SELECT
         pp.turn_id,
@@ -278,7 +294,7 @@ function buildGlobalScoresCTE(p: number): string {
             COALESCE(PERCENT_RANK() OVER (ORDER BY pp.tool_call_count), 0) * 100
             + COALESCE(PERCENT_RANK() OVER (ORDER BY pp.total_tokens), 0) * 100
             + COALESCE(PERCENT_RANK() OVER (ORDER BY pp.multi_turn_depth), 0) * 100
-            + (CASE WHEN pp.has_thinking = 1 THEN 100 ELSE 0 END)
+            + COALESCE(PERCENT_RANK() OVER (ORDER BY pp.distinct_tools_used), 0) * 100
           ) / 4.0
         , 1) AS complexity_score
       FROM g_prompt_pairs pp
