@@ -46,7 +46,8 @@ interface SuccessRateRow {
   totalCalls: number;
   /** KPI-006: null when the tool has only NULL-success calls ("n/a"). */
   successRate: number | null;
-  avgDurationMs: number;
+  /** TOOL-001 (SEM2-282): null when no duration_ms was captured ("n/a"). */
+  avgDurationMs: number | null;
   successCount: number;
   failureCount: number;
   /** KPI-009: avg calls per session (from /api/tools/usage), 0 if unknown. */
@@ -196,11 +197,20 @@ export default function ToolsPage() {
         key: "avgDurationMs",
         header: "Avg Time",
         align: "right" as const,
-        render: (row) => (
-          <span className="tabular-nums text-[var(--text-secondary)]">
-            {formatDuration(row.avgDurationMs / 1000)}
-          </span>
-        ),
+        // TOOL-001 (SEM2-282): null = no captured duration → "n/a" (matches
+        // KPI-006 success-rate treatment above). Both ingestion adapters
+        // currently set duration_ms = NULL, so every chain renders "n/a"
+        // today instead of a fake "0s".
+        render: (row) =>
+          row.avgDurationMs == null ? (
+            <span className="tabular-nums text-[var(--text-tertiary)]">
+              n/a
+            </span>
+          ) : (
+            <span className="tabular-nums text-[var(--text-secondary)]">
+              {formatDuration(row.avgDurationMs / 1000)}
+            </span>
+          ),
       },
     ],
     [],
@@ -295,11 +305,20 @@ export default function ToolsPage() {
       header: "Avg Time",
       align: "right" as const,
       width: "120px",
-      render: (row) => (
-        <span className="tabular-nums text-[var(--text-secondary)]">
-          {formatDuration(row.avgDurationMs / 1000)}
-        </span>
-      ),
+      // TOOL-001 (SEM2-282): null = no captured duration → "n/a" (matches the
+      // KPI-006 success-rate "n/a" rendering above). Both ingestion adapters
+      // currently set duration_ms = NULL, so every tool renders "n/a" today
+      // instead of a fake "0s".
+      render: (row) =>
+        row.avgDurationMs == null ? (
+          <span className="tabular-nums text-[var(--text-tertiary)]">
+            n/a
+          </span>
+        ) : (
+          <span className="tabular-nums text-[var(--text-secondary)]">
+            {formatDuration(row.avgDurationMs / 1000)}
+          </span>
+        ),
     },
   ], []);
 
