@@ -257,22 +257,42 @@ ORDER BY date DESC;
 -- `(ts AT TIME ZONE 'UTC') AT TIME ZONE $userTz` projection so the hours
 -- match the user's wall clock. This view is the canonical reference, not the
 -- user-facing surface.
+--
+-- ACT-003 / SEM2-295: the view always returns exactly 24 rows, one per
+-- hour-of-day, by LEFT JOIN-ing the per-hour aggregate onto
+-- `generate_series(0, 23, 1)`. Hours with no traffic show `message_count = 0`
+-- and zeroed aggregates instead of being silently dropped. This pattern is
+-- mirrored inline (with the tz projection) by
+-- TimeSeriesAnalyzer.getHourlyActivity and /api/activity/hourly so the
+-- user-facing surfaces share the same 24-row invariant.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE VIEW v_hourly_activity AS
+WITH per_hour AS (
+    SELECT
+        EXTRACT(HOUR FROM ct.timestamp)     AS hour_of_day,
+        COUNT(*)                            AS message_count,
+        COUNT(DISTINCT ct.session_id)       AS session_count,
+        ROUND(AVG(ct.cost_usd), 6)         AS avg_cost,
+        SUM(ct.input_tokens + ct.output_tokens)
+                                            AS total_tokens,
+        SUM(ct.cost_usd)                    AS total_cost,
+        ROUND(AVG(ct.input_tokens + ct.output_tokens), 0)
+                                            AS avg_tokens_per_turn
+    FROM conversation_turns ct
+    WHERE ct.role = 'assistant'
+    GROUP BY EXTRACT(HOUR FROM ct.timestamp)
+)
 SELECT
-    EXTRACT(HOUR FROM ct.timestamp)     AS hour_of_day,
-    COUNT(*)                            AS message_count,
-    COUNT(DISTINCT ct.session_id)       AS session_count,
-    ROUND(AVG(ct.cost_usd), 6)         AS avg_cost,
-    SUM(ct.input_tokens + ct.output_tokens)
-                                        AS total_tokens,
-    SUM(ct.cost_usd)                    AS total_cost,
-    ROUND(AVG(ct.input_tokens + ct.output_tokens), 0)
-                                        AS avg_tokens_per_turn
-FROM conversation_turns ct
-WHERE ct.role = 'assistant'
-GROUP BY EXTRACT(HOUR FROM ct.timestamp)
-ORDER BY hour_of_day;
+    h.hour_of_day                       AS hour_of_day,
+    COALESCE(p.message_count, 0)        AS message_count,
+    COALESCE(p.session_count, 0)        AS session_count,
+    COALESCE(p.avg_cost, 0)             AS avg_cost,
+    COALESCE(p.total_tokens, 0)         AS total_tokens,
+    COALESCE(p.total_cost, 0)           AS total_cost,
+    COALESCE(p.avg_tokens_per_turn, 0)  AS avg_tokens_per_turn
+FROM generate_series(0, 23, 1) AS h(hour_of_day)
+LEFT JOIN per_hour p USING (hour_of_day)
+ORDER BY h.hour_of_day;
 
 -- ---------------------------------------------------------------------------
 -- v_prompt_analysis: Per-prompt metrics joining user turns to assistant responses

@@ -46,20 +46,19 @@ export default function ActivityPage() {
     Intl.DateTimeFormat().resolvedOptions().timeZone ||
     "UTC";
 
-  // Fill in all 24 hours (some may be missing from API)
+  // ACT-003 / SEM2-295: the server now guarantees exactly 24 rows from
+  // /api/activity/hourly (LEFT JOIN generate_series(0, 23, 1)), so the
+  // client-side backfill that used to live here is gone. Hours with no
+  // traffic arrive as messageCount = 0 and render as empty cells naturally.
   const hourlyData = useMemo(() => {
     if (!hourly.data) return [];
-    const byHour = new Map(hourly.data.map((d) => [d.hourOfDay, d]));
-    return Array.from({ length: 24 }, (_, i) => {
-      const h = byHour.get(i);
-      return {
-        hour: formatHour(i),
-        hourNum: i,
-        messages: h?.messageCount ?? 0,
-        sessions: h?.sessionCount ?? 0,
-        cost: h?.totalCost ?? 0,
-      };
-    });
+    return hourly.data.map((h) => ({
+      hour: formatHour(h.hourOfDay),
+      hourNum: h.hourOfDay,
+      messages: h.messageCount,
+      sessions: h.sessionCount,
+      cost: h.totalCost,
+    }));
   }, [hourly.data]);
 
   // Peak hour

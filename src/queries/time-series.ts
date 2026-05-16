@@ -67,6 +67,12 @@ export class TimeSeriesAnalyzer {
    * message_count doubles (user turns counted) and avg_cost is halved (user
    * turns cost $0).
    *
+   * ACT-003 / SEM2-295: the response always contains exactly 24 rows. Hours
+   * with no traffic get `messageCount = 0` and zeroed aggregates so CLI users
+   * and any future automation never see a silently-dropped hour. The
+   * LEFT JOIN against `generate_series(0, 23, 1)` keeps the tz-projected
+   * hour-of-day axis from LANE D2 intact; only the cardinality is padded.
+   *
    * @param range - Time range to query
    * @returns Hourly activity data (24 rows, one per hour of day)
    */
@@ -79,24 +85,39 @@ export class TimeSeriesAnalyzer {
       c.replace(/\bAND model\b/, "AND ct.model").replace(/\bAND session_id\b/, "AND ct.session_id"),
     );
     const localTs = wrapTimestampForTz("ct.timestamp", "$3");
+    // Aggregate per-hour in the CTE, then LEFT JOIN generate_series(0,23) so
+    // every hour is present even when the underlying bucket is empty. DuckDB
+    // plans generate_series as a constant scan, so the join cost is trivial.
     const sql = `
+      WITH per_hour AS (
+        SELECT
+          EXTRACT(HOUR FROM ${localTs})::INTEGER AS hour_of_day,
+          COUNT(*) AS message_count,
+          COUNT(DISTINCT ct.session_id) AS session_count,
+          AVG(ct.cost_usd) AS avg_cost,
+          SUM(ct.input_tokens + ct.output_tokens) AS total_tokens,
+          SUM(ct.cost_usd) AS total_cost,
+          CASE WHEN COUNT(*) > 0
+            THEN SUM(ct.input_tokens + ct.output_tokens)::DOUBLE / COUNT(*)
+            ELSE 0
+          END AS avg_tokens_per_turn
+        FROM conversation_turns ct
+        WHERE ct.role = 'assistant'
+          AND ct.timestamp >= $1 AND ct.timestamp < $2
+          ${filterClauses.join("\n          ")}
+        GROUP BY hour_of_day
+      )
       SELECT
-        EXTRACT(HOUR FROM ${localTs})::INTEGER AS hour_of_day,
-        COUNT(*) AS message_count,
-        COUNT(DISTINCT ct.session_id) AS session_count,
-        COALESCE(AVG(ct.cost_usd), 0) AS avg_cost,
-        COALESCE(SUM(ct.input_tokens + ct.output_tokens), 0) AS total_tokens,
-        COALESCE(SUM(ct.cost_usd), 0) AS total_cost,
-        CASE WHEN COUNT(*) > 0
-          THEN COALESCE(SUM(ct.input_tokens + ct.output_tokens), 0)::DOUBLE / COUNT(*)
-          ELSE 0
-        END AS avg_tokens_per_turn
-      FROM conversation_turns ct
-      WHERE ct.role = 'assistant'
-        AND ct.timestamp >= $1 AND ct.timestamp < $2
-        ${filterClauses.join("\n        ")}
-      GROUP BY hour_of_day
-      ORDER BY hour_of_day ASC
+        h.hour_of_day AS hour_of_day,
+        COALESCE(p.message_count, 0) AS message_count,
+        COALESCE(p.session_count, 0) AS session_count,
+        COALESCE(p.avg_cost, 0) AS avg_cost,
+        COALESCE(p.total_tokens, 0) AS total_tokens,
+        COALESCE(p.total_cost, 0) AS total_cost,
+        COALESCE(p.avg_tokens_per_turn, 0) AS avg_tokens_per_turn
+      FROM generate_series(0, 23, 1) AS h(hour_of_day)
+      LEFT JOIN per_hour p USING (hour_of_day)
+      ORDER BY h.hour_of_day ASC
     `;
     const result = await this.executor.query<{
       hour_of_day: number;

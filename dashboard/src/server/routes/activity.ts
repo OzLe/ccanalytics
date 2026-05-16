@@ -34,6 +34,13 @@ const router = Router();
  * "activity" is one consistent population (assistant turns) everywhere.
  *
  * ACT-001: hour is in the user's IANA zone (resolved by parseFilters).
+ *
+ * ACT-003 / SEM2-295: the response always contains exactly 24 rows (one per
+ * hour-of-day). Hours with no traffic get `messageCount = 0` and zeroed-out
+ * aggregates, instead of being silently dropped. The LEFT JOIN against
+ * `generate_series(0, 23, 1)` runs server-side so CLI users and any future
+ * automation see the same complete axis the React page used to backfill by
+ * hand. The hour-of-day axis is still tz-projected per LANE D2.
  */
 router.get("/hourly", async (req, res, next) => {
   try {
@@ -45,24 +52,40 @@ router.get("/hourly", async (req, res, next) => {
     );
     const localTs = wrapTimestampForTz("ct.timestamp", "$3");
 
+    // Compute per-hour aggregates in the user's tz first, then LEFT JOIN onto
+    // generate_series(0, 23) so every hour appears even when traffic is zero.
+    // DuckDB plans generate_series as a tiny constant scan, so the join is
+    // essentially free relative to the per_hour aggregation.
     const sql = `
+      WITH per_hour AS (
+        SELECT
+          EXTRACT(HOUR FROM ${localTs})::INTEGER AS hour_of_day,
+          COUNT(*) AS message_count,
+          COUNT(DISTINCT ct.session_id) AS session_count,
+          AVG(ct.cost_usd) AS avg_cost,
+          SUM(ct.input_tokens + ct.output_tokens) AS total_tokens,
+          SUM(ct.cost_usd) AS total_cost,
+          CASE WHEN COUNT(*) > 0
+            THEN SUM(ct.input_tokens + ct.output_tokens)::DOUBLE / COUNT(*)
+            ELSE 0
+          END AS avg_tokens_per_turn
+        FROM conversation_turns ct
+        WHERE ct.role = 'assistant'
+          AND ct.timestamp >= $1 AND ct.timestamp < $2
+          ${filterClauses.join("\n          ")}
+        GROUP BY hour_of_day
+      )
       SELECT
-        EXTRACT(HOUR FROM ${localTs})::INTEGER AS hour_of_day,
-        COUNT(*) AS message_count,
-        COUNT(DISTINCT ct.session_id) AS session_count,
-        COALESCE(AVG(ct.cost_usd), 0) AS avg_cost,
-        COALESCE(SUM(ct.input_tokens + ct.output_tokens), 0) AS total_tokens,
-        COALESCE(SUM(ct.cost_usd), 0) AS total_cost,
-        CASE WHEN COUNT(*) > 0
-          THEN COALESCE(SUM(ct.input_tokens + ct.output_tokens), 0)::DOUBLE / COUNT(*)
-          ELSE 0
-        END AS avg_tokens_per_turn
-      FROM conversation_turns ct
-      WHERE ct.role = 'assistant'
-        AND ct.timestamp >= $1 AND ct.timestamp < $2
-        ${filterClauses.join("\n        ")}
-      GROUP BY hour_of_day
-      ORDER BY hour_of_day ASC
+        h.hour_of_day AS hour_of_day,
+        COALESCE(p.message_count, 0) AS message_count,
+        COALESCE(p.session_count, 0) AS session_count,
+        COALESCE(p.avg_cost, 0) AS avg_cost,
+        COALESCE(p.total_tokens, 0) AS total_tokens,
+        COALESCE(p.total_cost, 0) AS total_cost,
+        COALESCE(p.avg_tokens_per_turn, 0) AS avg_tokens_per_turn
+      FROM generate_series(0, 23, 1) AS h(hour_of_day)
+      LEFT JOIN per_hour p USING (hour_of_day)
+      ORDER BY h.hour_of_day ASC
     `;
 
     const result = await query(sql, [

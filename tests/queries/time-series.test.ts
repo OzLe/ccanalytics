@@ -38,25 +38,39 @@ describe("TimeSeriesAnalyzer", () => {
   });
 
   describe("getHourlyActivity", () => {
-    it("should return hourly activity data", async () => {
+    it("should return all 24 hour-of-day rows (ACT-003) with non-zero counts for hours that have traffic", async () => {
       const results = await analyzer.getHourlyActivity(testRange);
-      expect(results.length).toBeGreaterThan(0);
+      // ACT-003 / SEM2-295: the response is always 24 rows, one per hour.
+      expect(results).toHaveLength(24);
+      // Hours come back in 0..23 order.
+      expect(results.map((r) => r.hourOfDay)).toEqual(
+        Array.from({ length: 24 }, (_, i) => i),
+      );
+      // At least one hour in the fixture has assistant turns.
+      expect(results.some((r) => r.messageCount > 0)).toBe(true);
+      // Every row has a defined zero-or-positive count (no NULL leakage).
       for (const row of results) {
-        expect(row.hourOfDay).toBeGreaterThanOrEqual(0);
-        expect(row.hourOfDay).toBeLessThanOrEqual(23);
-        expect(row.messageCount).toBeGreaterThan(0);
+        expect(row.messageCount).toBeGreaterThanOrEqual(0);
       }
     });
 
-    it("should return empty for future range", async () => {
+    it("should still return 24 rows for a future range — every row has messageCount=0 (ACT-003)", async () => {
       const futureRange: TimeRange = { start: new Date("2030-01-01"), end: new Date("2030-01-02") };
       const results = await analyzer.getHourlyActivity(futureRange);
-      expect(results).toEqual([]);
+      expect(results).toHaveLength(24);
+      for (const row of results) {
+        expect(row.messageCount).toBe(0);
+        expect(row.sessionCount).toBe(0);
+        expect(row.totalTokens).toBe(0);
+        expect(row.totalCost).toBe(0);
+      }
     });
 
-    it("should filter by model", async () => {
+    it("should filter by model and still return all 24 hour rows (ACT-003)", async () => {
       const results = await analyzer.getHourlyActivity(testRange, { model: "opus" });
-      expect(results.length).toBeGreaterThan(0);
+      expect(results).toHaveLength(24);
+      // At least one hour matches the filter.
+      expect(results.some((r) => r.messageCount > 0)).toBe(true);
     });
   });
 
@@ -148,18 +162,27 @@ describe("TimeSeriesAnalyzer", () => {
         end: new Date("2026-05-15T00:00:00Z"),
       };
 
+      // ACT-003 / SEM2-295: response is always 24 rows; assert the populated
+      // hour holds the count and every other hour is zero.
       const hourlyIL = await analyzer.getHourlyActivity(range, {
         userTimezone: "Asia/Jerusalem",
       });
-      expect(hourlyIL).toHaveLength(1);
-      expect(hourlyIL[0]?.hourOfDay).toBe(1);
-      expect(hourlyIL[0]?.messageCount).toBe(1);
+      expect(hourlyIL).toHaveLength(24);
+      expect(hourlyIL[1]?.hourOfDay).toBe(1);
+      expect(hourlyIL[1]?.messageCount).toBe(1);
+      for (const row of hourlyIL) {
+        if (row.hourOfDay !== 1) expect(row.messageCount).toBe(0);
+      }
 
       const hourlyUTC = await analyzer.getHourlyActivity(range, {
         userTimezone: "UTC",
       });
-      expect(hourlyUTC).toHaveLength(1);
-      expect(hourlyUTC[0]?.hourOfDay).toBe(22);
+      expect(hourlyUTC).toHaveLength(24);
+      expect(hourlyUTC[22]?.hourOfDay).toBe(22);
+      expect(hourlyUTC[22]?.messageCount).toBe(1);
+      for (const row of hourlyUTC) {
+        if (row.hourOfDay !== 22) expect(row.messageCount).toBe(0);
+      }
 
       const dailyIL = await analyzer.getDailyActivity(range, {
         userTimezone: "Asia/Jerusalem",
@@ -208,11 +231,15 @@ describe("TimeSeriesAnalyzer", () => {
         start: new Date("2026-03-26T00:00:00Z"),
         end: new Date("2026-03-28T00:00:00Z"),
       };
+      // ACT-003 / SEM2-295: 24 rows total, hour 5 is the only populated one.
       const hourly = await analyzer.getHourlyActivity(range, {
         userTimezone: "Asia/Jerusalem",
       });
-      expect(hourly).toHaveLength(1);
-      expect(hourly[0]?.hourOfDay).toBe(5);
+      expect(hourly).toHaveLength(24);
+      const populated = hourly.filter((r) => r.messageCount > 0);
+      expect(populated).toHaveLength(1);
+      expect(populated[0]?.hourOfDay).toBe(5);
+      expect(populated[0]?.messageCount).toBe(1);
     });
 
     it("DST fall-back (Israel 2026-10-25 transition): two turns straddling the boundary land in distinct local hours", async () => {
@@ -232,32 +259,43 @@ describe("TimeSeriesAnalyzer", () => {
         start: new Date("2026-10-25T00:00:00Z"),
         end: new Date("2026-10-26T00:00:00Z"),
       };
+      // ACT-003 / SEM2-295: 24 rows; only hours 2 and 4 are populated.
       const hourly = await analyzer.getHourlyActivity(range, {
         userTimezone: "Asia/Jerusalem",
       });
-      const hours = hourly.map((r) => r.hourOfDay).sort((a, b) => a - b);
-      expect(hours).toEqual([2, 4]);
-
-      // Sanity: UTC sees them at hours 0 and 2.
-      const hoursUTC = (
-        await analyzer.getHourlyActivity(range, { userTimezone: "UTC" })
-      )
+      expect(hourly).toHaveLength(24);
+      const populatedHours = hourly
+        .filter((r) => r.messageCount > 0)
         .map((r) => r.hourOfDay)
         .sort((a, b) => a - b);
-      expect(hoursUTC).toEqual([0, 2]);
+      expect(populatedHours).toEqual([2, 4]);
+
+      // Sanity: UTC sees them at hours 0 and 2.
+      const utcHourly = await analyzer.getHourlyActivity(range, { userTimezone: "UTC" });
+      expect(utcHourly).toHaveLength(24);
+      const utcPopulated = utcHourly
+        .filter((r) => r.messageCount > 0)
+        .map((r) => r.hourOfDay)
+        .sort((a, b) => a - b);
+      expect(utcPopulated).toEqual([0, 2]);
     });
 
-    it("cardinality invariant: switching tz only re-partitions the bucket — total messageCount is unchanged", async () => {
+    it("cardinality invariant: switching tz only re-partitions the bucket — row count is always 24 and total messageCount is unchanged", async () => {
       // Use the seedTestData fixture (4 assistant turns across two days).
-      const totalUTC = (
-        await analyzer.getHourlyActivity(testRange, { userTimezone: "UTC" })
-      ).reduce((s, r) => s + r.messageCount, 0);
-      const totalIL = (
-        await analyzer.getHourlyActivity(testRange, { userTimezone: "Asia/Jerusalem" })
-      ).reduce((s, r) => s + r.messageCount, 0);
-      const totalNY = (
-        await analyzer.getHourlyActivity(testRange, { userTimezone: "America/New_York" })
-      ).reduce((s, r) => s + r.messageCount, 0);
+      // ACT-003 / SEM2-295: the row count is now ALWAYS 24 regardless of tz;
+      // the per-tz partition only shifts WHICH hours hold the counts. The
+      // sum across hours stays invariant as before LANE D3.
+      const utcRows = await analyzer.getHourlyActivity(testRange, { userTimezone: "UTC" });
+      const ilRows = await analyzer.getHourlyActivity(testRange, { userTimezone: "Asia/Jerusalem" });
+      const nyRows = await analyzer.getHourlyActivity(testRange, { userTimezone: "America/New_York" });
+
+      expect(utcRows).toHaveLength(24);
+      expect(ilRows).toHaveLength(24);
+      expect(nyRows).toHaveLength(24);
+
+      const totalUTC = utcRows.reduce((s, r) => s + r.messageCount, 0);
+      const totalIL = ilRows.reduce((s, r) => s + r.messageCount, 0);
+      const totalNY = nyRows.reduce((s, r) => s + r.messageCount, 0);
       expect(totalUTC).toBeGreaterThan(0);
       expect(totalIL).toBe(totalUTC);
       expect(totalNY).toBe(totalUTC);
@@ -293,6 +331,120 @@ describe("TimeSeriesAnalyzer", () => {
       // Israel: local is 2026-05-18 Monday → week starts Mon 2026-05-18.
       expect(weeklyUTC[0]?.timestamp.toISOString().slice(0, 10)).toBe("2026-05-11");
       expect(weeklyIL[0]?.timestamp.toISOString().slice(0, 10)).toBe("2026-05-18");
+    });
+  });
+
+  describe("24 hour buckets (ACT-003 / SEM2-295)", () => {
+    /**
+     * Same reseed helpers as the ACT-001 block — kept local so the fixture is
+     * unambiguous (1 row at a known UTC instant, asserting per-tz placement).
+     */
+    async function reseedEmpty(): Promise<void> {
+      await closeTestDB(db);
+      db = await createTestDB();
+      executor = new QueryExecutor(db.connection);
+      analyzer = new TimeSeriesAnalyzer(executor);
+    }
+
+    async function insertTurn(
+      turnId: string,
+      sessionId: string,
+      isoZ: string,
+      model = "claude-sonnet-4-5",
+    ): Promise<void> {
+      await db.connection.run(`
+        INSERT INTO sessions (session_id, start_time, end_time, duration_seconds, model,
+          input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+          total_cost_usd, num_turns, num_tool_calls, project_path)
+        VALUES ('${sessionId}', '${isoZ}', '${isoZ}', 1, '${model}', 100, 50, 0, 0, 0.01, 1, 0, '/p')
+        ON CONFLICT DO NOTHING
+      `);
+      await db.connection.run(`
+        INSERT INTO conversation_turns (turn_id, session_id, role, timestamp,
+          input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+          cost_usd, model, stop_reason, request_id, has_tool_use, has_thinking)
+        VALUES ('${turnId}', '${sessionId}', 'assistant', '${isoZ}',
+          100, 50, 0, 0, 0.01, '${model}', 'end_turn', 'req-${turnId}', FALSE, FALSE)
+      `);
+    }
+
+    it("Israel: a single turn at local hour 14 produces 24 rows with hour 14 populated and the other 23 zeroed", async () => {
+      await reseedEmpty();
+      // 11:00Z on 2026-05-13 → 14:00 IDT (UTC+3) on the same day.
+      await insertTurn("t-act003-il", "sess-act003-il", "2026-05-13T11:00:00.000Z");
+
+      const range: TimeRange = {
+        start: new Date("2026-05-13T00:00:00Z"),
+        end: new Date("2026-05-14T00:00:00Z"),
+      };
+      const hourly = await analyzer.getHourlyActivity(range, {
+        userTimezone: "Asia/Jerusalem",
+      });
+
+      expect(hourly).toHaveLength(24);
+      expect(hourly.map((r) => r.hourOfDay)).toEqual(
+        Array.from({ length: 24 }, (_, i) => i),
+      );
+
+      const fourteen = hourly[14];
+      expect(fourteen?.hourOfDay).toBe(14);
+      expect(fourteen?.messageCount).toBe(1);
+      expect(fourteen?.sessionCount).toBe(1);
+      expect(fourteen?.totalTokens).toBe(150);
+      expect(fourteen?.totalCost).toBeCloseTo(0.01, 6);
+
+      for (const row of hourly) {
+        if (row.hourOfDay === 14) continue;
+        expect(row.messageCount).toBe(0);
+        expect(row.sessionCount).toBe(0);
+        expect(row.totalTokens).toBe(0);
+        expect(row.totalCost).toBe(0);
+        expect(row.avgCost).toBe(0);
+        expect(row.avgTokensPerTurn).toBe(0);
+      }
+    });
+
+    it("UTC: a turn at UTC hour 22 produces 24 rows with hour 22 populated and the other 23 zeroed", async () => {
+      await reseedEmpty();
+      await insertTurn("t-act003-utc", "sess-act003-utc", "2026-05-14T22:00:00.000Z");
+
+      const range: TimeRange = {
+        start: new Date("2026-05-14T00:00:00Z"),
+        end: new Date("2026-05-15T00:00:00Z"),
+      };
+      const hourly = await analyzer.getHourlyActivity(range, {
+        userTimezone: "UTC",
+      });
+
+      expect(hourly).toHaveLength(24);
+      const populated = hourly.filter((r) => r.messageCount > 0);
+      expect(populated).toHaveLength(1);
+      expect(populated[0]?.hourOfDay).toBe(22);
+      expect(populated[0]?.messageCount).toBe(1);
+
+      // Every other hour is exactly zero (no silent drops, no NULL leakage).
+      for (const row of hourly) {
+        if (row.hourOfDay === 22) continue;
+        expect(row.messageCount).toBe(0);
+        expect(row.totalTokens).toBe(0);
+      }
+    });
+
+    it("empty fixture: 24 rows even when the underlying table has no turns at all", async () => {
+      await reseedEmpty();
+      const range: TimeRange = {
+        start: new Date("2026-05-13T00:00:00Z"),
+        end: new Date("2026-05-14T00:00:00Z"),
+      };
+      const hourly = await analyzer.getHourlyActivity(range, {
+        userTimezone: "Asia/Jerusalem",
+      });
+      expect(hourly).toHaveLength(24);
+      expect(hourly.every((r) => r.messageCount === 0)).toBe(true);
+      // Hours are in 0..23 order, no duplicates.
+      expect(hourly.map((r) => r.hourOfDay)).toEqual(
+        Array.from({ length: 24 }, (_, i) => i),
+      );
     });
   });
 });
