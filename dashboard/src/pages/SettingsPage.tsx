@@ -373,8 +373,11 @@ export default function SettingsPage() {
           >
             <div>
               <span className="text-overline text-[var(--text-secondary)]">Version</span>
-              <p className="mt-[var(--space-1)] text-body text-[var(--text-primary)]">
-                0.1.0
+              <p
+                className="mt-[var(--space-1)] text-body text-[var(--text-primary)]"
+                title={__APP_FULL_VERSION__}
+              >
+                {__APP_VERSION__}
               </p>
             </div>
             <div>
