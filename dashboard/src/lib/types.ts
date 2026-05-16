@@ -182,10 +182,21 @@ export interface CostTotal {
  * SAME predicate `/api/cost/total` aggregates, so token totals reconcile 1:1
  * with cost totals. `cacheWriteTokens` is `cache_creation_tokens` surfaced
  * under the "cache write" wording used everywhere else.
+ *
+ * TOK-001 / TOK-002 (SEM2-288 / SEM2-289): canonical `totalTokens` is the
+ * 2-way (input + output) Anthropic-API style sum. The 4-way sum is surfaced
+ * separately as `contextVolumeTokens` ("Context Volume" — model-processed
+ * volume INCLUDING cached prompt replay).
  */
 export interface TokenBreakdown {
-  /** input + output + cacheWrite + cacheRead. */
+  /** TOK-001: canonical headline — 2-way `input + output`. */
   totalTokens: number;
+  /**
+   * TOK-002: 4-way `input + output + cacheWrite + cacheRead`. Surfaced as
+   * "Context Volume" — model-processed volume including cached prompt replay.
+   * Never the headline.
+   */
+  contextVolumeTokens: number;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;

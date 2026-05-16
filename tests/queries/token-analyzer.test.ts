@@ -18,14 +18,20 @@ import type { TimeRange } from "../../src/types/index.js";
  *   output = 200 + 300 + 800  + 300 + 300  = 1900
  *   cacheW = 200 + 0   + 100  + 300 + 0    = 600
  *   cacheR = 0   + 300 + 500  + 0   + 1200 = 2000
- *   total  = 4500 + 1900 + 600 + 2000      = 9000
+ *
+ * TOK-001 / TOK-002 (SEM2-288 / SEM2-289): canonical `totalTokens` is the
+ * 2-way SUM(input + output); the 4-way is surfaced separately as
+ * `contextVolumeTokens` ("Context Volume").
+ *   totalTokens          = 4500 + 1900               = 6400
+ *   contextVolumeTokens  = 4500 + 1900 + 600 + 2000  = 9000
  */
 const EXPECTED_PERIOD = {
   inputTokens: 4500,
   outputTokens: 1900,
   cacheWriteTokens: 600,
   cacheReadTokens: 2000,
-  totalTokens: 9000,
+  totalTokens: 6400,
+  contextVolumeTokens: 9000,
 };
 
 describe("TokenAnalyzer", () => {
@@ -57,17 +63,22 @@ describe("TokenAnalyzer", () => {
       expect(period.cacheWriteTokens).toBe(EXPECTED_PERIOD.cacheWriteTokens);
       expect(period.cacheReadTokens).toBe(EXPECTED_PERIOD.cacheReadTokens);
       expect(period.totalTokens).toBe(EXPECTED_PERIOD.totalTokens);
+      expect(period.contextVolumeTokens).toBe(EXPECTED_PERIOD.contextVolumeTokens);
     });
 
-    it("totalTokens equals the sum of the four token categories", async () => {
+    // TOK-001 / TOK-002 (SEM2-288 / SEM2-289): canonical totalTokens is the
+    // 2-way Anthropic-API style sum; contextVolumeTokens is the 4-way.
+    it("totalTokens is input + output (2-way); contextVolumeTokens is the 4-way", async () => {
       const { period, allTime } = await analyzer.getTotalTokens(testRange);
-      expect(period.totalTokens).toBe(
+      expect(period.totalTokens).toBe(period.inputTokens + period.outputTokens);
+      expect(period.contextVolumeTokens).toBe(
         period.inputTokens +
           period.outputTokens +
           period.cacheReadTokens +
           period.cacheWriteTokens,
       );
-      expect(allTime.totalTokens).toBe(
+      expect(allTime.totalTokens).toBe(allTime.inputTokens + allTime.outputTokens);
+      expect(allTime.contextVolumeTokens).toBe(
         allTime.inputTokens +
           allTime.outputTokens +
           allTime.cacheReadTokens +
@@ -127,6 +138,7 @@ describe("TokenAnalyzer", () => {
       const { period, allTime } = await analyzer.getTotalTokens(futureRange);
       expect(period).toEqual({
         totalTokens: 0,
+        contextVolumeTokens: 0,
         inputTokens: 0,
         outputTokens: 0,
         cacheReadTokens: 0,
@@ -134,6 +146,7 @@ describe("TokenAnalyzer", () => {
       });
       // All-time is dataset-wide — still populated even for an empty period.
       expect(allTime.totalTokens).toBe(EXPECTED_PERIOD.totalTokens);
+      expect(allTime.contextVolumeTokens).toBe(EXPECTED_PERIOD.contextVolumeTokens);
     });
 
     it("the period block respects the model filter", async () => {
@@ -143,13 +156,19 @@ describe("TokenAnalyzer", () => {
       expect(period.outputTokens).toBe(800);
       expect(period.cacheWriteTokens).toBe(100);
       expect(period.cacheReadTokens).toBe(500);
-      expect(period.totalTokens).toBe(3400);
+      // TOK-001: 2-way headline (2000 + 800).
+      expect(period.totalTokens).toBe(2800);
+      // TOK-002: 4-way context volume (2000 + 800 + 100 + 500).
+      expect(period.contextVolumeTokens).toBe(3400);
     });
 
     it("the period block respects the project filter", async () => {
       const { period } = await analyzer.getTotalTokens(testRange, { project: "beta" });
       // /projects/beta is sess-002 only → turn-006.
-      expect(period.totalTokens).toBe(3400);
+      // TOK-001: 2-way headline (2000 + 800).
+      expect(period.totalTokens).toBe(2800);
+      // TOK-002: 4-way context volume.
+      expect(period.contextVolumeTokens).toBe(3400);
     });
 
     it("the all-time block is filter-invariant (D7)", async () => {
@@ -190,6 +209,7 @@ describe("TokenAnalyzer", () => {
       );
       const zeroed = {
         totalTokens: 0,
+        contextVolumeTokens: 0,
         inputTokens: 0,
         outputTokens: 0,
         cacheReadTokens: 0,

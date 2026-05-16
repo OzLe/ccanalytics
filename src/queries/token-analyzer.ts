@@ -12,6 +12,7 @@
 import type { TimeRange, TokenBreakdown, TokenTotals, QueryFilters } from "../types/index.js";
 import type { QueryExecutor } from "../db/executor.js";
 import { buildTurnFilters } from "./filter-builder.js";
+import { buildTokenSumSql } from "../utils/tokenSums.js";
 
 /**
  * Canonical row-inclusion predicate for token aggregation (F1 / D6).
@@ -35,7 +36,10 @@ interface TokenAggregateRow {
   output_tokens: number;
   cache_write_tokens: number;
   cache_read_tokens: number;
+  /** TOK-001: 2-way (input + output). The canonical headline. */
   total_tokens: number;
+  /** TOK-002: 4-way (input + output + cache_creation + cache_read). */
+  context_volume_tokens: number;
 }
 
 /** Map a raw aggregate row (or `undefined` for an empty result) to a breakdown. */
@@ -43,6 +47,7 @@ function toBreakdown(row: TokenAggregateRow | undefined): TokenBreakdown {
   if (!row) {
     return {
       totalTokens: 0,
+      contextVolumeTokens: 0,
       inputTokens: 0,
       outputTokens: 0,
       cacheReadTokens: 0,
@@ -51,6 +56,7 @@ function toBreakdown(row: TokenAggregateRow | undefined): TokenBreakdown {
   }
   return {
     totalTokens: Number(row.total_tokens),
+    contextVolumeTokens: Number(row.context_volume_tokens),
     inputTokens: Number(row.input_tokens),
     outputTokens: Number(row.output_tokens),
     cacheReadTokens: Number(row.cache_read_tokens),
@@ -58,13 +64,21 @@ function toBreakdown(row: TokenAggregateRow | undefined): TokenBreakdown {
   };
 }
 
-/** The four SUM columns, identical for the period and all-time queries. */
+/**
+ * The SUM columns the period and all-time queries share — generated from the
+ * single source of truth in `src/utils/tokenSums.ts`. `total_tokens` is the
+ * 2-way canonical headline (TOK-001) and `context_volume_tokens` is the 4-way
+ * secondary metric (TOK-002), so `/api/tokens/total` and `/api/activity/hourly`
+ * can never drift on what "total" means again (SEM2-296).
+ */
+const SUMS = buildTokenSumSql();
 const TOKEN_SUM_COLUMNS = `
-    COALESCE(SUM(input_tokens), 0) AS input_tokens,
-    COALESCE(SUM(output_tokens), 0) AS output_tokens,
-    COALESCE(SUM(cache_creation_tokens), 0) AS cache_write_tokens,
-    COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
-    COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) AS total_tokens`;
+    ${SUMS.inputTokensSql} AS input_tokens,
+    ${SUMS.outputTokensSql} AS output_tokens,
+    ${SUMS.cacheCreationTokensSql} AS cache_write_tokens,
+    ${SUMS.cacheReadTokensSql} AS cache_read_tokens,
+    ${SUMS.totalTokensSql} AS total_tokens,
+    ${SUMS.contextVolumeTokensSql} AS context_volume_tokens`;
 
 /**
  * Analyzes token totals from the conversation_turns fact table.

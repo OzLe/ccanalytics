@@ -136,9 +136,13 @@ export class PromptAnalyzer {
           ub.turn_id AS user_turn_id,
           ub.session_id,
           COALESCE(SUM(ot.cost_usd), 0) AS response_cost,
-          COALESCE(SUM(ot.input_tokens), 0) + COALESCE(SUM(ot.output_tokens), 0)
-            + COALESCE(SUM(ot.cache_creation_tokens), 0)
-            + COALESCE(SUM(ot.cache_read_tokens), 0) AS total_tokens,
+          -- TOK-001 (SEM2-288): 2-way total_tokens (input + output). This is
+          -- the input the PERCENT_RANK in scored_prompts uses for the
+          -- complexity score, so it MUST match the canonical headline. The
+          -- previous 4-way sum biased complexity_score toward long sessions
+          -- with warm caches (F6-prompt at docs/METRICS_STORE.md:1230).
+          COALESCE(SUM(ot.input_tokens), 0)
+            + COALESCE(SUM(ot.output_tokens), 0) AS total_tokens,
           COALESCE(SUM(ot.input_tokens), 0) AS input_tokens,
           COALESCE(SUM(ot.output_tokens), 0) AS output_tokens,
           COALESCE(SUM(ot.cache_creation_tokens), 0) AS cache_creation_tokens,
@@ -261,9 +265,10 @@ export class PromptAnalyzer {
         SELECT
           ub.turn_id AS user_turn_id,
           ub.session_id,
-          COALESCE(SUM(ot.input_tokens), 0) + COALESCE(SUM(ot.output_tokens), 0)
-            + COALESCE(SUM(ot.cache_creation_tokens), 0)
-            + COALESCE(SUM(ot.cache_read_tokens), 0) AS total_tokens,
+          -- TOK-001 (SEM2-288): 2-way to match scored_prompts above, so the
+          -- GLOBAL complexity score uses the same headline definition.
+          COALESCE(SUM(ot.input_tokens), 0)
+            + COALESCE(SUM(ot.output_tokens), 0) AS total_tokens,
           COUNT(ot.turn_id) AS multi_turn_depth,
           MAX(CASE WHEN ot.has_thinking THEN 1 ELSE 0 END) AS has_thinking,
           LIST(ot.turn_id) AS assistant_turn_ids
@@ -751,7 +756,10 @@ export class PromptAnalyzer {
       assistantTurnIds.push(row.turn_id);
     }
 
-    const totalTokens = inputTokens + outputTokens + cacheCreationTokens + cacheReadTokens;
+    // TOK-001 (SEM2-288): 2-way to match the canonical headline used by
+    // scored_prompts above and by getPromptRanking, so the detail view's
+    // totalTokens agrees with the ranked-list row.
+    const totalTokens = inputTokens + outputTokens;
     const multiTurnDepth = assistantResult.rowCount;
 
     // 5. Get tool calls from assistant turns
