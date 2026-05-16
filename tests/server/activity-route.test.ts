@@ -45,6 +45,12 @@ async function bootRouter(): Promise<Handle> {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ccanalytics-act-"));
   const dbPath = path.join(tmpDir, "test.duckdb");
   process.env.DB_PATH = dbPath;
+  // Point the config-reader at a non-existent file inside tmpDir so the
+  // timezone fallback resolves to the DEFAULT_TIMEZONE ('UTC') instead of
+  // whatever `~/.ccanalytics/config.json` happens to hold on the dev machine.
+  // The "invalid X-User-Timezone header degrades to UTC" assertion below
+  // depends on the second-tier fallback (config) being absent.
+  process.env.CCANALYTICS_CONFIG_PATH = path.join(tmpDir, "config.json");
 
   // Dynamic import so the env var is honoured by initConnection().
   const { default: activityRouter } = await import(
@@ -136,9 +142,11 @@ async function bootRouter(): Promise<Handle> {
 describe("activity route — timezone projection (ACT-001)", () => {
   let h: Handle;
   let prevDbPath: string | undefined;
+  let prevConfigPath: string | undefined;
 
   beforeAll(async () => {
     prevDbPath = process.env.DB_PATH;
+    prevConfigPath = process.env.CCANALYTICS_CONFIG_PATH;
     h = await bootRouter();
   });
 
@@ -146,6 +154,8 @@ describe("activity route — timezone projection (ACT-001)", () => {
     await h.close();
     if (prevDbPath === undefined) delete process.env.DB_PATH;
     else process.env.DB_PATH = prevDbPath;
+    if (prevConfigPath === undefined) delete process.env.CCANALYTICS_CONFIG_PATH;
+    else process.env.CCANALYTICS_CONFIG_PATH = prevConfigPath;
   });
 
   it("/api/activity/hourly — UTC returns hour 22 (& 3); Israel returns hour 1 (& 6) for the same fixture rows", async () => {
@@ -294,6 +304,9 @@ async function bootRouterSingleTurn(isoZ: string): Promise<Handle> {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ccanalytics-act003-"));
   const dbPath = path.join(tmpDir, "test.duckdb");
   process.env.DB_PATH = dbPath;
+  // Isolate from the dev machine's ~/.ccanalytics/config.json (see bootRouter
+  // above for rationale).
+  process.env.CCANALYTICS_CONFIG_PATH = path.join(tmpDir, "config.json");
   const { default: activityRouter } = await import(
     "../../dashboard/src/server/routes/activity.js"
   );
@@ -371,9 +384,11 @@ async function bootRouterSingleTurn(isoZ: string): Promise<Handle> {
 describe("activity route — 24 hour buckets (ACT-003 / SEM2-295)", () => {
   let h: Handle;
   let prevDbPath: string | undefined;
+  let prevConfigPath: string | undefined;
 
   beforeAll(async () => {
     prevDbPath = process.env.DB_PATH;
+    prevConfigPath = process.env.CCANALYTICS_CONFIG_PATH;
     // Pick a UTC timestamp so that:
     //   - hour 14 is populated in Asia/Jerusalem (UTC+3 in May)
     //   - hour 22 is populated in UTC
@@ -386,6 +401,8 @@ describe("activity route — 24 hour buckets (ACT-003 / SEM2-295)", () => {
     await h.close();
     if (prevDbPath === undefined) delete process.env.DB_PATH;
     else process.env.DB_PATH = prevDbPath;
+    if (prevConfigPath === undefined) delete process.env.CCANALYTICS_CONFIG_PATH;
+    else process.env.CCANALYTICS_CONFIG_PATH = prevConfigPath;
   });
 
   it("Israel: a single turn at local hour 14 produces 24 rows with hour 14 populated and the other 23 zeroed", async () => {
@@ -491,6 +508,9 @@ async function bootRouterForPredicate(): Promise<Handle> {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ccanalytics-act-pred-"));
   const dbPath = path.join(tmpDir, "test.duckdb");
   process.env.DB_PATH = dbPath;
+  // Isolate from the dev machine's ~/.ccanalytics/config.json (see bootRouter
+  // above for rationale).
+  process.env.CCANALYTICS_CONFIG_PATH = path.join(tmpDir, "config.json");
 
   // Same module instance as the first describe block, but its singleton was
   // nulled in afterAll() — getConnection() will re-init against our DB_PATH.
@@ -578,9 +598,11 @@ async function bootRouterForPredicate(): Promise<Handle> {
 describe("activity route — cost-row predicate (SEM2-297)", () => {
   let h: Handle;
   let prevDbPath: string | undefined;
+  let prevConfigPath: string | undefined;
 
   beforeAll(async () => {
     prevDbPath = process.env.DB_PATH;
+    prevConfigPath = process.env.CCANALYTICS_CONFIG_PATH;
     h = await bootRouterForPredicate();
   });
 
@@ -588,6 +610,8 @@ describe("activity route — cost-row predicate (SEM2-297)", () => {
     await h.close();
     if (prevDbPath === undefined) delete process.env.DB_PATH;
     else process.env.DB_PATH = prevDbPath;
+    if (prevConfigPath === undefined) delete process.env.CCANALYTICS_CONFIG_PATH;
+    else process.env.CCANALYTICS_CONFIG_PATH = prevConfigPath;
   });
 
   // The fixture has 3 cost-bearing assistant rows + 1 synthetic + 1 null-model
