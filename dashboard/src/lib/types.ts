@@ -279,7 +279,19 @@ export interface SessionStats {
   totalSessions: number;
   totalTurns: number;
   avgTurnsPerSession: number;
+  /**
+   * @deprecated SEM2-281: raw arithmetic mean — long-tailed and dominated by
+   * unclosed "zombie" sessions on real data. Use {@link medianDurationMinutes}
+   * (primary) or {@link cappedMeanDurationMinutes} (secondary, 12h-clamped).
+   * Kept in the payload as a sanity-check / back-compat field.
+   */
   avgDurationMinutes: number;
+  /**
+   * SEM2-281: arithmetic mean with each session's duration clamped at 12h
+   * before averaging — robust secondary KPI.
+   */
+  cappedMeanDurationMinutes: number;
+  /** SEM2-281: median session duration in minutes — primary KPI. */
   medianDurationMinutes: number;
   totalCostUSD: number;
   avgCostPerSession: number;

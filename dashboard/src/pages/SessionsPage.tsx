@@ -155,7 +155,13 @@ export default function SessionsPage() {
   // KPI values
   const kpiTotalSessions = stats.data?.totalSessions ?? 0;
   const kpiAvgCost = stats.data?.avgCostPerSession ?? 0;
-  const kpiAvgDuration = stats.data?.avgDurationMinutes ?? 0;
+  // SEM2-281: surface MEDIAN as the primary duration KPI. The raw arithmetic
+  // mean is structurally misleading on this long-tailed distribution — two
+  // unclosed sessions of ~37 days drag the headline to ~5h. Median is robust,
+  // and we expose the 12h-capped mean as the secondary "average engaged time"
+  // for users who want a mean-like number.
+  const kpiMedianDuration = stats.data?.medianDurationMinutes ?? 0;
+  const kpiCappedMeanDuration = stats.data?.cappedMeanDurationMinutes ?? 0;
   const kpiAvgTurns = stats.data?.avgTurnsPerSession ?? 0;
 
   // Column definitions
@@ -295,10 +301,17 @@ export default function SessionsPage() {
           type="cost"
           loading={stats.isLoading}
         />
+        {/* SEM2-281: MEDIAN is the primary session-duration KPI. Capped mean
+            (each session clamped at 12h before averaging) is shown as a hint
+            line so the user still sees a mean-like number without letting
+            one or two unclosed sessions inflate the headline. The label
+            tooltip explains the choice. */}
         <KPICard
-          label="Avg Duration"
-          value={formatDuration(kpiAvgDuration * 60)}
+          label="Median Session Duration"
+          labelTooltip="Median is the primary duration KPI. The arithmetic mean is structurally misleading on this distribution — a single unclosed session can drag the average into multi-hour territory. The hint shows the mean with each session clamped at 12 hours, which is robust to a couple of zombie sessions while still moving with the bulk of the data."
+          value={formatDuration(kpiMedianDuration * 60)}
           type="duration"
+          hint={`Mean (capped at 12h): ${formatDuration(kpiCappedMeanDuration * 60)}`}
           loading={stats.isLoading}
         />
         <KPICard

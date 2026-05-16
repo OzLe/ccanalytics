@@ -13,6 +13,16 @@ import {
   envelope,
 } from "../helpers/parseFilters.js";
 
+/**
+ * SEM2-281: cap for the "engaged time" mean — mirrors
+ * SESSION_DURATION_CAP_SECONDS in src/queries/session-analyzer.ts. Zombie
+ * sessions (never closed; duration_seconds in the millions) dominate the
+ * arithmetic mean and inflate the headline KPI to ~5h. Clamping each session
+ * at 12h before averaging gives a directional mean that survives a couple of
+ * unclosed sessions. Median is the primary KPI; this is the secondary.
+ */
+const SESSION_DURATION_CAP_SECONDS = 12 * 60 * 60; // 43200
+
 const router = Router();
 
 /**
@@ -124,12 +134,18 @@ router.get("/stats", async (req, res, next) => {
     // filter clauses reference, so the swap is a pure source change.
     const f = buildSessionFilterClauses(filters, 3, "v_session_summary");
 
+    // SEM2-281: compute MEDIAN, capped MEAN (12h clamp), and raw MEAN in a
+    // single round-trip. UI surfaces MEDIAN as primary, capped MEAN as
+    // secondary; raw MEAN stays for back-compat and to make the long-tail
+    // inflation visible in clients that want it.
     const statsSql = `
       SELECT
         COUNT(*) AS total_sessions,
         COALESCE(SUM(num_turns), 0) AS total_turns,
         COALESCE(AVG(num_turns), 0) AS avg_turns_per_session,
         COALESCE(AVG(duration_seconds) / 60.0, 0) AS avg_duration_minutes,
+        COALESCE(AVG(LEAST(duration_seconds, ${SESSION_DURATION_CAP_SECONDS})) / 60.0, 0)
+          AS capped_mean_duration_minutes,
         COALESCE(MEDIAN(duration_seconds) / 60.0, 0) AS median_duration_minutes,
         COALESCE(SUM(total_cost_usd), 0) AS total_cost_usd,
         COALESCE(AVG(total_cost_usd), 0) AS avg_cost_per_session
@@ -161,6 +177,7 @@ router.get("/stats", async (req, res, next) => {
             totalTurns: 0,
             avgTurnsPerSession: 0,
             avgDurationMinutes: 0,
+            cappedMeanDurationMinutes: 0,
             medianDurationMinutes: 0,
             totalCostUSD: 0,
             avgCostPerSession: 0,
@@ -178,6 +195,7 @@ router.get("/stats", async (req, res, next) => {
           totalTurns: Number(stats.total_turns),
           avgTurnsPerSession: Number(stats.avg_turns_per_session),
           avgDurationMinutes: Number(stats.avg_duration_minutes),
+          cappedMeanDurationMinutes: Number(stats.capped_mean_duration_minutes),
           medianDurationMinutes: Number(stats.median_duration_minutes),
           totalCostUSD: Number(stats.total_cost_usd),
           avgCostPerSession: Number(stats.avg_cost_per_session),
