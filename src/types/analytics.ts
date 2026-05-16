@@ -146,10 +146,26 @@ export interface DailyCost {
  * cost totals. `cacheWriteTokens` surfaces `cache_creation_tokens` under the
  * "cache write" wording used everywhere else (matches
  * `CostBreakdown.totalCacheWriteTokens`).
+ *
+ * TOK-001 / TOK-002 (SEM2-288 / SEM2-289): the CANONICAL `totalTokens` is the
+ * 2-way (input + output) Anthropic-API style sum — the headline metric. The
+ * 4-way sum is surfaced separately as `contextVolumeTokens` ("Context Volume"
+ * — model-processed volume INCLUDING cached prompt replay), kept honest as a
+ * secondary metric because on the live dataset it is dominated ~98% by
+ * cache_read replay.
  */
 export interface TokenBreakdown {
-  /** input + output + cacheWrite + cacheRead. */
+  /**
+   * TOK-001: canonical headline — 2-way `input + output` over the cost-row
+   * population. Reconciles 1:1 with `CostBreakdown.totalCostUSD`.
+   */
   totalTokens: number;
+  /**
+   * TOK-002: 4-way `input + output + cacheWrite + cacheRead`. The
+   * model-processed volume including cached prompt replay. SECONDARY metric —
+   * never the headline.
+   */
+  contextVolumeTokens: number;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;

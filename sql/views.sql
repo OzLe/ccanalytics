@@ -61,6 +61,14 @@ ORDER BY date DESC, total_cost DESC;
 -- column already exists on conversation_turns; this view is the only
 -- sql/views.sql touch and it is purely documentary. When the F1 predicate
 -- changes, update BOTH the inline SQL and this view so they cannot drift.
+--
+-- TOK-001 / TOK-002 (SEM2-288 / SEM2-289): Option A — `total_tokens` is the
+-- Anthropic-API style 2-way SUM(input + output); the 4-way sum is preserved
+-- as `context_volume_tokens` (the "Context Volume" metric — model-processed
+-- volume including cached prompt replay). The 2-way is the headline because
+-- Anthropic itself has no `total_tokens` field and bills per-category at four
+-- different rates, AND on the live dataset the 4-way is ~98% cache_read
+-- replay (a "context replay" indicator, not a work measure).
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE VIEW v_token_totals AS
 SELECT
@@ -68,8 +76,12 @@ SELECT
     SUM(output_tokens)                                      AS output_tokens,
     SUM(cache_creation_tokens)                              AS cache_write_tokens,
     SUM(cache_read_tokens)                                  AS cache_read_tokens,
+    -- TOK-001: canonical headline — Anthropic-API style 2-way sum.
+    SUM(input_tokens + output_tokens)                       AS total_tokens,
+    -- TOK-002: 4-way "context volume" — preserves the cache-replay signal as
+    -- a separate, well-labeled column. NEVER the headline.
     SUM(input_tokens + output_tokens
-        + cache_creation_tokens + cache_read_tokens)        AS total_tokens
+        + cache_creation_tokens + cache_read_tokens)        AS context_volume_tokens
 FROM conversation_turns
 WHERE role = 'assistant'
   AND model IS NOT NULL
@@ -118,11 +130,21 @@ SELECT
     s.duration_seconds,
     s.model,
     COALESCE(ta.total_cost_usd, 0.0)    AS total_cost_usd,
+    -- TOK-001 (SEM2-288): canonical headline `total_tokens` is the 2-way
+    -- Anthropic-API style sum. Reconciles 1:1 with total_cost_usd because both
+    -- aggregate over the same conversation_turns rows.
+    COALESCE(
+        ta.input_tokens + ta.output_tokens,
+        0
+    )                                   AS total_tokens,
+    -- TOK-002 (SEM2-289): the 4-way "context volume" — model-processed volume
+    -- including cached prompt replay. Kept as a separate column so the
+    -- cache-replay signal is preserved honestly without polluting the headline.
     COALESCE(
         ta.input_tokens + ta.output_tokens
         + ta.cache_creation_tokens + ta.cache_read_tokens,
         0
-    )                                   AS total_tokens,
+    )                                   AS context_volume_tokens,
     CASE
         WHEN COALESCE(ta.cache_read_tokens + ta.cache_creation_tokens + ta.input_tokens, 0) > 0
         THEN ROUND(
@@ -207,6 +229,12 @@ ORDER BY date DESC;
 -- ---------------------------------------------------------------------------
 -- v_hourly_activity: Activity distribution by hour of day
 -- Reveals peak usage hours and cost distribution
+--
+-- ACT-004 (SEM2-296): `total_tokens` is the 2-way SUM(input + output) so this
+-- view matches /api/activity/hourly (which has always used 2-way) and the
+-- canonical TOK-001 headline. The previous 4-way sum was a ~294x outlier
+-- against the route on the live dataset (97.78% cache_read replay). The 4-way
+-- "context volume" lives on v_token_totals as `context_volume_tokens`.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE VIEW v_hourly_activity AS
 SELECT
@@ -214,7 +242,7 @@ SELECT
     COUNT(*)                            AS message_count,
     COUNT(DISTINCT ct.session_id)       AS session_count,
     ROUND(AVG(ct.cost_usd), 6)         AS avg_cost,
-    SUM(ct.input_tokens + ct.output_tokens + ct.cache_read_tokens + ct.cache_creation_tokens)
+    SUM(ct.input_tokens + ct.output_tokens)
                                         AS total_tokens,
     SUM(ct.cost_usd)                    AS total_cost,
     ROUND(AVG(ct.input_tokens + ct.output_tokens), 0)

@@ -241,7 +241,7 @@ export default function DashboardPage() {
             subtitle="Key metrics for the selected period"
           />
         </div>
-        <div className="grid grid-cols-2 gap-[var(--space-5)] lg:grid-cols-6">
+        <div className="grid grid-cols-2 gap-[var(--space-5)] lg:grid-cols-4 xl:grid-cols-7">
           {[
             <KPICard
               key="total-cost"
@@ -258,16 +258,20 @@ export default function DashboardPage() {
               }
               loading={isLoading}
             />,
-            /* F1: Total Tokens — period total (input + output + cache write +
-               cache read) over the canonical cost-row population, so it
-               reconciles 1:1 with Total Cost. The hint carries the 4-way
-               breakdown and the unfiltered all-time total (D7). No trend
-               badge (D9). Placed adjacent to Total Cost for visual parity. */
+            /* TOK-001 (SEM2-288): Tokens In/Out — the CANONICAL headline,
+               2-way SUM(input + output) over the canonical cost-row population
+               so it reconciles 1:1 with Total Cost. Matches Anthropic's API
+               shape (the API has no `total_tokens` field; it bills four
+               categories at four rates). Subtitle carries the In/Out split
+               and the dataset-wide all-time total (D7). No trend badge (D9).
+               Placed adjacent to Total Cost for visual parity. The 4-way sum
+               is surfaced separately as the "Context Volume" card below so
+               the cache-replay signal is preserved honestly. */
             <KPICard
               key="total-tokens"
               className="h-full"
-              label="Total Tokens"
-              labelTooltip="Sum of input + output + cache-write + cache-read tokens over the same assistant-turn population the Total Cost KPI uses, so the two reconcile. The headline is the selected period; the hint shows the 4-way breakdown and the dataset-wide all-time total (which ignores the active filters)."
+              label="Tokens In/Out"
+              labelTooltip="Sum of input + output tokens (Anthropic API style) over the same assistant-turn population the Total Cost KPI uses, so the two reconcile 1:1. The headline is the selected period; the subtitle shows the In/Out split and the dataset-wide all-time total (which ignores the active filters). For the model-processed volume including cached prompt replay, see the Context Volume card."
               value={
                 tokensTotal.data
                   ? formatTokens(tokensTotal.data.period.totalTokens)
@@ -279,11 +283,38 @@ export default function DashboardPage() {
                 tokensTotal.data
                   ? `In ${formatTokens(tokensTotal.data.period.inputTokens)} · Out ${formatTokens(
                       tokensTotal.data.period.outputTokens,
-                    )} · Cache R ${formatTokens(
+                    )} · All-time ${formatTokens(tokensTotal.data.allTime.totalTokens)}`
+                  : undefined
+              }
+              loading={isLoading}
+            />,
+            /* TOK-002 (SEM2-289): Context Volume — the 4-way SUM(input +
+               output + cache_creation + cache_read). What the model
+               PROCESSED, including cached prompt replay. Kept as a separate,
+               well-labeled metric (not the headline) because on the live
+               dataset it is ~98% cache_read replay — a "context replay"
+               indicator, not a work measure. The hint surfaces the
+               cache-read multiplier so the gap to Tokens In/Out is legible
+               at a glance. */
+            <KPICard
+              key="context-volume"
+              className="h-full"
+              label="Context Volume"
+              labelTooltip="Total tokens the model processed for the selected period, INCLUDING cached prompt replay. Equals input + output + cache-write + cache-read. Typically much larger than Tokens In/Out because prompt caching replays the same context for every turn — so the gap is a measure of cache efficiency, not extra work. Use Tokens In/Out for the work measure that reconciles with Total Cost."
+              value={
+                tokensTotal.data
+                  ? formatTokens(tokensTotal.data.period.contextVolumeTokens)
+                  : "--"
+              }
+              type="tokens"
+              variant="default"
+              hint={
+                tokensTotal.data
+                  ? `Cache R ${formatTokens(
                       tokensTotal.data.period.cacheReadTokens,
                     )} · Cache W ${formatTokens(
                       tokensTotal.data.period.cacheWriteTokens,
-                    )} · All-time ${formatTokens(tokensTotal.data.allTime.totalTokens)}`
+                    )} · All-time ${formatTokens(tokensTotal.data.allTime.contextVolumeTokens)}`
                   : undefined
               }
               loading={isLoading}

@@ -14,6 +14,7 @@
 import { Router } from "express";
 import { query } from "../helpers/db.js";
 import { parseFilters, buildTurnFilterClauses, envelope } from "../helpers/parseFilters.js";
+import { buildTokenSumSql } from "../../../../src/utils/tokenSums.js";
 
 const router = Router();
 
@@ -33,19 +34,29 @@ function costRowPredicate(alias = ""): string {
   return `${p}role = 'assistant' AND ${p}model IS NOT NULL AND ${p}model <> '<synthetic>'`;
 }
 
-/** The four SUM columns + the combined total, identical for both queries. */
+/**
+ * The SUM columns the period and all-time queries share — generated from the
+ * single source of truth in `src/utils/tokenSums.ts`. `total_tokens` is the
+ * 2-way canonical headline (TOK-001) and `context_volume_tokens` is the 4-way
+ * secondary metric (TOK-002), mirroring `TokenAnalyzer.TOKEN_SUM_COLUMNS` 1:1
+ * so the route and the analyzer cannot drift on what "total" means
+ * (SEM2-296 — 293.95x gap before this fix).
+ */
+const SUMS = buildTokenSumSql();
 const TOKEN_SUM_COLUMNS = `
-        COALESCE(SUM(input_tokens), 0) AS input_tokens,
-        COALESCE(SUM(output_tokens), 0) AS output_tokens,
-        COALESCE(SUM(cache_creation_tokens), 0) AS cache_write_tokens,
-        COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
-        COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) AS total_tokens`;
+        ${SUMS.inputTokensSql} AS input_tokens,
+        ${SUMS.outputTokensSql} AS output_tokens,
+        ${SUMS.cacheCreationTokensSql} AS cache_write_tokens,
+        ${SUMS.cacheReadTokensSql} AS cache_read_tokens,
+        ${SUMS.totalTokensSql} AS total_tokens,
+        ${SUMS.contextVolumeTokensSql} AS context_volume_tokens`;
 
 /** Map a raw aggregate row (or `undefined`) to the API breakdown shape. */
 function toBreakdown(row: Record<string, unknown> | undefined) {
   if (!row) {
     return {
       totalTokens: 0,
+      contextVolumeTokens: 0,
       inputTokens: 0,
       outputTokens: 0,
       cacheReadTokens: 0,
@@ -54,6 +65,7 @@ function toBreakdown(row: Record<string, unknown> | undefined) {
   }
   return {
     totalTokens: Number(row.total_tokens),
+    contextVolumeTokens: Number(row.context_volume_tokens),
     inputTokens: Number(row.input_tokens),
     outputTokens: Number(row.output_tokens),
     cacheReadTokens: Number(row.cache_read_tokens),
