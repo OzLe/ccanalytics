@@ -160,8 +160,19 @@ describe("activity route — timezone projection (ACT-001)", () => {
       })
     ).json()) as { data: Array<{ hourOfDay: number; messageCount: number }> };
 
-    const utcHours = utc.data.map((r) => r.hourOfDay).sort((a, b) => a - b);
-    const ilHours = il.data.map((r) => r.hourOfDay).sort((a, b) => a - b);
+    // ACT-003 / SEM2-295: response is always 24 rows per tz (LEFT JOIN
+    // generate_series). Filter to populated hours to assert the tz pivot.
+    expect(utc.data).toHaveLength(24);
+    expect(il.data).toHaveLength(24);
+
+    const utcHours = utc.data
+      .filter((r) => r.messageCount > 0)
+      .map((r) => r.hourOfDay)
+      .sort((a, b) => a - b);
+    const ilHours = il.data
+      .filter((r) => r.messageCount > 0)
+      .map((r) => r.hourOfDay)
+      .sort((a, b) => a - b);
 
     // 03:00Z + 22:30Z → UTC hours 3 and 22; Israel hours 6 and 1.
     expect(utcHours).toEqual([3, 22]);
@@ -232,10 +243,15 @@ describe("activity route — timezone projection (ACT-001)", () => {
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      data: Array<{ hourOfDay: number }>;
+      data: Array<{ hourOfDay: number; messageCount: number }>;
     };
+    // ACT-003 / SEM2-295: 24 rows; filter to the populated UTC hours.
+    expect(body.data).toHaveLength(24);
+    const hours = body.data
+      .filter((r) => r.messageCount > 0)
+      .map((r) => r.hourOfDay)
+      .sort((a, b) => a - b);
     // Falls back to UTC → hours 3, 22.
-    const hours = body.data.map((r) => r.hourOfDay).sort((a, b) => a - b);
     expect(hours).toEqual([3, 22]);
   });
 
@@ -249,9 +265,212 @@ describe("activity route — timezone projection (ACT-001)", () => {
     );
     expect(res.status).toBe(200);
     const body = (await res.json()) as { data: unknown[] };
-    // Just need to ensure no SQL error and a JSON response (no rows is OK
-    // since the fixture timestamps fall outside the 7d window relative to
-    // the test wall clock).
-    expect(Array.isArray(body.data)).toBe(true);
+    // ACT-003 / SEM2-295: even when the time window matches zero rows, the
+    // response is still 24 hour buckets (LEFT JOIN generate_series). Previously
+    // the body was an empty array, which was the silent-drop bug.
+    expect(body.data).toHaveLength(24);
+  });
+});
+
+/**
+ * ACT-003 / SEM2-295 — explicit 24-bucket coverage.
+ *
+ * Boots a fresh router with a *single* fixture turn at the user-local hour 14
+ * and asserts that every hour-of-day shows up (one with a count, 23 zeroed).
+ * Mirrors the canonical case in the LANE D3 lane plan.
+ *
+ * Kept as its own describe block so the fixture is fully isolated from the
+ * ACT-001 tests above — those need two assistant turns at 03:00Z and 22:30Z.
+ */
+async function bootRouterSingleTurn(isoZ: string): Promise<Handle> {
+  // db.ts caches the connection at module scope; close any existing one so the
+  // new DB_PATH actually takes effect on the next getConnection() call.
+  try {
+    const existing = await import("../../dashboard/src/server/helpers/db.js");
+    await existing.closeDb();
+  } catch {
+    /* first call — no module yet */
+  }
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ccanalytics-act003-"));
+  const dbPath = path.join(tmpDir, "test.duckdb");
+  process.env.DB_PATH = dbPath;
+  const { default: activityRouter } = await import(
+    "../../dashboard/src/server/routes/activity.js"
+  );
+  const dbHelper = await import("../../dashboard/src/server/helpers/db.js");
+  await dbHelper.query(`
+    CREATE TABLE IF NOT EXISTS sessions (
+      session_id VARCHAR PRIMARY KEY,
+      start_time TIMESTAMP,
+      end_time TIMESTAMP,
+      duration_seconds INTEGER,
+      model VARCHAR,
+      input_tokens BIGINT,
+      output_tokens BIGINT,
+      cache_creation_tokens BIGINT,
+      cache_read_tokens BIGINT,
+      total_cost_usd DOUBLE,
+      num_turns INTEGER,
+      num_tool_calls INTEGER,
+      project_path VARCHAR,
+      project_name VARCHAR,
+      source_type VARCHAR
+    );
+    CREATE TABLE IF NOT EXISTS conversation_turns (
+      turn_id VARCHAR PRIMARY KEY,
+      session_id VARCHAR,
+      role VARCHAR,
+      timestamp TIMESTAMP,
+      input_tokens BIGINT,
+      output_tokens BIGINT,
+      cache_creation_tokens BIGINT,
+      cache_read_tokens BIGINT,
+      cost_usd DOUBLE,
+      model VARCHAR,
+      stop_reason VARCHAR,
+      request_id VARCHAR,
+      has_tool_use BOOLEAN,
+      has_thinking BOOLEAN
+    );
+  `);
+  // Strip the trailing Z because the column is tz-naive (stored as UTC
+  // wall-clock) and DuckDB rejects 'Z'-suffixed TIMESTAMPs.
+  const naive = isoZ.replace("T", " ").replace(/Z$/, "");
+  await dbHelper.query(`
+    INSERT INTO sessions VALUES (
+      'sess-act003', '${naive}', '${naive}', 60,
+      'claude-sonnet-4-5', 100, 50, 0, 0, 0.01, 1, 0, '/p', 'p', 'claude-code'
+    );
+  `);
+  await dbHelper.query(`
+    INSERT INTO conversation_turns VALUES (
+      'turn-act003', 'sess-act003', 'assistant', '${naive}',
+      100, 50, 0, 0, 0.01, 'claude-sonnet-4-5', 'end_turn', 'req-act003', FALSE, FALSE
+    );
+  `);
+  const app: Express = express();
+  app.use(express.json());
+  app.use("/api/activity", activityRouter);
+  const server = http.createServer(app);
+  await new Promise<void>((resolve) =>
+    server.listen(0, "127.0.0.1", resolve),
+  );
+  const addr = server.address();
+  if (!addr || typeof addr === "string") throw new Error("no addr");
+  const baseUrl = `http://127.0.0.1:${addr.port}`;
+  return {
+    baseUrl,
+    close: async () => {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await dbHelper.closeDb();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    },
+  };
+}
+
+describe("activity route — 24 hour buckets (ACT-003 / SEM2-295)", () => {
+  let h: Handle;
+  let prevDbPath: string | undefined;
+
+  beforeAll(async () => {
+    prevDbPath = process.env.DB_PATH;
+    // Pick a UTC timestamp so that:
+    //   - hour 14 is populated in Asia/Jerusalem (UTC+3 in May)
+    //   - hour 22 is populated in UTC
+    // 11:00Z on a non-DST-Israel day → 14:00 IDT. We use 2026-05-13 (after
+    // Israel's 2026-03-27 spring-forward) so the +3 offset is guaranteed.
+    h = await bootRouterSingleTurn("2026-05-13T11:00:00Z");
+  });
+
+  afterAll(async () => {
+    await h.close();
+    if (prevDbPath === undefined) delete process.env.DB_PATH;
+    else process.env.DB_PATH = prevDbPath;
+  });
+
+  it("Israel: a single turn at local hour 14 produces 24 rows with hour 14 populated and the other 23 zeroed", async () => {
+    const res = await fetch(`${h.baseUrl}/api/activity/hourly?period=all`, {
+      headers: { "X-User-Timezone": "Asia/Jerusalem" },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      data: Array<{
+        hourOfDay: number;
+        messageCount: number;
+        sessionCount: number;
+        totalTokens: number;
+        totalCost: number;
+        avgCost: number;
+        avgTokensPerTurn: number;
+      }>;
+    };
+
+    // Exactly 24 rows, in hour-order 0..23.
+    expect(body.data).toHaveLength(24);
+    expect(body.data.map((r) => r.hourOfDay)).toEqual(
+      Array.from({ length: 24 }, (_, i) => i),
+    );
+
+    // Hour 14 is populated.
+    const fourteen = body.data[14];
+    expect(fourteen).toBeDefined();
+    expect(fourteen?.hourOfDay).toBe(14);
+    expect(fourteen?.messageCount).toBe(1);
+    expect(fourteen?.sessionCount).toBe(1);
+    expect(fourteen?.totalTokens).toBe(150);
+    expect(fourteen?.totalCost).toBeCloseTo(0.01, 6);
+
+    // Every OTHER hour is zeroed (no nulls, no missing rows).
+    for (const row of body.data) {
+      if (row.hourOfDay === 14) continue;
+      expect(row.messageCount).toBe(0);
+      expect(row.sessionCount).toBe(0);
+      expect(row.totalTokens).toBe(0);
+      expect(row.totalCost).toBe(0);
+      expect(row.avgCost).toBe(0);
+      expect(row.avgTokensPerTurn).toBe(0);
+    }
+  });
+
+  it("UTC: same fixture turn lands at UTC hour 11 — 24 rows, hour 11 populated, others zeroed", async () => {
+    const res = await fetch(`${h.baseUrl}/api/activity/hourly?period=all`, {
+      headers: { "X-User-Timezone": "UTC" },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      data: Array<{ hourOfDay: number; messageCount: number }>;
+    };
+
+    expect(body.data).toHaveLength(24);
+    const populated = body.data.filter((r) => r.messageCount > 0);
+    expect(populated).toHaveLength(1);
+    expect(populated[0]?.hourOfDay).toBe(11);
+    expect(populated[0]?.messageCount).toBe(1);
+  });
+
+  it("UTC: a turn at UTC hour 22 lands at hour 22 — 24 rows, hour 22 populated, others zeroed", async () => {
+    // Switch the fixture for the 22:00Z case. Use a second isolated handle so
+    // it doesn't conflict with the 11:00Z fixture above.
+    const h2 = await bootRouterSingleTurn("2026-05-14T22:00:00Z");
+    try {
+      const res = await fetch(`${h2.baseUrl}/api/activity/hourly?period=all`, {
+        headers: { "X-User-Timezone": "UTC" },
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        data: Array<{ hourOfDay: number; messageCount: number }>;
+      };
+      expect(body.data).toHaveLength(24);
+      const populated = body.data.filter((r) => r.messageCount > 0);
+      expect(populated).toHaveLength(1);
+      expect(populated[0]?.hourOfDay).toBe(22);
+      // All non-22 hours are exactly zero (no missing buckets).
+      for (const row of body.data) {
+        if (row.hourOfDay === 22) continue;
+        expect(row.messageCount).toBe(0);
+      }
+    } finally {
+      await h2.close();
+    }
   });
 });
