@@ -547,6 +547,11 @@ export class PromptAnalyzer {
     // Complexity distribution — 5 even buckets of 20.
     // KPI-005: bucketed on the GLOBAL percentile score, consistent with the
     // ranked list and the detail view.
+    // PROMPT-RA-001: filter to responded prompts (multi_turn_depth > 0) to
+    // mirror the dashboard's complexityDistribution CTE. Without this filter
+    // the 0-20 bucket inherits the ~2,187 no-response zero-score prompts that
+    // KPI-004 explicitly excludes elsewhere — drift was 2,863 (CLI) vs 676
+    // (dashboard) on the live dataset (~324%) for the 0-20 bucket alone.
     const complexityDistSql = `
       WITH ${this.buildPromptPairsCTE(f.clauses)},
       ${this.buildGlobalScoresCTE(globalRangeIndex)},
@@ -554,6 +559,7 @@ export class PromptAnalyzer {
         SELECT gs.complexity_score
         FROM scored_prompts sp
         LEFT JOIN g_scored_prompts gs ON gs.turn_id = sp.turn_id
+        WHERE sp.multi_turn_depth > 0
       )
       SELECT
         CASE
