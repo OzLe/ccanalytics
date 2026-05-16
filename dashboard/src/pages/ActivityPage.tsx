@@ -16,7 +16,8 @@ import CalendarHeatmap from "@/components/charts/CalendarHeatmap";
 import HourlyHeatmap from "@/components/charts/HourlyHeatmap";
 import ErrorBoundary from "@/components/ui/ErrorBoundary";
 import { useActivityHourly, useActivityDaily, useActivityHeatmap } from "@/hooks/useActivityData";
-import { formatDate } from "@/lib/formatters";
+import { useSettings } from "@/hooks/useSettings";
+import { formatDate, getLocalDateISO } from "@/lib/formatters";
 import {
   CHART_COLORS,
   GRID_PROPS,
@@ -36,6 +37,14 @@ export default function ActivityPage() {
   const hourly = useActivityHourly();
   const daily = useActivityDaily();
   const heatmap = useActivityHeatmap();
+  // ACT-001: resolve the same IANA zone the server uses so "today" lines up
+  // with the server's local-date bucket. Falls back to the browser's zone if
+  // the server hasn't loaded yet or doesn't return a display block.
+  const settings = useSettings();
+  const userTimezone =
+    settings.data?.display?.userTimezone ||
+    Intl.DateTimeFormat().resolvedOptions().timeZone ||
+    "UTC";
 
   // Fill in all 24 hours (some may be missing from API)
   const hourlyData = useMemo(() => {
@@ -67,13 +76,16 @@ export default function ActivityPage() {
     return hourlyData.reduce((sum, h) => sum + h.messages, 0);
   }, [hourlyData]);
 
-  // Sessions today (from daily data - last entry)
+  // Sessions today (from daily data - last entry).
+  // ACT-001: "today" must be the user's local date, not UTC's — the server
+  // already buckets the timestamp by `display.userTimezone`, so comparing
+  // against a UTC ISO date silently mismatches around midnight.
   const sessionsToday = useMemo(() => {
     if (!daily.data || daily.data.length === 0) return 0;
-    const today = new Date().toISOString().slice(0, 10);
+    const today = getLocalDateISO(new Date(), userTimezone);
     const todayEntry = daily.data.find((d) => d.timestamp.startsWith(today));
     return todayEntry?.value ?? 0;
-  }, [daily.data]);
+  }, [daily.data, userTimezone]);
 
   // Daily bar chart data
   const dailyData = useMemo(() => {

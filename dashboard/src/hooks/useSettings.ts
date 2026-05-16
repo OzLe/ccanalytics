@@ -12,6 +12,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPut } from "@/lib/api";
 import type {
   ApiEnvelope,
+  DisplaySettings,
   SubscriptionSettings,
   SubscriptionTier,
 } from "@/lib/types";
@@ -19,11 +20,17 @@ import type {
 /** Response payload shape for GET/PUT /api/settings. */
 interface SettingsData {
   subscription: SubscriptionSettings;
+  /** ACT-001 / SEM2-293: optional for back-compat with older server builds. */
+  display?: DisplaySettings;
 }
 
-/** Request body for PUT /api/settings — only the tier is required. */
+/**
+ * Request body for PUT /api/settings. Either `subscription` or `display` can
+ * be sent on its own; the server preserves the other half from disk.
+ */
 interface UpdateSettingsBody {
-  subscription: { tier: SubscriptionTier; monthlyUSD?: number };
+  subscription?: { tier: SubscriptionTier; monthlyUSD?: number };
+  display?: { userTimezone: string };
 }
 
 /** GET /api/settings — resolved subscription config. */
@@ -38,25 +45,39 @@ export function useSettings() {
 }
 
 /**
- * PUT /api/settings — persists the subscription tier.
+ * PUT /api/settings — persists the subscription tier and/or display block.
  *
- * On success, invalidates ['settings'] AND all ['cost', …] / ['dashboard', …]
- * keys so every cost figure and the ROI band re-render with the new prorated
- * fee. monthlyUSD is derived server-side from the tier, so callers send only
- * `{ subscription: { tier } }`.
+ * On success, invalidates ['settings'] AND every query that depends on
+ * either the subscription fee (cost/dashboard) OR the timezone projection
+ * (activity/cache/tools/skills/cost) — the safest catch-all is to clear
+ * the whole query cache when a `display` field changes, but to keep the UX
+ * snappy we settle for invalidating the time-math query keys. The caller
+ * passes only the keys it wants changed; the server preserves the rest.
  */
 export function useUpdateSettings() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (body: UpdateSettingsBody) =>
       apiPut<ApiEnvelope<SettingsData>>("/settings", body),
-    onSuccess: (res) => {
+    onSuccess: (res, variables) => {
       // Seed the settings cache with the server's authoritative response.
       queryClient.setQueryData<ApiEnvelope<SettingsData>>(["settings"], res);
       queryClient.invalidateQueries({ queryKey: ["settings"] });
-      // The prorated fee changed — recompute everything cost-derived.
-      queryClient.invalidateQueries({ queryKey: ["cost"] });
-      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+
+      if (variables.subscription) {
+        // The prorated fee changed — recompute everything cost-derived.
+        queryClient.invalidateQueries({ queryKey: ["cost"] });
+        queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      }
+
+      if (variables.display) {
+        // ACT-001: every hour-of-day / day-of-week / local-date / DATE_TRUNC
+        // bucket on the server is re-projected through the new tz, so every
+        // time-math query key needs to refetch.
+        for (const key of ["activity", "cost", "cache", "tools", "skills", "dashboard"]) {
+          queryClient.invalidateQueries({ queryKey: [key] });
+        }
+      }
     },
   });
 }

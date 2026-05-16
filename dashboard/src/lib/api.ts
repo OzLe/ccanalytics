@@ -10,18 +10,40 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Best-effort browser-local IANA timezone for the X-User-Timezone header
+ * (ACT-001 / SEM2-293). The server uses this as its highest-precedence
+ * source — config.json `display.userTimezone` and the UTC fallback only
+ * kick in if this is missing/invalid. Empty in non-browser contexts (tests,
+ * SSR), in which case the server falls through to config.json / UTC.
+ */
+function resolveBrowserTimezone(): string {
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return typeof tz === "string" && tz.length > 0 ? tz : "";
+  } catch {
+    return "";
+  }
+}
+
 export async function apiFetch<T>(
   endpoint: string,
   options?: RequestInit,
 ): Promise<T> {
   const url = `${BASE_URL}${endpoint}`;
 
+  const browserTz = resolveBrowserTimezone();
+  const baseHeaders: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (browserTz) baseHeaders["X-User-Timezone"] = browserTz;
+
   const response = await fetch(url, {
+    ...options,
     headers: {
-      "Content-Type": "application/json",
+      ...baseHeaders,
       ...options?.headers,
     },
-    ...options,
   });
 
   if (!response.ok) {
