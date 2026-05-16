@@ -2,6 +2,8 @@ import React, { useRef, useEffect, useCallback, useState } from "react";
 import * as d3 from "d3";
 import type { ActivityDaily } from "@/lib/types";
 import { TOOLTIP_BG, TOOLTIP_BORDER, TOOLTIP_TEXT } from "@/lib/chartTheme";
+import { getLocalDateISO } from "@/lib/formatters";
+import { useSettings } from "@/hooks/useSettings";
 
 interface Props {
   data: ActivityDaily[] | undefined;
@@ -24,6 +26,18 @@ export default function CalendarHeatmap({ data }: Props) {
   const [legendColors, setLegendColors] = useState<string[]>([]);
   const [maxVal, setMaxVal] = useState(0);
 
+  // ACT-001: align the per-cell date string with the server's local-date
+  // bucket. data[i].timestamp is the server's CAST(... AS DATE) value, which
+  // is a UTC-midnight TIMESTAMP whose date *string* IS already the user's
+  // local date — slice(0,10) extracts the local YYYY-MM-DD safely. The
+  // per-cell loop below needs to compute its YYYY-MM-DD in the SAME zone or
+  // the heatmap key lookup misses.
+  const settings = useSettings();
+  const userTimezone =
+    settings.data?.display?.userTimezone ||
+    Intl.DateTimeFormat().resolvedOptions().timeZone ||
+    "UTC";
+
   const render = useCallback(() => {
     if (!data || !svgRef.current || !containerRef.current) return;
 
@@ -32,25 +46,27 @@ export default function CalendarHeatmap({ data }: Props) {
     const colorHoverStroke = style.getPropertyValue("--heatmap-hover-stroke").trim();
     const colorLabel = style.getPropertyValue("--heatmap-label").trim();
 
-    // Build a map of date string -> value
+    // Build a map of date string -> value (already in server-local-date).
     const valueByDate = new Map<string, number>();
     for (const d of data) {
       const dateStr = d.timestamp.slice(0, 10);
       valueByDate.set(dateStr, (valueByDate.get(dateStr) ?? 0) + d.value);
     }
 
-    // Generate last ~365 days
+    // Generate last ~365 days. The cell loop walks calendar days in the
+    // user's local zone, so it can never disagree with the server keys.
     const today = new Date();
     const startDate = new Date(today);
     startDate.setDate(startDate.getDate() - 364);
-    // Adjust to start on a Sunday
+    // Adjust to start on a Sunday (browser-local DOW — the cell grid is
+    // visual, not semantic).
     const dayOfWeek = startDate.getDay();
     startDate.setDate(startDate.getDate() - dayOfWeek);
 
     const days: { date: Date; value: number; dateStr: string }[] = [];
     const current = new Date(startDate);
     while (current <= today) {
-      const dateStr = current.toISOString().slice(0, 10);
+      const dateStr = getLocalDateISO(current, userTimezone);
       days.push({
         date: new Date(current),
         value: valueByDate.get(dateStr) ?? 0,
@@ -215,7 +231,7 @@ export default function CalendarHeatmap({ data }: Props) {
     if (containerRef.current) {
       containerRef.current.scrollLeft = containerRef.current.scrollWidth;
     }
-  }, [data]);
+  }, [data, userTimezone]);
 
   useEffect(() => {
     render();

@@ -137,6 +137,15 @@ export interface SubscriptionSettings {
   monthlyUSD: number;
 }
 
+/**
+ * Display preferences returned by GET /api/settings. Tied to ACT-001 /
+ * SEM2-293 — `userTimezone` controls how the dashboard projects
+ * tz-naive UTC timestamps into local hour-of-day / date math.
+ */
+export interface DisplaySettings {
+  userTimezone: string;
+}
+
 /** A selectable subscription tier option for the Settings tier picker. */
 export interface SubscriptionTierOption {
   id: SubscriptionTier;

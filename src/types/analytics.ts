@@ -26,6 +26,13 @@ export type SortOrder = "asc" | "desc";
 export interface QueryFilters {
   model?: string;
   project?: string;
+  /**
+   * IANA timezone for projecting tz-naive UTC timestamps into local-time math
+   * (EXTRACT hour/DOW, CAST AS DATE, DATE_TRUNC). When omitted, queries fall
+   * back to `DEFAULT_TIMEZONE` (`'UTC'`). See ACT-001 / SEM2-293 and
+   * `src/utils/timezone.ts`.
+   */
+  userTimezone?: string;
 }
 
 // ---------------------------------------------------------------------------

@@ -56,6 +56,7 @@ export class ConnectionManager implements ConnectionLike {
       this.instance = await DuckDB.create(dbPath);
       this.connection = await this.instance.connect();
       this.dbPath = dbPath;
+      await this.applySessionDefaults();
     } catch (err) {
       if (dbPath === ":memory:") {
         throw new ConnectionError(
@@ -78,6 +79,7 @@ export class ConnectionManager implements ConnectionLike {
           this.instance = await DuckDB.create(dbPath);
           this.connection = await this.instance.connect();
           this.dbPath = dbPath;
+          await this.applySessionDefaults();
           return;
         } catch (retryErr) {
           // WAL removal wasn't enough — fall through to corruption recovery
@@ -105,6 +107,7 @@ export class ConnectionManager implements ConnectionLike {
           this.instance = await DuckDB.create(dbPath);
           this.connection = await this.instance.connect();
           this.dbPath = dbPath;
+          await this.applySessionDefaults();
           return;
         } catch (retryErr) {
           throw new ConnectionError(
@@ -126,6 +129,39 @@ export class ConnectionManager implements ConnectionLike {
    */
   private looksCorrupt(msg: string): boolean {
     return CORRUPTION_PATTERNS.some((p) => msg.includes(p));
+  }
+
+  /**
+   * Pin session defaults that every part of the read path relies on
+   * (ACT-001 / SEM2-293).
+   *
+   *   - `SET TimeZone = 'UTC'` defends the storage invariant: ingest writes
+   *     `Date.toISOString()` (Z-suffixed) and DuckDB stores the wall-clock
+   *     value as if it were the UTC instant. If the DB session tz were ever
+   *     flipped to a local zone, `naive_ts AT TIME ZONE 'UTC'` would no longer
+   *     mean "treat this stored value as UTC" — it would mean "shift it from
+   *     the session local zone into UTC". Pinning to UTC removes the
+   *     ambiguity globally.
+   *
+   *   - The ICU/AT TIME ZONE liveness probe asserts that the projection
+   *     primitive we use everywhere actually works on this build. ICU is
+   *     statically linked in @duckdb/node-api 1.4.x, but a smoke test is
+   *     cheap insurance — if it ever regresses we want a loud, early error
+   *     rather than silent UTC-labeled-as-local readings in the dashboard.
+   */
+  private async applySessionDefaults(): Promise<void> {
+    if (!this.connection) return;
+    await this.connection.run("SET TimeZone = 'UTC'");
+    try {
+      await this.connection.run(
+        "SELECT EXTRACT(HOUR FROM ('2026-01-01T12:00:00'::TIMESTAMP AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Jerusalem')",
+      );
+    } catch (err) {
+      throw new ConnectionError(
+        "DuckDB AT TIME ZONE / ICU extension liveness check failed — local-time queries will not work correctly",
+        err as Error,
+      );
+    }
   }
 
   /**

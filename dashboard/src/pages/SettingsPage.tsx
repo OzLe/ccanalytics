@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import { Button } from "@/components/ui/Button";
@@ -123,6 +123,149 @@ function SubscriptionSection() {
   );
 }
 
+/**
+ * Timezone picker — controls how the dashboard projects tz-naive UTC
+ * timestamps into local hour-of-day / date math. Mirrors the
+ * `display.userTimezone` half of /api/settings (ACT-001 / SEM2-293). The
+ * `Intl.supportedValuesOf('timeZone')` list is the IANA gold standard but
+ * excludes the universal ids; we prepend "UTC" so users on UTC can still
+ * pick it.
+ */
+function TimezoneSection() {
+  const settings = useSettings();
+  const updateSettings = useUpdateSettings();
+
+  // The list the picker offers: UTC + the browser-known IANA zones.
+  // Computed once; the runtime never changes its IANA database mid-session.
+  const zoneOptions = useMemo<string[]>(() => {
+    const intlAny = Intl as unknown as {
+      supportedValuesOf?: (k: string) => string[];
+    };
+    const supported =
+      typeof intlAny.supportedValuesOf === "function"
+        ? intlAny.supportedValuesOf("timeZone")
+        : [];
+    return ["UTC", ...supported.filter((z) => z !== "UTC")];
+  }, []);
+
+  const browserTz =
+    (Intl.DateTimeFormat().resolvedOptions().timeZone as string) || "UTC";
+
+  // Staged value (the picker). When the server reports an empty/UTC value
+  // AND the browser is in a different zone, we silently auto-PUT the
+  // browser zone — that's the "default on first load" behaviour the plan
+  // requires, so the dashboard works out of the box without an explicit
+  // settings visit.
+  const [selectedTz, setSelectedTz] = useState<string>("UTC");
+  const [autoSeeded, setAutoSeeded] = useState(false);
+
+  useEffect(() => {
+    const serverTz = settings.data?.display?.userTimezone;
+    if (serverTz) setSelectedTz(serverTz);
+  }, [settings.data?.display?.userTimezone]);
+
+  useEffect(() => {
+    if (autoSeeded) return;
+    if (!settings.data) return;
+    const serverTz = settings.data.display?.userTimezone;
+    // Auto-seed only if the server explicitly returned UTC AND the user is
+    // in a different zone — never overwrite an explicit non-UTC server
+    // value, never auto-write when the server returns nothing (let the
+    // user opt in manually so we don't spam writes from every load).
+    if (serverTz === "UTC" && browserTz !== "UTC" && zoneOptions.includes(browserTz)) {
+      updateSettings.mutate({ display: { userTimezone: browserTz } });
+      setSelectedTz(browserTz);
+    }
+    setAutoSeeded(true);
+  }, [settings.data, browserTz, autoSeeded, updateSettings, zoneOptions]);
+
+  const serverTz = settings.data?.display?.userTimezone;
+  const isDirty = serverTz !== undefined && selectedTz !== serverTz;
+  const isSaving = updateSettings.isPending;
+  const justSaved = updateSettings.isSuccess && !isDirty;
+
+  const handleSave = () => {
+    updateSettings.mutate({ display: { userTimezone: selectedTz } });
+  };
+
+  return (
+    <section className="space-y-[var(--space-5)]">
+      <SectionHeader
+        title="Timezone"
+        subtitle="Hour-of-day, day-of-week, and local-date charts are projected into this zone"
+      />
+
+      <div
+        className={cn(
+          "rounded-[var(--radius-xl)] border border-[var(--border)]",
+          "bg-[var(--bg-surface)] p-[var(--space-6)] space-y-[var(--space-3)]"
+        )}
+      >
+        <div>
+          <label
+            htmlFor="user-timezone"
+            className="text-overline text-[var(--text-primary)]"
+          >
+            Display Timezone
+          </label>
+          <p className="mt-[var(--space-1)] text-small text-[var(--text-secondary)]">
+            Stored timestamps remain UTC; this only changes how the
+            dashboard re-projects them for the Activity, Cost, Cache, Tools
+            and Skills surfaces. Detected browser zone:{" "}
+            <span className="font-mono">{browserTz}</span>.
+          </p>
+        </div>
+
+        <select
+          id="user-timezone"
+          value={selectedTz}
+          disabled={settings.isLoading || isSaving}
+          onChange={(e) => setSelectedTz(e.target.value)}
+          className={cn(
+            "w-full max-w-md rounded-[var(--radius-md)] border border-[var(--border)]",
+            "bg-[var(--bg-elevated)] px-[var(--space-3)] py-[var(--space-2)]",
+            "text-body text-[var(--text-primary)] font-mono",
+            "transition-colors duration-[var(--duration-fast)]",
+            "hover:border-[var(--border-hover)]",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]",
+            "focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg-base)]",
+            "disabled:opacity-50"
+          )}
+        >
+          {zoneOptions.map((zone) => (
+            <option key={zone} value={zone}>
+              {zone}
+            </option>
+          ))}
+        </select>
+
+        <div className="flex items-center gap-[var(--space-3)] pt-[var(--space-1)]">
+          <Button
+            variant="primary"
+            onClick={handleSave}
+            disabled={!isDirty || isSaving || settings.isLoading}
+          >
+            {isSaving ? "Saving…" : "Save"}
+          </Button>
+
+          {justSaved && (
+            <span className="inline-flex items-center gap-[var(--space-1)] text-small text-[var(--success)]">
+              <Check size={14} strokeWidth={2.5} />
+              Saved
+            </span>
+          )}
+
+          {updateSettings.isError && (
+            <span className="text-small text-[var(--danger)]">
+              Could not save timezone. Please try again.
+            </span>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export default function SettingsPage() {
   return (
     <ErrorBoundary onRetry={() => window.location.reload()}>
@@ -174,6 +317,9 @@ export default function SettingsPage() {
             </div>
           </div>
         </section>
+
+        {/* ── Timezone ─────────────────────────────────────────── */}
+        <TimezoneSection />
 
         {/* ── Subscription ─────────────────────────────────────── */}
         <SubscriptionSection />

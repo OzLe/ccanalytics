@@ -17,6 +17,7 @@ import type {
 } from "../types/index.js";
 import type { QueryExecutor } from "../db/executor.js";
 import { buildTurnFilters } from "./filter-builder.js";
+import { resolveTimezone, wrapTimestampForTz } from "../utils/timezone.js";
 
 /** Success rate details for a single tool. */
 export interface ToolSuccessRate {
@@ -388,13 +389,16 @@ export class ToolAnalyzer {
       throw new Error(`Invalid time bucket: ${bucket}`);
     }
 
-    const f = buildTurnFilters(filters, 3);
+    // ACT-001: bucket boundaries follow the user's local clock.
+    const userTimezone = resolveTimezone(filters?.userTimezone);
+    const f = buildTurnFilters(filters, 4);
     const filterClauses = f.clauses.map((c) =>
       c.replace(/\bAND model\b/, "AND ct.model").replace(/\bAND session_id\b/, "AND ct.session_id"),
     );
+    const localTs = wrapTimestampForTz("ct.timestamp", "$3");
     const sql = `
       SELECT
-        DATE_TRUNC('${duckBucket}', ct.timestamp) AS ts,
+        DATE_TRUNC('${duckBucket}', ${localTs}) AS ts,
         CASE WHEN tc.tool_type = 'mcp' THEN 'mcp' ELSE 'builtin' END AS tool_class,
         COUNT(*) AS total_calls,
         COUNT(*) FILTER (WHERE tc.success IS NOT NULL) AS evaluated_calls,
@@ -412,7 +416,7 @@ export class ToolAnalyzer {
       total_calls: number;
       evaluated_calls: number;
       failure_count: number;
-    }>(sql, [range.start, range.end, ...f.params]);
+    }>(sql, [range.start, range.end, userTimezone, ...f.params]);
 
     // Pivot the (bucket, tool_class) rows into one point per bucket.
     const byBucket = new Map<

@@ -12,6 +12,10 @@ import {
   buildTurnFilterClauses,
   envelope,
 } from "../helpers/parseFilters.js";
+// ACT-001 / SEM2-293: DATE_TRUNC for /api/tools/failure-trend projects the
+// stored UTC-wall-clock timestamp through the user's IANA zone ($3) so the
+// failure-rate trendline matches the user's wall clock.
+import { wrapTimestampForTz } from "../../../../src/utils/timezone.js";
 
 const router = Router();
 
@@ -252,14 +256,16 @@ router.get("/failure-trend", async (req, res, next) => {
       });
     }
 
-    const f = buildTurnFilterClauses(filters, 3);
+    // ACT-001: $3 = userTimezone, filter binds start at $4.
+    const f = buildTurnFilterClauses(filters, 4);
     const filterClauses = f.clauses.map((c) =>
       c.replace(/\bAND model\b/, "AND ct.model").replace(/\bAND session_id\b/, "AND ct.session_id"),
     );
+    const localTs = wrapTimestampForTz("ct.timestamp", "$3");
 
     const sql = `
       SELECT
-        DATE_TRUNC('${duckBucket}', ct.timestamp) AS ts,
+        DATE_TRUNC('${duckBucket}', ${localTs}) AS ts,
         CASE WHEN tc.tool_type = 'mcp' THEN 'mcp' ELSE 'builtin' END AS tool_class,
         COUNT(*) AS total_calls,
         COUNT(*) FILTER (WHERE tc.success IS NOT NULL) AS evaluated_calls,
@@ -275,6 +281,7 @@ router.get("/failure-trend", async (req, res, next) => {
     const result = await query(sql, [
       filters.range.start,
       filters.range.end,
+      filters.userTimezone,
       ...f.params,
     ]);
 

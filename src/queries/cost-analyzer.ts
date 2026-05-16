@@ -18,6 +18,7 @@ import type {
 import type { QueryExecutor } from "../db/executor.js";
 import { buildTurnFilters, buildSessionFilters } from "./filter-builder.js";
 import { getPricing } from "../utils/pricing.js";
+import { resolveTimezone, wrapTimestampForTz } from "../utils/timezone.js";
 
 /**
  * Canonical row-inclusion predicate for cost aggregation (COST-005).
@@ -70,10 +71,14 @@ export class CostAnalyzer {
    * @returns Array of daily cost rows
    */
   async getDailyCosts(range: TimeRange, filters?: QueryFilters): Promise<DailyCost[]> {
-    const f = buildTurnFilters(filters, 3);
+    // ACT-001: bind $3 = userTimezone; the local-date CAST projects through it
+    // so a turn at 22:30Z lands in the user's local "tomorrow" not UTC's "today".
+    const userTimezone = resolveTimezone(filters?.userTimezone);
+    const f = buildTurnFilters(filters, 4);
+    const localDate = `CAST(${wrapTimestampForTz("timestamp", "$3")} AS DATE)`;
     const sql = `
       SELECT
-        CAST(timestamp AS DATE) AS date,
+        ${localDate} AS date,
         model,
         SUM(cost_usd) AS total_cost,
         SUM(input_tokens) AS input_tokens,
@@ -86,7 +91,7 @@ export class CostAnalyzer {
       WHERE ${costRowPredicate()}
         AND timestamp >= $1 AND timestamp < $2
         ${f.clauses.join("\n        ")}
-      GROUP BY CAST(timestamp AS DATE), model
+      GROUP BY ${localDate}, model
       ORDER BY date DESC, total_cost DESC
     `;
     const result = await this.executor.query<{
@@ -99,7 +104,7 @@ export class CostAnalyzer {
       cache_read_tokens: number;
       turn_count: number;
       session_count: number;
-    }>(sql, [range.start, range.end, ...f.params]);
+    }>(sql, [range.start, range.end, userTimezone, ...f.params]);
 
     return result.rows.map((row) => ({
       date: String(row.date),
@@ -348,10 +353,14 @@ export class CostAnalyzer {
       throw new Error(`Invalid time bucket: ${bucket}`);
     }
 
-    const f = buildTurnFilters(filters, 3);
+    // ACT-001: bucket boundaries follow the user's local clock so a 22:30Z
+    // turn rolls into the user's "today" bucket, not UTC's "today".
+    const userTimezone = resolveTimezone(filters?.userTimezone);
+    const f = buildTurnFilters(filters, 4);
+    const localTs = wrapTimestampForTz("timestamp", "$3");
     const sql = `
       SELECT
-        DATE_TRUNC('${duckBucket}', timestamp) AS ts,
+        DATE_TRUNC('${duckBucket}', ${localTs}) AS ts,
         COALESCE(SUM(cost_usd), 0) AS cost_usd,
         COALESCE(SUM(input_tokens), 0) AS input_tokens,
         COALESCE(SUM(output_tokens), 0) AS output_tokens,
@@ -371,7 +380,7 @@ export class CostAnalyzer {
       output_tokens: number;
       cache_creation_tokens: number;
       cache_read_tokens: number;
-    }>(sql, [range.start, range.end, ...f.params]);
+    }>(sql, [range.start, range.end, userTimezone, ...f.params]);
 
     return result.rows.map((row) => ({
       timestamp: new Date(row.ts),

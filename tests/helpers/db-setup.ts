@@ -44,10 +44,18 @@ export const SKILL_DESC = {
 
 /**
  * Create an in-memory DuckDB instance with the full schema loaded.
+ *
+ * Pins `SET TimeZone = 'UTC'` to match `ConnectionManager.applySessionDefaults`
+ * — ACT-001 / SEM2-293 relies on the session tz being UTC so the
+ * `(naive AT TIME ZONE 'UTC') AT TIME ZONE $user_tz` projection means what we
+ * expect. Without this the tz tests would still pass on macOS/Linux runners
+ * (they typically default to UTC) but would silently regress on CI hosts
+ * running in another zone.
  */
 export async function createTestDB(): Promise<TestDB> {
   const instance = await DuckDBInstance.create(":memory:");
   const connection = await instance.connect();
+  await connection.run("SET TimeZone = 'UTC'");
 
   // Load schema.sql
   const sqlDir = path.resolve(process.cwd(), "sql");

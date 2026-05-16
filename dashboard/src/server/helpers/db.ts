@@ -62,7 +62,36 @@ function looksCorrupt(msg: string): boolean {
 async function openDb(p: string): Promise<DuckDBConnection> {
   const inst = await DuckDBInstance.create(p);
   const conn = await inst.connect();
+  await applySessionDefaults(conn);
   return conn;
+}
+
+/**
+ * Pin session defaults that every read path depends on (ACT-001 / SEM2-293).
+ *
+ * `SET TimeZone = 'UTC'` defends the storage invariant: ingest writes
+ * `Date.toISOString()` (Z-suffixed) and DuckDB stores the wall-clock value as
+ * if it were the UTC instant. If the session tz were ever flipped, the
+ * `(ts AT TIME ZONE 'UTC') AT TIME ZONE $user_tz` projection would no longer
+ * mean what we think.
+ *
+ * The ICU/AT TIME ZONE liveness probe asserts the projection primitive we use
+ * everywhere actually works on this build. ICU is statically linked in
+ * @duckdb/node-api 1.4.x, but the probe is cheap insurance — if it ever
+ * regresses we want a loud, early error rather than silent UTC-labeled-as-
+ * local readings in the dashboard.
+ */
+async function applySessionDefaults(conn: DuckDBConnection): Promise<void> {
+  await conn.run("SET TimeZone = 'UTC'");
+  try {
+    await conn.run(
+      "SELECT EXTRACT(HOUR FROM ('2026-01-01T12:00:00'::TIMESTAMP AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Jerusalem')",
+    );
+  } catch (err) {
+    throw new Error(
+      `DuckDB AT TIME ZONE / ICU extension liveness check failed — local-time queries will not work correctly: ${(err as Error).message}`,
+    );
+  }
 }
 
 /**

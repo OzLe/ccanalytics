@@ -41,6 +41,10 @@ import {
   estimateSkillTokens,
   isKnownReentrantSkill,
 } from "../../lib/skillThresholds.js";
+// ACT-001 / SEM2-293: /api/skills/trend buckets each session by the
+// projection of MIN(timestamp) through the user's IANA zone, so a session
+// whose first turn was 22:30Z lands in the user's local "tomorrow" bucket.
+import { wrapTimestampForTz } from "../../../../src/utils/timezone.js";
 
 const router = Router();
 
@@ -438,13 +442,15 @@ router.get("/trend", async (req, res, next) => {
       });
     }
 
-    const f = buildTurnFilterClauses(filters, 3);
+    // ACT-001: $3 = userTimezone; filter binds start at $4.
+    const f = buildTurnFilterClauses(filters, 4);
+    const localTs = wrapTimestampForTz("MIN(timestamp)", "$3");
 
     const sql = `
       WITH session_bucket AS (
         SELECT
           session_id,
-          DATE_TRUNC('${duckBucket}', MIN(timestamp)) AS ts
+          DATE_TRUNC('${duckBucket}', ${localTs}) AS ts
         FROM conversation_turns
         WHERE timestamp >= $1 AND timestamp < $2
           ${f.clauses.join("\n          ")}
@@ -484,6 +490,7 @@ router.get("/trend", async (req, res, next) => {
     const result = await query(sql, [
       filters.range.start,
       filters.range.end,
+      filters.userTimezone,
       ...f.params,
     ]);
 

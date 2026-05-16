@@ -18,6 +18,10 @@ import {
 // src/utils/pricing.ts uses for ingest-time cost calculation. They are no
 // longer hand-maintained, so the SQL rates can never drift from pricing.ts.
 import { buildRateCaseSql } from "../../../../src/utils/pricing.js";
+// ACT-001 / SEM2-293: hour-of-day / local-date / DATE_TRUNC math projects the
+// stored UTC-wall-clock timestamp through the user's IANA zone. $3 is the
+// timezone bind everywhere; filter clauses therefore start at $4.
+import { wrapTimestampForTz } from "../../../../src/utils/timezone.js";
 
 const router = Router();
 
@@ -152,11 +156,13 @@ router.get("/total", async (req, res, next) => {
 router.get("/daily", async (req, res, next) => {
   try {
     const filters = parseFilters(req);
-    const f = buildTurnFilterClauses(filters, 3);
+    // $3 = userTimezone (ACT-001); filter binds start at $4.
+    const f = buildTurnFilterClauses(filters, 4);
+    const localDate = `CAST(${wrapTimestampForTz("timestamp", "$3")} AS DATE)`;
 
     const sql = `
       SELECT
-        CAST(CAST(timestamp AS DATE) AS VARCHAR) AS date,
+        CAST(${localDate} AS VARCHAR) AS date,
         model,
         SUM(cost_usd) AS total_cost,
         SUM(input_tokens) AS input_tokens,
@@ -169,13 +175,14 @@ router.get("/daily", async (req, res, next) => {
       WHERE ${costRowPredicate()}
         AND timestamp >= $1 AND timestamp < $2
         ${f.clauses.join("\n        ")}
-      GROUP BY CAST(CAST(timestamp AS DATE) AS VARCHAR), model
+      GROUP BY CAST(${localDate} AS VARCHAR), model
       ORDER BY date ASC, total_cost DESC
     `;
 
     const result = await query(sql, [
       filters.range.start,
       filters.range.end,
+      filters.userTimezone,
       ...f.params,
     ]);
 
@@ -362,11 +369,13 @@ router.get("/trend", async (req, res, next) => {
       });
     }
 
-    const f = buildTurnFilterClauses(filters, 3);
+    // ACT-001: $3 = userTimezone, filter binds shift to $4.
+    const f = buildTurnFilterClauses(filters, 4);
+    const localTs = wrapTimestampForTz("timestamp", "$3");
 
     const sql = `
       SELECT
-        DATE_TRUNC('${duckBucket}', timestamp) AS ts,
+        DATE_TRUNC('${duckBucket}', ${localTs}) AS ts,
         COALESCE(SUM(cost_usd), 0) AS cost_usd,
         COALESCE(SUM(input_tokens), 0) AS input_tokens,
         COALESCE(SUM(output_tokens), 0) AS output_tokens,
@@ -383,6 +392,7 @@ router.get("/trend", async (req, res, next) => {
     const result = await query(sql, [
       filters.range.start,
       filters.range.end,
+      filters.userTimezone,
       ...f.params,
     ]);
 

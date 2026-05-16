@@ -16,6 +16,9 @@ import {
 // generated from the same PRICING table as src/utils/pricing.ts, so it can
 // never drift and automatically covers claude-opus-4-7.
 import { buildCacheSavingsRateCaseSql } from "../../../../src/utils/pricing.js";
+// ACT-001 / SEM2-293: local-date buckets for /api/cache/trend project the
+// stored UTC-wall-clock timestamp through the user's IANA zone ($3).
+import { wrapTimestampForTz } from "../../../../src/utils/timezone.js";
 
 const router = Router();
 
@@ -107,11 +110,13 @@ router.get("/metrics", async (req, res, next) => {
 router.get("/trend", async (req, res, next) => {
   try {
     const filters = parseFilters(req);
-    const f = buildTurnFilterClauses(filters, 3);
+    // ACT-001: $3 = userTimezone; filter binds start at $4.
+    const f = buildTurnFilterClauses(filters, 4);
+    const localDate = `CAST(${wrapTimestampForTz("timestamp", "$3")} AS DATE)`;
 
     const sql = `
       SELECT
-        CAST(timestamp AS DATE) AS date,
+        ${localDate} AS date,
         CASE
           WHEN (SUM(cache_read_tokens) + SUM(cache_creation_tokens) + SUM(input_tokens)) > 0
           THEN SUM(cache_read_tokens)::DOUBLE /
@@ -124,13 +129,14 @@ router.get("/trend", async (req, res, next) => {
       WHERE role = 'assistant'
         AND timestamp >= $1 AND timestamp < $2
         ${f.clauses.join("\n        ")}
-      GROUP BY CAST(timestamp AS DATE)
+      GROUP BY ${localDate}
       ORDER BY date ASC
     `;
 
     const result = await query(sql, [
       filters.range.start,
       filters.range.end,
+      filters.userTimezone,
       ...f.params,
     ]);
 

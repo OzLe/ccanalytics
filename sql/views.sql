@@ -25,6 +25,14 @@
 -- 'cost_usd > 0' silent filter is gone (cost must never be a proxy for "real
 -- turn"). This matches costRowPredicate() in the CLI cost-analyzer and the
 -- dashboard cost route, so token/turn counts reconcile across all cost views.
+--
+-- ACT-001 / SEM2-293: the `CAST(ct.timestamp AS DATE)` expression is
+-- intentionally UTC-based — views can't take bind parameters, so they cannot
+-- project through the user's IANA zone. The CLI CostAnalyzer.getDailyCosts
+-- and /api/cost/daily both re-implement this view inline with the
+-- `(timestamp AT TIME ZONE 'UTC') AT TIME ZONE $userTz` projection, so the
+-- user-facing surfaces show local-date buckets. This view stays UTC-based as
+-- the canonical reference; treat it as documentary, not load-bearing.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE VIEW v_daily_cost AS
 SELECT
@@ -202,6 +210,11 @@ ORDER BY call_count DESC;
 -- ---------------------------------------------------------------------------
 -- v_cache_efficiency: Daily cache efficiency metrics
 -- Tracks cache read ratio over time; rates above 80% = effective caching
+--
+-- ACT-001 / SEM2-293: the `CAST(ct.timestamp AS DATE)` is UTC-based (views
+-- can't take bind parameters). The CacheAnalyzer.getCacheTrend and
+-- /api/cache/trend re-implement this inline with the user-tz projection. This
+-- view is the canonical reference, not the user-facing surface.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE VIEW v_cache_efficiency AS
 SELECT
@@ -235,6 +248,15 @@ ORDER BY date DESC;
 -- canonical TOK-001 headline. The previous 4-way sum was a ~294x outlier
 -- against the route on the live dataset (97.78% cache_read replay). The 4-way
 -- "context volume" lives on v_token_totals as `context_volume_tokens`.
+--
+-- ACT-001 / SEM2-293: `EXTRACT(HOUR FROM ct.timestamp)` returns the UTC hour
+-- because the stored TIMESTAMP is UTC wall-clock and views can't take bind
+-- parameters. The user-facing "Peak Hour" KPI is served by
+-- TimeSeriesAnalyzer.getHourlyActivity and /api/activity/hourly, which
+-- re-implement this view inline with the
+-- `(ts AT TIME ZONE 'UTC') AT TIME ZONE $userTz` projection so the hours
+-- match the user's wall clock. This view is the canonical reference, not the
+-- user-facing surface.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE VIEW v_hourly_activity AS
 SELECT
@@ -457,6 +479,10 @@ ORDER BY peak_context_pct DESC;
 -- normalizes anything that is not 'mcp' to 'builtin'. The ToolAnalyzer
 -- getToolFailureTrend method and /api/tools/failure-trend re-implement this
 -- inline (with a configurable bucket) to support period/model/project filters.
+--
+-- ACT-001 / SEM2-293: `CAST(ct.timestamp AS DATE)` is UTC-based (views can't
+-- take bind parameters). The inline re-implementations project through the
+-- user's IANA zone so the trend line matches the user's wall clock.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE VIEW v_tool_failure_trend AS
 SELECT

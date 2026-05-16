@@ -49,6 +49,10 @@ export function registerQueryCommand(parent: Command): void {
     .option("--period <range>", "Time range filter", "7d")
     .option("--model <name>", "Filter by model name")
     .option("--project <name>", "Filter by project")
+    .option(
+      "--timezone <iana>",
+      "IANA timezone for hour/date math (e.g. UTC, Asia/Jerusalem). Falls back to ~/.ccanalytics/config.json display.userTimezone, then UTC. (ACT-001)",
+    )
     .option("--format <fmt>", "Output format: table, json, csv")
     .option("--sort <field>", "Sort field")
     .option("--limit <n>", "Maximum rows to return", "25")
@@ -118,11 +122,34 @@ export function registerQueryCommand(parent: Command): void {
         type ColumnDef = import("../utils/format.js").TableColumn;
         type QF = import("../types/index.js").QueryFilters;
 
-        // Build filters from CLI options
-        const filters: QF = {};
+        // ACT-001 / SEM2-293: resolve timezone with the same precedence as the
+        // dashboard does — CLI flag > config.json display.userTimezone > 'UTC'.
+        // Threading it through `filters.userTimezone` keeps the analyzer
+        // signatures small (no separate timezone argument everywhere).
+        const { resolveTimezone } = await import("../utils/timezone.js");
+        const fs = await import("node:fs");
+        const os = await import("node:os");
+        let configTz: string | undefined;
+        try {
+          const cfgPath = path.join(os.homedir(), ".ccanalytics", "config.json");
+          const raw = fs.readFileSync(cfgPath, "utf-8");
+          const parsed = JSON.parse(raw) as {
+            display?: { userTimezone?: string };
+          };
+          configTz = parsed?.display?.userTimezone;
+        } catch {
+          // No config or unparseable — fall through to UTC.
+        }
+        const userTimezone = resolveTimezone(options.timezone ?? configTz);
+
+        // Build filters from CLI options. `userTimezone` is always set (the
+        // resolver guarantees a valid IANA id), so the analyzers always
+        // receive a filter object — they just skip the model/project clauses
+        // when those fields are absent.
+        const filters: QF = { userTimezone };
         if (options.model) filters.model = options.model;
         if (options.project) filters.project = options.project;
-        const hasFilters = filters.model || filters.project ? filters : undefined;
+        const hasFilters: QF = filters;
 
         if (queryType === "cost") {
           const { CostAnalyzer } = await import("../queries/index.js");

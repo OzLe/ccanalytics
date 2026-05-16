@@ -44,6 +44,7 @@ import type {
 } from "../types/index.js";
 import type { QueryExecutor } from "../db/executor.js";
 import { buildTurnFilters } from "./filter-builder.js";
+import { resolveTimezone, wrapTimestampForTz } from "../utils/timezone.js";
 import {
   DEAD_WEIGHT_RATIO_THRESHOLD,
   LOADED_CONTEXT_SHARE_THRESHOLD,
@@ -548,13 +549,18 @@ export class SkillAnalyzer {
       throw new Error(`Invalid time bucket: ${bucket}`);
     }
 
-    const f = buildTurnFilters(filters, 3);
+    // ACT-001: bucket boundaries are computed from each session's earliest
+    // turn projected through the user's IANA zone, so a session whose first
+    // turn was 22:30Z lands in the user's local "tomorrow" bucket.
+    const userTimezone = resolveTimezone(filters?.userTimezone);
+    const f = buildTurnFilters(filters, 4);
+    const localTs = wrapTimestampForTz("MIN(timestamp)", "$3");
     // session_bucket: each period session -> the bucket of its earliest turn.
     const sql = `
       WITH session_bucket AS (
         SELECT
           session_id,
-          DATE_TRUNC('${duckBucket}', MIN(timestamp)) AS ts
+          DATE_TRUNC('${duckBucket}', ${localTs}) AS ts
         FROM conversation_turns
         WHERE timestamp >= $1 AND timestamp < $2
           ${f.clauses.join("\n          ")}
@@ -594,7 +600,7 @@ export class SkillAnalyzer {
       ts: string;
       avg_loaded_per_session: number;
       avg_invoked_per_session: number;
-    }>(sql, [range.start, range.end, ...f.params]);
+    }>(sql, [range.start, range.end, userTimezone, ...f.params]);
 
     return result.rows.map((row) => ({
       timestamp: new Date(row.ts),

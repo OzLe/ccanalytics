@@ -89,3 +89,31 @@ export function formatDateTime(date: string | Date): string {
     minute: "2-digit",
   });
 }
+
+/**
+ * Return `YYYY-MM-DD` for the user's local clock (or a passed IANA zone).
+ * Used by ActivityPage / CalendarHeatmap to identify "today" in a way that
+ * matches the server's `display.userTimezone`-projected date buckets
+ * (ACT-001 / SEM2-293). Without this the client compares a UTC ISO date
+ * (`new Date().toISOString().slice(0, 10)`) against the server's local
+ * date, which silently mismatches by one day around midnight.
+ */
+export function getLocalDateISO(
+  ref: Date = new Date(),
+  timeZone?: string,
+): string {
+  try {
+    // 'en-CA' gives `YYYY-MM-DD` regardless of locale, which is exactly the
+    // shape ActivityPage / CalendarHeatmap compare against.
+    const fmt = new Intl.DateTimeFormat("en-CA", {
+      timeZone: timeZone || undefined,
+      year: "numeric",
+      month: "2-digit",
+      day: "numeric",
+    });
+    return fmt.format(ref);
+  } catch {
+    // Fallback: caller-side UTC ISO (matches the pre-fix behaviour).
+    return ref.toISOString().slice(0, 10);
+  }
+}
