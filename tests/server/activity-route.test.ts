@@ -474,3 +474,175 @@ describe("activity route — 24 hour buckets (ACT-003 / SEM2-295)", () => {
     }
   });
 });
+
+/**
+ * Boot a fresh router/db pair seeded with a controlled cost-row predicate
+ * fixture: 3 real assistant rows + 1 synthetic + 1 NULL-model + 1 user row on
+ * date 2026-04-15. Used by the SEM2-297 / ACT-005 suite below to assert that
+ * the activity routes now exclude exactly the rows v_daily_cost excludes.
+ *
+ * The dashboard `db.ts` helper holds a module-singleton connection plus the
+ * `dbPath` it was opened against. The ACT-001 suite's afterAll() calls
+ * `closeDb()` which nulls the singleton — so when this boot runs in a new
+ * describe block, `DB_PATH=<new temp>` + a fresh `getConnection()` opens a
+ * second connection against the new file (same module, new state).
+ */
+async function bootRouterForPredicate(): Promise<Handle> {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ccanalytics-act-pred-"));
+  const dbPath = path.join(tmpDir, "test.duckdb");
+  process.env.DB_PATH = dbPath;
+
+  // Same module instance as the first describe block, but its singleton was
+  // nulled in afterAll() — getConnection() will re-init against our DB_PATH.
+  const { default: activityRouter } = await import(
+    "../../dashboard/src/server/routes/activity.js"
+  );
+  const dbHelper = await import("../../dashboard/src/server/helpers/db.js");
+
+  await dbHelper.query(`
+    CREATE TABLE IF NOT EXISTS sessions (
+      session_id VARCHAR PRIMARY KEY,
+      start_time TIMESTAMP,
+      end_time TIMESTAMP,
+      duration_seconds INTEGER,
+      model VARCHAR,
+      input_tokens BIGINT,
+      output_tokens BIGINT,
+      cache_creation_tokens BIGINT,
+      cache_read_tokens BIGINT,
+      total_cost_usd DOUBLE,
+      num_turns INTEGER,
+      num_tool_calls INTEGER,
+      project_path VARCHAR,
+      project_name VARCHAR,
+      source_type VARCHAR
+    );
+    CREATE TABLE IF NOT EXISTS conversation_turns (
+      turn_id VARCHAR PRIMARY KEY,
+      session_id VARCHAR,
+      role VARCHAR,
+      timestamp TIMESTAMP,
+      input_tokens BIGINT,
+      output_tokens BIGINT,
+      cache_creation_tokens BIGINT,
+      cache_read_tokens BIGINT,
+      cost_usd DOUBLE,
+      model VARCHAR,
+      stop_reason VARCHAR,
+      request_id VARCHAR,
+      has_tool_use BOOLEAN,
+      has_thinking BOOLEAN
+    );
+  `);
+
+  // 3 cost-bearing assistant rows.
+  await dbHelper.query(`
+    INSERT INTO sessions VALUES
+      ('s-r1', '2026-04-15 10:00:00', '2026-04-15 10:01:00', 60, 'claude-sonnet-4-5', 100, 50, 0, 0, 0.01, 1, 0, '/p', 'p', 'claude-code'),
+      ('s-r2', '2026-04-15 11:00:00', '2026-04-15 11:01:00', 60, 'claude-opus-4',     100, 50, 0, 0, 0.01, 1, 0, '/p', 'p', 'claude-code'),
+      ('s-r3', '2026-04-15 12:00:00', '2026-04-15 12:01:00', 60, 'claude-sonnet-4-5', 100, 50, 0, 0, 0.01, 1, 0, '/p', 'p', 'claude-code'),
+      ('s-syn','2026-04-15 13:00:00', '2026-04-15 13:01:00', 60, '<synthetic>',       100, 50, 0, 0, 0.00, 1, 0, '/p', 'p', 'claude-code'),
+      ('s-nm', '2026-04-15 14:00:00', '2026-04-15 14:01:00', 60, NULL,                100, 50, 0, 0, 0.00, 1, 0, '/p', 'p', 'claude-code'),
+      ('s-u',  '2026-04-15 15:00:00', '2026-04-15 15:01:00', 60, 'claude-sonnet-4-5', 0,   0,  0, 0, 0.00, 1, 0, '/p', 'p', 'claude-code');
+    INSERT INTO conversation_turns VALUES
+      ('t-r1',  's-r1', 'assistant', '2026-04-15 10:00:00', 100, 50, 0, 0, 0.01, 'claude-sonnet-4-5', 'end_turn', 'req-r1', FALSE, FALSE),
+      ('t-r2',  's-r2', 'assistant', '2026-04-15 11:00:00', 100, 50, 0, 0, 0.01, 'claude-opus-4',     'end_turn', 'req-r2', FALSE, FALSE),
+      ('t-r3',  's-r3', 'assistant', '2026-04-15 12:00:00', 100, 50, 0, 0, 0.01, 'claude-sonnet-4-5', 'end_turn', 'req-r3', FALSE, FALSE),
+      ('t-syn', 's-syn','assistant', '2026-04-15 13:00:00', 100, 50, 0, 0, 0.00, '<synthetic>',       'end_turn', 'req-sy', FALSE, FALSE),
+      ('t-nm',  's-nm', 'assistant', '2026-04-15 14:00:00', 100, 50, 0, 0, 0.00, NULL,                'end_turn', 'req-nm', FALSE, FALSE),
+      ('t-u',   's-u',  'user',      '2026-04-15 15:00:00', 0,   0,  0, 0, 0.00, NULL,                NULL,       'req-u',  FALSE, FALSE);
+  `);
+
+  const app: Express = express();
+  app.use(express.json());
+  app.use("/api/activity", activityRouter);
+
+  const server = http.createServer(app);
+  await new Promise<void>((resolve) =>
+    server.listen(0, "127.0.0.1", resolve),
+  );
+  const addr = server.address();
+  if (!addr || typeof addr === "string") throw new Error("no addr");
+  const baseUrl = `http://127.0.0.1:${addr.port}`;
+
+  return {
+    baseUrl,
+    close: async () => {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await dbHelper.closeDb();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    },
+  };
+}
+
+describe("activity route — cost-row predicate (SEM2-297)", () => {
+  let h: Handle;
+  let prevDbPath: string | undefined;
+
+  beforeAll(async () => {
+    prevDbPath = process.env.DB_PATH;
+    h = await bootRouterForPredicate();
+  });
+
+  afterAll(async () => {
+    await h.close();
+    if (prevDbPath === undefined) delete process.env.DB_PATH;
+    else process.env.DB_PATH = prevDbPath;
+  });
+
+  // The fixture has 3 cost-bearing assistant rows + 1 synthetic + 1 null-model
+  // + 1 user, all on 2026-04-15. Activity must count only the 3 real rows.
+  const EXPECTED_REAL = 3;
+
+  it("/api/activity/daily — counts only cost-bearing assistant rows (synthetic + null-model excluded)", async () => {
+    const res = (await (
+      await fetch(`${h.baseUrl}/api/activity/daily?period=all`, {
+        headers: { "X-User-Timezone": "UTC" },
+      })
+    ).json()) as { data: Array<{ timestamp: string; value: number }> };
+
+    // Single day in fixture; total turn count must equal the 3 real rows.
+    const total = res.data.reduce((s, r) => s + r.value, 0);
+    expect(total).toBe(EXPECTED_REAL);
+    // And the only date present is 2026-04-15.
+    expect(res.data.map((r) => r.timestamp.slice(0, 10))).toEqual([
+      "2026-04-15",
+    ]);
+  });
+
+  it("/api/activity/hourly — sum of messageCount equals the cost-bearing population", async () => {
+    const res = (await (
+      await fetch(`${h.baseUrl}/api/activity/hourly?period=all`, {
+        headers: { "X-User-Timezone": "UTC" },
+      })
+    ).json()) as {
+      data: Array<{ hourOfDay: number; messageCount: number }>;
+    };
+
+    // ACT-003 / SEM2-295: the response is always 24 rows (LEFT JOIN
+    // generate_series). Sum equals the cost-bearing population; the hours
+    // that held only excluded rows must be zero rather than absent.
+    expect(res.data).toHaveLength(24);
+    const total = res.data.reduce((s, r) => s + r.messageCount, 0);
+    expect(total).toBe(EXPECTED_REAL);
+    // Synthetic was at hour 13, NULL-model at hour 14, user at 15 — those
+    // hour buckets must hold zero messages because their rows are the only
+    // ones at those hours and the predicate excludes them.
+    expect(res.data[13]?.messageCount).toBe(0);
+    expect(res.data[14]?.messageCount).toBe(0);
+    expect(res.data[15]?.messageCount).toBe(0);
+  });
+
+  it("/api/activity/heatmap — sum of value equals the cost-bearing population", async () => {
+    const res = (await (
+      await fetch(`${h.baseUrl}/api/activity/heatmap?period=all`, {
+        headers: { "X-User-Timezone": "UTC" },
+      })
+    ).json()) as {
+      data: Array<{ dayOfWeek: number; hourOfDay: number; value: number }>;
+    };
+
+    const total = res.data.reduce((s, r) => s + r.value, 0);
+    expect(total).toBe(EXPECTED_REAL);
+  });
+});
