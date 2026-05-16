@@ -20,6 +20,10 @@ import {
   envelope,
 } from "../helpers/parseFilters.js";
 import { wrapTimestampForTz } from "../../../../src/utils/timezone.js";
+// ACT-005 / SEM2-297: shared cost-row predicate so every activity surface is
+// computed on the same population as v_daily_cost / the cost analyzer / the
+// /api/cost/* routes. Cross-tree import follows the pricing.ts precedent.
+import { costRowPredicateSql } from "../../../../src/utils/sqlPredicates.js";
 
 const router = Router();
 
@@ -29,9 +33,10 @@ const router = Router();
  * Get hourly activity distribution (24 rows, one per hour of day).
  * Query params: ?period=7d&model=X&project=Y
  *
- * KPI-002: filters role='assistant' to match v_hourly_activity, the CLI
- * TimeSeriesAnalyzer.getHourlyActivity, and the daily/heatmap/weekly paths —
- * "activity" is one consistent population (assistant turns) everywhere.
+ * KPI-002 / ACT-005 (SEM2-297): uses `costRowPredicateSql()` to match
+ * v_daily_cost, the CLI TimeSeriesAnalyzer.getHourlyActivity, and the
+ * daily/heatmap paths — "activity" is one consistent population
+ * (cost-bearing assistant turns) everywhere.
  *
  * ACT-001: hour is in the user's IANA zone (resolved by parseFilters).
  *
@@ -45,7 +50,8 @@ const router = Router();
 router.get("/hourly", async (req, res, next) => {
   try {
     const filters = parseFilters(req);
-    // $3 is the user timezone; filter binds start at $4.
+    // $3 is the user timezone; filter binds start at $4. The
+    // costRowPredicateSql() fragment is a literal — no bind, no $N shift.
     const f = buildTurnFilterClauses(filters, 4);
     const filterClauses = f.clauses.map((c) =>
       c.replace(/\bAND model\b/, "AND ct.model").replace(/\bAND session_id\b/, "AND ct.session_id"),
@@ -70,7 +76,7 @@ router.get("/hourly", async (req, res, next) => {
             ELSE 0
           END AS avg_tokens_per_turn
         FROM conversation_turns ct
-        WHERE ct.role = 'assistant'
+        WHERE ${costRowPredicateSql("ct")}
           AND ct.timestamp >= $1 AND ct.timestamp < $2
           ${filterClauses.join("\n          ")}
         GROUP BY hour_of_day
@@ -118,6 +124,10 @@ router.get("/hourly", async (req, res, next) => {
  * Query params: ?period=7d
  *
  * ACT-001: the local date is computed in the user's IANA zone.
+ *
+ * ACT-005 (SEM2-297): predicate matches v_daily_cost / /api/cost/daily so
+ * the daily activity count reconciles 1:1 with the daily cost row count
+ * for the same date range and filters.
  */
 router.get("/daily", async (req, res, next) => {
   try {
@@ -129,7 +139,7 @@ router.get("/daily", async (req, res, next) => {
         CAST(${localTs} AS DATE) AS date,
         COUNT(*) AS value
       FROM conversation_turns
-      WHERE role = 'assistant'
+      WHERE ${costRowPredicateSql("")}
         AND timestamp >= $1 AND timestamp < $2
       GROUP BY date
       ORDER BY date ASC
@@ -158,8 +168,9 @@ router.get("/daily", async (req, res, next) => {
  * Get activity heatmap (hour-of-day x day-of-week).
  * Query params: ?period=7d
  *
- * KPI-002: counts role='assistant' turns only, so the heatmap shares the same
- * population as /api/activity/hourly and /api/activity/daily.
+ * KPI-002 / ACT-005 (SEM2-297): counts cost-bearing assistant turns only
+ * (`costRowPredicateSql()`), so the heatmap shares the same population as
+ * /api/activity/hourly, /api/activity/daily, and v_daily_cost.
  *
  * ACT-001: both DOW and hour are projected through the user's IANA zone, so a
  * turn at 22:30Z on a Wednesday correctly lands in Thursday's bucket for an
@@ -176,7 +187,7 @@ router.get("/heatmap", async (req, res, next) => {
         EXTRACT(HOUR FROM ${localTs})::INTEGER AS hour_of_day,
         COUNT(*) AS value
       FROM conversation_turns ct
-      WHERE ct.role = 'assistant'
+      WHERE ${costRowPredicateSql("ct")}
         AND ct.timestamp >= $1 AND ct.timestamp < $2
       GROUP BY day_of_week, hour_of_day
       ORDER BY day_of_week ASC, hour_of_day ASC

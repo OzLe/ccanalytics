@@ -14,6 +14,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createTestDB, closeTestDB, seedTestData, type TestDB } from "../helpers/db-setup.js";
 import { QueryExecutor } from "../../src/db/executor.js";
 import { TimeSeriesAnalyzer } from "../../src/queries/time-series.js";
+import { CostAnalyzer } from "../../src/queries/cost-analyzer.js";
 import type { TimeRange } from "../../src/types/index.js";
 
 describe("TimeSeriesAnalyzer", () => {
@@ -445,6 +446,165 @@ describe("TimeSeriesAnalyzer", () => {
       expect(hourly.map((r) => r.hourOfDay)).toEqual(
         Array.from({ length: 24 }, (_, i) => i),
       );
+    });
+  });
+
+  /**
+   * SEM2-297 / ACT-005: activity now uses the SAME cost-row predicate as
+   * v_daily_cost / CostAnalyzer / /api/cost/*. Before the fix, activity
+   * counted every role='assistant' row including the `<synthetic>` placeholder
+   * model and NULL-model rows, which v_daily_cost has always excluded — the
+   * two populations differed by up to ~5.8%/day on the live dataset for the
+   * same date range.
+   *
+   * The tests below reset to an empty DB, seed a controlled mix of "real"
+   * assistant rows + a synthetic row + a null-model row + a user row, then
+   * assert that:
+   *   1. activity (hourly / daily / heatmap / weekly) counts only the REAL
+   *      assistant rows — synthetic, NULL-model, and user rows are excluded.
+   *   2. activity row count for the day equals the cost-bearing turn_count
+   *      for that day. (CostAnalyzer.getDailyCosts returns a turn count per
+   *      (date, model); summing across models for one date == activity.)
+   */
+  describe("cost-row predicate (SEM2-297)", () => {
+    async function reseedEmpty(): Promise<void> {
+      await closeTestDB(db);
+      db = await createTestDB();
+      executor = new QueryExecutor(db.connection);
+      analyzer = new TimeSeriesAnalyzer(executor);
+    }
+
+    /**
+     * Insert one session + one conversation_turns row with the given role /
+     * model. Keeps each row independent so the fixture is easy to reason about.
+     */
+    async function insertTurn(opts: {
+      turnId: string;
+      sessionId: string;
+      isoZ: string;
+      role: "user" | "assistant";
+      model: string | null;
+    }): Promise<void> {
+      const { turnId, sessionId, isoZ, role, model } = opts;
+      const sessModel = model ?? "claude-sonnet-4-5";
+      await db.connection.run(`
+        INSERT INTO sessions (session_id, start_time, end_time, duration_seconds, model,
+          input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+          total_cost_usd, num_turns, num_tool_calls, project_path)
+        VALUES ('${sessionId}', '${isoZ}', '${isoZ}', 1, '${sessModel}',
+          100, 50, 0, 0, 0.01, 1, 0, '/p')
+        ON CONFLICT DO NOTHING
+      `);
+      const modelSql = model === null ? "NULL" : `'${model}'`;
+      await db.connection.run(`
+        INSERT INTO conversation_turns (turn_id, session_id, role, timestamp,
+          input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+          cost_usd, model, stop_reason, request_id, has_tool_use, has_thinking)
+        VALUES ('${turnId}', '${sessionId}', '${role}', '${isoZ}',
+          100, 50, 0, 0, 0.01, ${modelSql}, 'end_turn', 'req-${turnId}', FALSE, FALSE)
+      `);
+    }
+
+    /** Date 2026-04-15, three real rows + one synthetic + one null-model + one user. */
+    async function seedMixedDay(): Promise<{ realCount: number }> {
+      await reseedEmpty();
+      // 3 cost-bearing assistant rows (real model)
+      await insertTurn({ turnId: "t-real-1", sessionId: "s-real-1", isoZ: "2026-04-15T10:00:00.000Z", role: "assistant", model: "claude-sonnet-4-5" });
+      await insertTurn({ turnId: "t-real-2", sessionId: "s-real-2", isoZ: "2026-04-15T11:00:00.000Z", role: "assistant", model: "claude-opus-4" });
+      await insertTurn({ turnId: "t-real-3", sessionId: "s-real-3", isoZ: "2026-04-15T12:00:00.000Z", role: "assistant", model: "claude-sonnet-4-5" });
+      // 1 synthetic row (assistant, but '<synthetic>' model — excluded by v_daily_cost)
+      await insertTurn({ turnId: "t-synth", sessionId: "s-synth", isoZ: "2026-04-15T13:00:00.000Z", role: "assistant", model: "<synthetic>" });
+      // 1 null-model assistant row (excluded by v_daily_cost)
+      await insertTurn({ turnId: "t-nullmodel", sessionId: "s-nullmodel", isoZ: "2026-04-15T14:00:00.000Z", role: "assistant", model: null });
+      // 1 user row (excluded by the role filter)
+      await insertTurn({ turnId: "t-user", sessionId: "s-user", isoZ: "2026-04-15T15:00:00.000Z", role: "user", model: "claude-sonnet-4-5" });
+      return { realCount: 3 };
+    }
+
+    const dayRange: TimeRange = {
+      start: new Date("2026-04-15T00:00:00Z"),
+      end: new Date("2026-04-16T00:00:00Z"),
+    };
+
+    it("daily activity excludes synthetic + null-model assistant rows (matches v_daily_cost)", async () => {
+      const { realCount } = await seedMixedDay();
+      const daily = await analyzer.getDailyActivity(dayRange, { userTimezone: "UTC" });
+      expect(daily).toHaveLength(1);
+      expect(daily[0]?.value).toBe(realCount);
+    });
+
+    it("hourly activity excludes synthetic + null-model assistant rows", async () => {
+      const { realCount } = await seedMixedDay();
+      // ACT-003 / SEM2-295: hourly is 24 rows post-D3. Sum across hours equals
+      // the cost-bearing population; the hours of synthetic/null/user rows must
+      // be zero because those rows are excluded by the predicate.
+      const hourly = await analyzer.getHourlyActivity(dayRange, { userTimezone: "UTC" });
+      expect(hourly).toHaveLength(24);
+      const total = hourly.reduce((s, r) => s + r.messageCount, 0);
+      expect(total).toBe(realCount);
+      // The synthetic row is at hour 13, null-model at 14, user at 15 — those
+      // hours hold zero messages since they're the only rows at those hours.
+      expect(hourly[13]?.messageCount).toBe(0);
+      expect(hourly[14]?.messageCount).toBe(0);
+      expect(hourly[15]?.messageCount).toBe(0);
+    });
+
+    it("heatmap activity excludes synthetic + null-model assistant rows", async () => {
+      const { realCount } = await seedMixedDay();
+      const heatmap = await analyzer.getActivityHeatmap(dayRange, { userTimezone: "UTC" });
+      const total = heatmap.reduce((s, r) => s + r.value, 0);
+      expect(total).toBe(realCount);
+    });
+
+    it("weekly trend excludes synthetic + null-model assistant rows", async () => {
+      const { realCount } = await seedMixedDay();
+      // Include enough of a window for DATE_TRUNC('week', ...) — Mon 2026-04-13 is the week start.
+      const weekRange: TimeRange = {
+        start: new Date("2026-04-13T00:00:00Z"),
+        end: new Date("2026-04-20T00:00:00Z"),
+      };
+      const weekly = await analyzer.getWeeklyTrend(weekRange, { userTimezone: "UTC" });
+      const total = weekly.reduce((s, p) => s + p.value, 0);
+      expect(total).toBe(realCount);
+    });
+
+    it("daily activity row count equals daily cost turn_count (populations reconcile)", async () => {
+      await seedMixedDay();
+      const costAnalyzer = new CostAnalyzer(executor);
+      const activity = await analyzer.getDailyActivity(dayRange, { userTimezone: "UTC" });
+      const costs = await costAnalyzer.getDailyCosts(dayRange, { userTimezone: "UTC" });
+
+      // Sum cost turn_count across models for date 2026-04-15. DuckDB may
+      // return DATE columns as a Date object or various string formats — the
+      // existing cost-analyzer tests normalize the same way.
+      const costDay = costs.filter((c) => {
+        const d = new Date(c.date);
+        return d.toISOString().slice(0, 10) === "2026-04-15";
+      });
+      const costTurnCount = costDay.reduce((s, c) => s + (c.turnCount ?? 0), 0);
+
+      const activityCount = activity[0]?.value ?? 0;
+      // The whole point of LANE J — same row inclusion both sides.
+      expect(activityCount).toBe(costTurnCount);
+      // And both must be > 0 (sanity — we did seed 3 real rows).
+      expect(activityCount).toBeGreaterThan(0);
+    });
+
+    it("regression: pure role='user' rows are still excluded from activity", async () => {
+      await reseedEmpty();
+      // Only user rows.
+      await insertTurn({ turnId: "t-u1", sessionId: "s-u1", isoZ: "2026-04-15T10:00:00.000Z", role: "user", model: null });
+      await insertTurn({ turnId: "t-u2", sessionId: "s-u2", isoZ: "2026-04-15T11:00:00.000Z", role: "user", model: "claude-sonnet-4-5" });
+
+      // ACT-003 / SEM2-295: hourly returns 24 zero-filled buckets when there
+      // are no cost-bearing rows in the window; daily and heatmap stay empty.
+      const daily = await analyzer.getDailyActivity(dayRange, { userTimezone: "UTC" });
+      const hourly = await analyzer.getHourlyActivity(dayRange, { userTimezone: "UTC" });
+      const heatmap = await analyzer.getActivityHeatmap(dayRange, { userTimezone: "UTC" });
+      expect(daily).toEqual([]);
+      expect(hourly).toHaveLength(24);
+      expect(hourly.every((r) => r.messageCount === 0)).toBe(true);
+      expect(heatmap).toEqual([]);
     });
   });
 });

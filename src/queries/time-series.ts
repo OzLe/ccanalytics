@@ -23,6 +23,13 @@ import type {
 import type { QueryExecutor } from "../db/executor.js";
 import { buildTurnFilters } from "./filter-builder.js";
 import { resolveTimezone, wrapTimestampForTz } from "../utils/timezone.js";
+// ACT-005 / SEM2-297: every activity surface (hourly / daily / heatmap /
+// weekly) now applies the SAME row-inclusion predicate as v_daily_cost so
+// activity and cost populations reconcile (previously activity counted every
+// role='assistant' row, which diverged from v_daily_cost by up to ~5.8%/day on
+// the live dataset because v_daily_cost additionally excludes the
+// '<synthetic>' model and NULL-model rows).
+import { costRowPredicateSql } from "../utils/sqlPredicates.js";
 
 /** Token usage breakdown at a point in time. */
 export interface TokenUsagePoint {
@@ -59,13 +66,14 @@ export class TimeSeriesAnalyzer {
 
   /**
    * Get hourly activity distribution.
-   * Mirrors the v_hourly_activity view.
+   * Mirrors the v_hourly_activity view (one row per local hour-of-day).
    *
-   * KPI-002: "activity" means ASSISTANT turns — the role='assistant' filter is
-   * applied here, in /api/activity/hourly, and in the heatmap/daily/weekly
-   * paths so every activity surface is computed on one population. Without it
-   * message_count doubles (user turns counted) and avg_cost is halved (user
-   * turns cost $0).
+   * KPI-002 / ACT-005 (SEM2-297): "activity" means cost-bearing ASSISTANT
+   * turns — `costRowPredicateSql()` is applied here, in /api/activity/hourly,
+   * and in the heatmap/daily/weekly paths so every activity surface is
+   * computed on the SAME population as v_daily_cost / the cost analyzer /
+   * /api/cost/*. Without the synthetic + null-model exclusion, activity
+   * counts diverge from cost by up to ~5.8%/day on the live dataset.
    *
    * ACT-003 / SEM2-295: the response always contains exactly 24 rows. Hours
    * with no traffic get `messageCount = 0` and zeroed aggregates so CLI users
@@ -78,7 +86,9 @@ export class TimeSeriesAnalyzer {
    */
   async getHourlyActivity(range: TimeRange, filters?: QueryFilters): Promise<HourlyActivity[]> {
     const userTimezone = resolveTimezone(filters?.userTimezone);
-    // $3 is the user timezone; filter binds start at $4.
+    // $3 is the user timezone; filter binds start at $4. The
+    // costRowPredicateSql() fragment is a literal — adds zero binds, so the
+    // index sequence is unchanged.
     const f = buildTurnFilters(filters, 4);
     // Prefix filter clauses with ct. for aliased queries
     const filterClauses = f.clauses.map((c) =>
@@ -102,7 +112,7 @@ export class TimeSeriesAnalyzer {
             ELSE 0
           END AS avg_tokens_per_turn
         FROM conversation_turns ct
-        WHERE ct.role = 'assistant'
+        WHERE ${costRowPredicateSql("ct")}
           AND ct.timestamp >= $1 AND ct.timestamp < $2
           ${filterClauses.join("\n          ")}
         GROUP BY hour_of_day
@@ -146,6 +156,10 @@ export class TimeSeriesAnalyzer {
    * ACT-001: the per-day boundary is the user's local midnight (resolved via
    * `filters.userTimezone`), not UTC midnight.
    *
+   * ACT-005 (SEM2-297): same cost-row predicate as v_daily_cost — see
+   * `costRowPredicateSql()`. Aligns the daily-activity population with
+   * the daily-cost population (was off by ~5.8% on some days).
+   *
    * @param range - Time range to query
    * @param filters - Optional model/project/timezone filters
    * @returns Daily activity time series
@@ -161,7 +175,7 @@ export class TimeSeriesAnalyzer {
         CAST(${localTs} AS DATE) AS date,
         COUNT(*) AS value
       FROM conversation_turns
-      WHERE role = 'assistant'
+      WHERE ${costRowPredicateSql("")}
         AND timestamp >= $1 AND timestamp < $2
       GROUP BY date
       ORDER BY date ASC
@@ -180,9 +194,10 @@ export class TimeSeriesAnalyzer {
   /**
    * Get an activity heatmap (hour-of-day x day-of-week).
    *
-   * KPI-002: counts ASSISTANT turns only, consistent with getHourlyActivity,
-   * getDailyActivity and getWeeklyTrend (previously this counted all turns,
-   * giving the heatmap a different base than the rest of the Activity page).
+   * KPI-002 / ACT-005 (SEM2-297): counts cost-bearing assistant turns
+   * (`costRowPredicateSql()`), so the heatmap shares the same population as
+   * /api/activity/hourly, /api/activity/daily, and v_daily_cost — the four
+   * surfaces reconcile turn-for-turn.
    *
    * ACT-001: both DOW and hour are projected through the user's IANA zone,
    * so a turn at 22:30Z on a Wednesday correctly lands in Thursday's bucket
@@ -204,7 +219,7 @@ export class TimeSeriesAnalyzer {
         EXTRACT(HOUR FROM ${localTs})::INTEGER AS hour_of_day,
         COUNT(*) AS value
       FROM conversation_turns ct
-      WHERE ct.role = 'assistant'
+      WHERE ${costRowPredicateSql("ct")}
         AND ct.timestamp >= $1 AND ct.timestamp < $2
       GROUP BY day_of_week, hour_of_day
       ORDER BY day_of_week ASC, hour_of_day ASC
@@ -229,6 +244,10 @@ export class TimeSeriesAnalyzer {
    * the tz-projected local TIMESTAMP, not UTC), so the bar a user sees on
    * the dashboard starts at their local Monday/Sunday.
    *
+   * ACT-005 (SEM2-297): same cost-row predicate as v_daily_cost, so the
+   * weekly activity bar height matches the weekly cost bar height for the
+   * same date range.
+   *
    * @param range - Time range to query
    * @param filters - Optional model/project/timezone filters
    * @returns Weekly activity time series
@@ -244,7 +263,7 @@ export class TimeSeriesAnalyzer {
         DATE_TRUNC('week', ${localTs}) AS week,
         COUNT(*) AS value
       FROM conversation_turns
-      WHERE role = 'assistant'
+      WHERE ${costRowPredicateSql("")}
         AND timestamp >= $1 AND timestamp < $2
       GROUP BY week
       ORDER BY week ASC
