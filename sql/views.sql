@@ -46,6 +46,11 @@ SELECT
     COUNT(*)                            AS turn_count,
     COUNT(DISTINCT ct.session_id)       AS session_count
 FROM conversation_turns ct
+-- Cost-row predicate (TS mirror: src/utils/sqlPredicates.ts::costRowPredicateSql).
+-- Views cannot import TS helpers, so this inline copy is the canonical
+-- form for the view layer; the TS SSOT is canonical for TS consumers.
+-- These two MUST stay aligned in semantics; the SQL text differs cosmetically
+-- (clause order, outer parens) without behavior impact.
 WHERE ct.role = 'assistant'
   AND ct.model IS NOT NULL
   AND ct.model <> '<synthetic>'

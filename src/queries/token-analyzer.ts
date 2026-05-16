@@ -4,7 +4,7 @@
  * F1 — Total Tokens KPI.
  *
  * Token-count aggregation over `conversation_turns`. Deliberately mirrors
- * `CostAnalyzer` (same `costRowPredicate()`, same `buildTurnFilters` plumbing)
+ * `CostAnalyzer` (same `costRowPredicateSql()`, same `buildTurnFilters` plumbing)
  * so the Total Tokens KPI reconciles 1:1 with Total Cost — both aggregate the
  * exact same row population.
  */
@@ -13,22 +13,7 @@ import type { TimeRange, TokenBreakdown, TokenTotals, QueryFilters } from "../ty
 import type { QueryExecutor } from "../db/executor.js";
 import { buildTurnFilters } from "./filter-builder.js";
 import { buildTokenSumSql } from "../utils/tokenSums.js";
-
-/**
- * Canonical row-inclusion predicate for token aggregation (F1 / D6).
- *
- * The SAME predicate `costRowPredicate()` uses in `cost-analyzer.ts` and the
- * `/api/cost/*` routes — "real assistant turns", explicitly excluding only the
- * `<synthetic>` placeholder model (0 tokens, $0). F1 intentionally mirrors the
- * COST predicate (not the looser `v_session_summary` / `v_hourly_activity`
- * `assistant`-only predicate) so Total Tokens reconciles with Total Cost.
- *
- * @param alias - Table alias for conversation_turns ("" for the bare column form)
- */
-function costRowPredicate(alias = ""): string {
-  const p = alias ? `${alias}.` : "";
-  return `${p}role = 'assistant' AND ${p}model IS NOT NULL AND ${p}model <> '<synthetic>'`;
-}
+import { costRowPredicateSql } from "../utils/sqlPredicates.js";
 
 /** Raw aggregate row shape returned by both token SELECTs. */
 interface TokenAggregateRow {
@@ -98,7 +83,7 @@ export class TokenAnalyzer {
    * codebase already does multi-query routes):
    *   1. **period** — `timestamp >= $1 AND timestamp < $2` plus the active
    *      model/project filters.
-   *   2. **allTime** — the same `costRowPredicate()`, but NO timestamp bound and
+   *   2. **allTime** — the same `costRowPredicateSql()`, but NO timestamp bound and
    *      NO filters (D7). A pure, dataset-wide constant.
    *
    * @param range - Time range for the period block
@@ -111,7 +96,7 @@ export class TokenAnalyzer {
     const periodSql = `
       SELECT${TOKEN_SUM_COLUMNS}
       FROM conversation_turns
-      WHERE ${costRowPredicate()}
+      WHERE ${costRowPredicateSql("")}
         AND timestamp >= $1 AND timestamp < $2
         ${f.clauses.join("\n        ")}
     `;
@@ -125,7 +110,7 @@ export class TokenAnalyzer {
     const allTimeSql = `
       SELECT${TOKEN_SUM_COLUMNS}
       FROM conversation_turns
-      WHERE ${costRowPredicate()}
+      WHERE ${costRowPredicateSql("")}
     `;
     const allTimeResult = await this.executor.query<TokenAggregateRow>(allTimeSql);
 
