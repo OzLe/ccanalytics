@@ -248,17 +248,32 @@ export class SkillAnalyzer {
     // (`COALESCE(CEIL(LENGTH(skill_description)/4.0), 45)` — same expression
     // as v_skill_loaded and estimateSkillTokens()) so the period-level
     // avgLoadedSkillTokens reflects real descriptions rather than the flat 45.
+    //
+    // SKILL-02: dedupe (session_id, skill_name) BEFORE the SUM. Long sessions
+    // that re-parse skill_listing multiple times produce duplicate
+    // session_skills rows, which used to inflate the per-session SUM by up to
+    // 5.97x on the live dataset. `ANY_VALUE(skill_description)` picks one
+    // description deterministically per (session, skill) — matches the
+    // existing `ANY_VALUE` pattern used by est_context_tokens_per_skill above.
     const loadedSql = `
       WITH period_sessions AS (${periodSessions}),
-      per_session AS (
+      per_session_skills AS (
         SELECT
           sl.session_id,
-          COUNT(DISTINCT sl.skill_name) AS loaded_count,
-          SUM(COALESCE(CEIL(LENGTH(sl.skill_description) / 4.0), 45))
-            AS est_skill_tokens
+          sl.skill_name,
+          ANY_VALUE(sl.skill_description) AS skill_description
         FROM session_skills sl
         WHERE sl.session_id IN (SELECT session_id FROM period_sessions)
-        GROUP BY sl.session_id
+        GROUP BY sl.session_id, sl.skill_name
+      ),
+      per_session AS (
+        SELECT
+          session_id,
+          COUNT(*) AS loaded_count,
+          SUM(COALESCE(CEIL(LENGTH(skill_description) / 4.0), 45))
+            AS est_skill_tokens
+        FROM per_session_skills
+        GROUP BY session_id
       )
       SELECT
         COALESCE(AVG(loaded_count), 0) AS avg_loaded,

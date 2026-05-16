@@ -62,4 +62,36 @@ describe("buildTokenSumSql", () => {
     const sums = buildTokenSumSql();
     expect(Object.isFrozen(sums)).toBe(true);
   });
+
+  describe("alias parameter (TOK-RE-002)", () => {
+    // When the surrounding query has an explicit table alias on
+    // `conversation_turns` (`FROM conversation_turns ct`), bare columns won't
+    // resolve. Pass the alias so the SSOT can prefix it.
+    it("prefixes every column with the given alias", () => {
+      const sums = buildTokenSumSql("ct");
+      expect(sums.totalTokensSql).toBe(
+        "COALESCE(SUM(ct.input_tokens + ct.output_tokens), 0)",
+      );
+      expect(sums.contextVolumeTokensSql).toBe(
+        "COALESCE(SUM(ct.input_tokens + ct.output_tokens + ct.cache_creation_tokens + ct.cache_read_tokens), 0)",
+      );
+      expect(sums.inputTokensSql).toBe("COALESCE(SUM(ct.input_tokens), 0)");
+      expect(sums.outputTokensSql).toBe("COALESCE(SUM(ct.output_tokens), 0)");
+      expect(sums.cacheCreationTokensSql).toBe(
+        "COALESCE(SUM(ct.cache_creation_tokens), 0)",
+      );
+      expect(sums.cacheReadTokensSql).toBe(
+        "COALESCE(SUM(ct.cache_read_tokens), 0)",
+      );
+    });
+
+    it("default alias is empty — bare-column form is preserved", () => {
+      const aliased = buildTokenSumSql("");
+      const defaulted = buildTokenSumSql();
+      expect(aliased.totalTokensSql).toBe(defaulted.totalTokensSql);
+      expect(aliased.totalTokensSql).toBe(
+        "COALESCE(SUM(input_tokens + output_tokens), 0)",
+      );
+    });
+  });
 });

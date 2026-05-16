@@ -24,6 +24,11 @@ import { wrapTimestampForTz } from "../../../../src/utils/timezone.js";
 // computed on the same population as v_daily_cost / the cost analyzer / the
 // /api/cost/* routes. Cross-tree import follows the pricing.ts precedent.
 import { costRowPredicateSql } from "../../../../src/utils/sqlPredicates.js";
+// TOK-RE-002: shared SUM(input + output) SSOT so every total_tokens surface
+// agrees by construction (was 294x divergent before LANE E).
+import { buildTokenSumSql } from "../../../../src/utils/tokenSums.js";
+
+const SUMS = buildTokenSumSql("ct");
 
 const router = Router();
 
@@ -69,10 +74,10 @@ router.get("/hourly", async (req, res, next) => {
           COUNT(*) AS message_count,
           COUNT(DISTINCT ct.session_id) AS session_count,
           AVG(ct.cost_usd) AS avg_cost,
-          SUM(ct.input_tokens + ct.output_tokens) AS total_tokens,
+          ${SUMS.totalTokensSql} AS total_tokens,
           SUM(ct.cost_usd) AS total_cost,
           CASE WHEN COUNT(*) > 0
-            THEN SUM(ct.input_tokens + ct.output_tokens)::DOUBLE / COUNT(*)
+            THEN ${SUMS.totalTokensSql}::DOUBLE / COUNT(*)
             ELSE 0
           END AS avg_tokens_per_turn
         FROM conversation_turns ct

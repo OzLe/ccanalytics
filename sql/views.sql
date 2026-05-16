@@ -220,6 +220,16 @@ ORDER BY call_count DESC;
 -- can't take bind parameters). The CacheAnalyzer.getCacheTrend and
 -- /api/cache/trend re-implement this inline with the user-tz projection. This
 -- view is the canonical reference, not the user-facing surface.
+--
+-- SEM2-279: a previous version of this view exposed an `estimated_tokens_saved`
+-- column = `SUM(cache_read_tokens) * 0.9`. The name implied USD but the value
+-- was a tokens count, and the flat 0.9 proxy ignored per-model rate
+-- differences — it was 10.6B (tokens) versus the user-facing route's $53k
+-- (USD). The column was advisory-only (no live code path read it), so it has
+-- been removed entirely. The USD figure lives in CacheAnalyzer / the
+-- /api/cache/metrics route, computed via `buildCacheSavingsRateCaseSql()` in
+-- `src/utils/pricing.ts` — the single source of truth for model-aware
+-- cache-read savings.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE VIEW v_cache_efficiency AS
 SELECT
@@ -237,8 +247,7 @@ SELECT
         ELSE 0.0
     END                                 AS cache_hit_rate,
     (SUM(ct.cache_read_tokens) + SUM(ct.cache_creation_tokens) + SUM(ct.input_tokens))
-                                        AS total_input_processed,
-    SUM(ct.cache_read_tokens) * 0.9     AS estimated_tokens_saved
+                                        AS total_input_processed
 FROM conversation_turns ct
 WHERE ct.role = 'assistant'
 GROUP BY CAST(ct.timestamp AS DATE)

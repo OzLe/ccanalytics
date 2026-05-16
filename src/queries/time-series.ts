@@ -30,6 +30,11 @@ import { resolveTimezone, wrapTimestampForTz } from "../utils/timezone.js";
 // the live dataset because v_daily_cost additionally excludes the
 // '<synthetic>' model and NULL-model rows).
 import { costRowPredicateSql } from "../utils/sqlPredicates.js";
+// TOK-RE-002: shared SUM(input + output) SSOT so every total_tokens surface
+// agrees by construction with the dashboard route mirror.
+import { buildTokenSumSql } from "../utils/tokenSums.js";
+
+const SUMS = buildTokenSumSql("ct");
 
 /** Token usage breakdown at a point in time. */
 export interface TokenUsagePoint {
@@ -105,10 +110,10 @@ export class TimeSeriesAnalyzer {
           COUNT(*) AS message_count,
           COUNT(DISTINCT ct.session_id) AS session_count,
           AVG(ct.cost_usd) AS avg_cost,
-          SUM(ct.input_tokens + ct.output_tokens) AS total_tokens,
+          ${SUMS.totalTokensSql} AS total_tokens,
           SUM(ct.cost_usd) AS total_cost,
           CASE WHEN COUNT(*) > 0
-            THEN SUM(ct.input_tokens + ct.output_tokens)::DOUBLE / COUNT(*)
+            THEN ${SUMS.totalTokensSql}::DOUBLE / COUNT(*)
             ELSE 0
           END AS avg_tokens_per_turn
         FROM conversation_turns ct
