@@ -5,7 +5,7 @@
 1. **Dashboard users** who want to know what a given KPI actually means before acting on it.
 2. **Engineers** who modify the analytics code and need to keep SQL views, TypeScript analyzers, and dashboard routes in lockstep.
 
-**Date stamped:** May 15, 2026
+**Date stamped:** May 16, 2026 (LANE F prompt composite update — see [Recent changes](#recent-changes))
 **Inventory snapshot:** 67 metrics across 8 groups (cost, cache, session, tool, skill, token, prompt, activity)
 
 ---
@@ -29,19 +29,26 @@ References use the convention `path/to/file.ext:LINE`. Every line number in this
 
 ## Table of contents
 
-1. [Cost methodology preamble](#cost-methodology-preamble)
-2. [Cost metrics](#cost-metrics)
-3. [Cache metrics](#cache-metrics)
-4. [Session metrics](#session-metrics)
-5. [Tool metrics](#tool-metrics)
-6. [Skill metrics](#skill-metrics)
-7. [Token metrics](#token-metrics)
-8. [Prompt metrics](#prompt-metrics)
-9. [Activity metrics](#activity-metrics)
-10. [Known issues](#known-issues)
-11. [Proposed new KPIs](#proposed-new-kpis)
-12. [Glossary](#glossary)
-13. [Maintenance footer](#maintenance-footer)
+1. [Recent changes](#recent-changes)
+2. [Cost methodology preamble](#cost-methodology-preamble)
+3. [Cost metrics](#cost-metrics)
+4. [Cache metrics](#cache-metrics)
+5. [Session metrics](#session-metrics)
+6. [Tool metrics](#tool-metrics)
+7. [Skill metrics](#skill-metrics)
+8. [Token metrics](#token-metrics)
+9. [Prompt metrics](#prompt-metrics)
+10. [Activity metrics](#activity-metrics)
+11. [Known issues](#known-issues)
+12. [Proposed new KPIs](#proposed-new-kpis)
+13. [Glossary](#glossary)
+14. [Maintenance footer](#maintenance-footer)
+
+---
+
+## Recent changes
+
+- **2026-05-16 — LANE F prompt composite update** (PR #11). `prompt_complexity_score` now uses 4 equal-weighted (25/25/25/25) dimensions: `tool_call_count`, `total_tokens` (2-way input+output per LANE E), `multi_turn_depth`, and the new **`distinct_tools_used`** (`COUNT(DISTINCT tc.tool_name)`). The previous 4th term `has_thinking` (a 25-pt step that scored 0/25 for 98.8% of prompts) is dropped from the score and surfaced instead as a categorical "Thinking" badge in the prompts table UI. Resolves F1-prompt, F2-prompt, and (combined with LANE E / PR #8) F6-prompt. See [`prompt_complexity_score`](#prompt_complexity_score) and the struck-through entries in [Known issues](#known-issues).
 
 ---
 
@@ -940,36 +947,38 @@ The prompt group is the most sophisticated section — it defines a **prompt win
 
 ```
 complexity_score =
-  (PERCENT_RANK(tool_call_count)   * 100
- + PERCENT_RANK(total_tokens)      * 100
- + PERCENT_RANK(multi_turn_depth)  * 100
- + (has_thinking ? 100 : 0))
+  (PERCENT_RANK(tool_call_count)      * 100
+ + PERCENT_RANK(total_tokens)         * 100
+ + PERCENT_RANK(multi_turn_depth)     * 100
+ + PERCENT_RANK(distinct_tools_used)  * 100)
  / 4
 ```
 
-Percentiles are computed over the **entire dataset** (not the filtered period) so the score is stable across views.
+Each `PERCENT_RANK` term is wrapped in `COALESCE(..., 0)` so a single-row partition returns 0 instead of NULL. Percentiles are computed over the **entire dataset** (not the filtered period) so the score is stable across views. Weights are equal: 25/25/25/25.
 
-**Inputs.** Computed `tool_call_count`, `total_tokens`, `multi_turn_depth`, `has_thinking` per prompt window.
+**Inputs.** Computed `tool_call_count`, `total_tokens`, `multi_turn_depth`, `distinct_tools_used` per prompt window. `total_tokens` is the 2-way `input + output` sum (TOK-001 / LANE E); `distinct_tools_used` is `COUNT(DISTINCT tc.tool_name)` over the prompt window.
+
+`has_thinking` is no longer weighted into the score. It is surfaced as a categorical "Thinking" badge in the prompts table UI ([`PromptsPage.tsx:306`](../dashboard/src/pages/PromptsPage.tsx)) alongside the score.
 
 **Computed in.**
 
-- TS: [`src/queries/prompt-analyzer.ts:184`](../src/queries/prompt-analyzer.ts) (filtered `scored_prompts`), [`prompt-analyzer.ts:283`](../src/queries/prompt-analyzer.ts) (global `g_scored_prompts`)
-- Route: [`dashboard/src/server/routes/prompts.ts:140`](../dashboard/src/server/routes/prompts.ts), [`prompts.ts:240`](../dashboard/src/server/routes/prompts.ts)
+- TS: [`src/queries/prompt-analyzer.ts:222`](../src/queries/prompt-analyzer.ts) (filtered `scored_prompts`), [`prompt-analyzer.ts:333`](../src/queries/prompt-analyzer.ts) (global `g_scored_prompts`)
+- Route: [`dashboard/src/server/routes/prompts.ts:182`](../dashboard/src/server/routes/prompts.ts), [`prompts.ts:289`](../dashboard/src/server/routes/prompts.ts)
 
 **Interpretation.**
 
-| Range  | Bucket  | Meaning                                |
-| ------ | ------- | -------------------------------------- |
-| 0-20   | trivial | Quick reply, no tools                  |
-| 20-40  | light   | Some token volume or one tool          |
-| 40-60  | mid     | Multi-turn or noticeable tool use      |
-| 60-80  | heavy   | Agentic workflow                       |
-| 80-100 | extreme | Many tools, deep multi-turn, thinking  |
+| Range  | Bucket  | Meaning                                                |
+| ------ | ------- | ------------------------------------------------------ |
+| 0-20   | trivial | Quick reply, no tools                                  |
+| 20-40  | light   | Some token volume or one tool                          |
+| 40-60  | mid     | Multi-turn or noticeable tool use                      |
+| 60-80  | heavy   | Agentic workflow                                       |
+| 80-100 | extreme | Many tools across distinct tool names, deep multi-turn |
 
 **Caveats.**
 
-- `has_thinking` is a binary 25-point step function — 98.8% of prompts pay 0/100, 1.2% pay 100/100. Mixing a step function with three continuous percentiles makes the composite dimensionally inconsistent. See [F1 prompt](#known-issues).
-- `tool_call_count` and `multi_turn_depth` correlate at 0.995 on live data — they triple-weight one signal in a "4-dimensional" composite. See [F2 prompt](#known-issues).
+- `distinct_tools_used` is integer-valued and small for most prompts (typical range 0-5). `PERCENT_RANK` ties are common at low values (0, 1, 2, 3), so the score is **ordinal at the low end**, not interval — a prompt at 22 vs 28 may reflect tie-bucket boundaries rather than a real complexity gap. Decollinearizes from `tool_call_count` because a 30-call `Read` loop and a 5-tool fan-out score very differently (LANE F rationale).
+- `total_tokens` is now the 2-way `input + output` sum (per LANE E / Option A); the warm-cache inflation flagged by F6-prompt is removed on this axis.
 - Any prompt query with a `model` filter applies the filter **inside the ordered_turns CTE before user/assistant partitioning**. User turns have NULL model and silently drop → `?model=opus` returns **zero prompts**. See [F3 prompt](#known-issues).
 
 ### response_cost_per_prompt
@@ -1059,7 +1068,7 @@ Two histograms surfacing distribution of prompts:
 
 | Metric                  | Definition                                                                       | Sources                                                                                                                |
 | ----------------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `prompt_total_tokens`   | Sum of all 4 token categories per prompt window                                   | [`views.sql:287`](../sql/views.sql), [`prompt-analyzer.ts:119`](../src/queries/prompt-analyzer.ts), [`prompts.ts:80`](../dashboard/src/server/routes/prompts.ts) — conflates cache_read with real work, see [F6 prompt](#known-issues) |
+| `prompt_total_tokens`   | 2-way `input + output` sum per prompt window on the API/analyzer path (per LANE E / TOK-001). `v_prompt_analysis` still emits the legacy 4-way sum but is no longer read by the API (see [F7 prompt](#known-issues)). | [`views.sql:287`](../sql/views.sql), [`prompt-analyzer.ts:152`](../src/queries/prompt-analyzer.ts), [`prompts.ts:115`](../dashboard/src/server/routes/prompts.ts) |
 | `prompts_per_session`   | `responded_prompts / distinct_sessions`                                           | [`prompt-analyzer.ts:615`](../src/queries/prompt-analyzer.ts), [`prompts.ts:581`](../dashboard/src/server/routes/prompts.ts) |
 | `turns_per_prompt`      | `AVG(multi_turn_depth)` over responded prompts                                    | [`prompt-analyzer.ts:616`](../src/queries/prompt-analyzer.ts), [`prompts.ts:562`](../dashboard/src/server/routes/prompts.ts) |
 | `tool_calls_per_prompt` | `AVG(tool_call_count)` over responded prompts                                     | [`prompt-analyzer.ts:617`](../src/queries/prompt-analyzer.ts), [`prompts.ts:563`](../dashboard/src/server/routes/prompts.ts) |
@@ -1188,11 +1197,9 @@ Every finding from the per-group reviews, grouped by severity. Items marked **[T
 - **[TICKET] [HIGH] token:total_tokens (cross-codebase) — TOK-002 — Two contradictory total_tokens definitions side-by-side (11.98B vs 40.75M)** ([`activity.ts:42`](../dashboard/src/server/routes/activity.ts), [`views.sql:217`](../sql/views.sql), [`tokens.ts:42`](../dashboard/src/server/routes/tokens.ts), [`prompts.ts:80`](../dashboard/src/server/routes/prompts.ts))
   Same field name, 293.95× different values. activity.ts uses input+output ONLY; v_hourly_activity uses 4-way. Pick ONE definition; add unit test.
 
-- **[TICKET] [HIGH] prompt:prompt_complexity_score — F1 prompt — has_thinking is 25-pt step function in 100-pt composite; 98.8% of prompts pay 0/100** ([`prompt-analyzer.ts:189`](../src/queries/prompt-analyzer.ts), [`prompts.ts:148`](../dashboard/src/server/routes/prompts.ts))
-  Mixing step function with 3 continuous percentiles is dimensionally inconsistent. Fix: drop has_thinking + re-weight to thirds, OR continuous thinking_tokens.
+- ~~**[TICKET] [HIGH] prompt:prompt_complexity_score — F1 prompt — has_thinking is 25-pt step function in 100-pt composite; 98.8% of prompts pay 0/100** ([`prompt-analyzer.ts:189`](../src/queries/prompt-analyzer.ts), [`prompts.ts:148`](../dashboard/src/server/routes/prompts.ts))~~ **RESOLVED (resolved by PR #11).** `has_thinking` is no longer in the composite; replaced by `PERCENT_RANK(distinct_tools_used)`. `has_thinking` is now surfaced as a categorical "Thinking" badge in the prompts table UI.
 
-- **[TICKET] [HIGH] prompt:prompt_complexity_score (composite weights) — F2 prompt — tool_call_count and multi_turn_depth correlate 0.995; composite triple-weights one signal** ([`prompt-analyzer.ts:189`](../src/queries/prompt-analyzer.ts))
-  50% of composite is essentially same signal twice. Fix: replace pair with single dimension; add non-redundant 4th (error_count, sub-agent fan-out, distinct_tools).
+- ~~**[TICKET] [HIGH] prompt:prompt_complexity_score (composite weights) — F2 prompt — tool_call_count and multi_turn_depth correlate 0.995; composite triple-weights one signal** ([`prompt-analyzer.ts:189`](../src/queries/prompt-analyzer.ts))~~ **RESOLVED (resolved by PR #11).** The 4th dimension is now `distinct_tools_used` (`COUNT(DISTINCT tc.tool_name)`), which decollinearizes from `tool_call_count` (a 30-call `Read` loop and a 5-tool fan-out score very differently). Equal weights 25/25/25/25 preserved.
 
 - **[TICKET] [HIGH] prompt:All prompt metrics filtered by model — F3 prompt — Model filter breaks prompt pairing; all user turns NULL model and dropped silently** ([`filter-builder.ts:33`](../src/queries/filter-builder.ts), [`parseFilters.ts:108`](../dashboard/src/server/helpers/parseFilters.ts))
   Filter applies inside ordered_turns CTE before user/assistant partitioning. NULL LIKE anything = NULL → excluded. `?model=opus` returns zero prompts. Fix: `AND (role='user' OR model LIKE ...)`.
@@ -1227,7 +1234,7 @@ Every finding from the per-group reviews, grouped by severity. Items marked **[T
 - [MEDIUM] token:total_tokens_all_time — TOK-004 — All-time number adds little signal; replace with "Replay Xx" = cache_read / max(1, input+output)
 - [MEDIUM] prompt:cost_distribution_buckets — F4 prompt — Buckets under-resolve high end; 2,744 of 5,692 prompts (48%) collapse into single $0.50+ bucket
 - [MEDIUM] prompt:prompts_with_no_response — F5 prompt — Synthetic-only windows (60) classified as "responded" with $0 cost; headline undercounts true 2,242
-- [MEDIUM] prompt:prompt_total_tokens — F6 prompt — total_tokens conflates cache_read with real work; long sessions with warm caches score artificially high
+- ~~[MEDIUM] prompt:prompt_total_tokens — F6 prompt — total_tokens conflates cache_read with real work; long sessions with warm caches score artificially high~~ **RESOLVED (resolved by PR #8 + PR #11).** LANE E (PR #8) switched `total_tokens` to the 2-way `input + output` sum on the prompt analyzer/route path (Option A / TOK-001); LANE F (PR #11) re-weighted the composite to consume that 2-way value, removing the residual warm-cache inflation on this axis.
 - [MEDIUM] prompt:v_prompt_analysis (maintenance) — F7 prompt — v_prompt_analysis exists but no API path reads it; three implementations of same logic in views/analyzer/route
 - [MEDIUM] activity:hourly_session_count — ACT-006 — COUNT(DISTINCT session_id) per hour double-counts long sessions; name "session_count" suggests "sessions started"
 - [MEDIUM] activity:hourly_avg_cost — ACT-007 — Activity surfaces lack costRowPredicate; 87 synthetic rows pollute AVG by 0.1-0.5%
