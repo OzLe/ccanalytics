@@ -35,8 +35,14 @@ import {
   DEFAULT_TIMEZONE,
   isValidTimezone,
 } from "../../../../src/utils/timezone.js";
+import {
+  CEILING_DIMENSIONS,
+  type TierLimitCeilings,
+  type TierLimitOverrides,
+} from "../../../../src/config/limits.js";
 import type {
   DisplayConfig,
+  RecommendationConfig,
   SubscriptionConfig,
   SubscriptionTier,
 } from "../../../../src/types/config.js";
@@ -76,6 +82,17 @@ const DEFAULT_SUBSCRIPTION: SubscriptionConfig = {
  */
 const DEFAULT_DISPLAY: Required<DisplayConfig> = {
   userTimezone: DEFAULT_TIMEZONE,
+};
+
+/**
+ * Fallback recommendation block when the config file is absent or has no
+ * `recommendation` key. Mirrors DEFAULT_CONFIG.recommendation in the CLI:
+ * auto-calibration defaults ON, and `ceilings` is left sparse/absent so the
+ * DEFAULT_TIER_LIMITS in src/config/limits.ts are the effective default. All
+ * ceiling values are ESTIMATES (see RECOMMENDATION_ESTIMATE_CAVEAT).
+ */
+const DEFAULT_RECOMMENDATION: RecommendationConfig = {
+  autoCalibrate: true,
 };
 
 /**
@@ -153,19 +170,111 @@ function resolveDisplay(
 }
 
 /**
+ * Sanitize a raw `recommendation.ceilings` value into a sparse
+ * {@link TierLimitOverrides}. Defensive (this guards the only write path):
+ *
+ *   - Only known {@link SubscriptionTier} keys survive (drops e.g. "team").
+ *   - Within each tier, only the four numeric {@link TierLimitCeilings}
+ *     dimensions survive, and only when finite and non-negative — NaN,
+ *     Infinity, negatives and non-numbers are dropped.
+ *   - A tier whose every dimension was dropped is omitted entirely, so the
+ *     persisted shape stays sparse (any omitted tier/dimension falls back to
+ *     DEFAULT_TIER_LIMITS at read time via resolveCeilings()).
+ *
+ * Returns `undefined` when nothing valid remains, so the caller can omit the
+ * key rather than persist an empty object.
+ */
+function sanitizeCeilings(raw: unknown): TierLimitOverrides | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return undefined;
+  }
+  const out: TierLimitOverrides = {};
+  let anyTier = false;
+  for (const [tierKey, tierVal] of Object.entries(raw as Record<string, unknown>)) {
+    if (!isSubscriptionTier(tierKey)) continue;
+    if (!tierVal || typeof tierVal !== "object" || Array.isArray(tierVal)) continue;
+    const dims = tierVal as Record<string, unknown>;
+    const sanitized: Partial<TierLimitCeilings> = {};
+    let anyDim = false;
+    for (const dim of CEILING_DIMENSIONS) {
+      const v = dims[dim];
+      if (typeof v === "number" && Number.isFinite(v) && v >= 0) {
+        sanitized[dim] = v;
+        anyDim = true;
+      }
+    }
+    if (anyDim) {
+      out[tierKey] = sanitized;
+      anyTier = true;
+    }
+  }
+  return anyTier ? out : undefined;
+}
+
+/**
+ * Resolve the `recommendation` block out of a parsed config object, falling
+ * back to DEFAULT_RECOMMENDATION (`autoCalibrate: true`, no ceiling overrides)
+ * when absent or malformed. `autoCalibrate` is coerced to a strict boolean and
+ * `ceilings` is passed through {@link sanitizeCeilings} so only known tiers and
+ * finite/non-negative numeric dimensions survive — the same defensive
+ * normalization the PUT gate applies, so GET never surfaces stored garbage.
+ *
+ * This is the shared resolver the read-only /api/recommendation route consumes
+ * to obtain `autoCalibrate` + merged ceiling overrides without duplicating the
+ * config-reading logic (§4.3).
+ */
+function resolveRecommendation(
+  config: Record<string, unknown>,
+): RecommendationConfig {
+  const raw = config.recommendation;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return { ...DEFAULT_RECOMMENDATION };
+  }
+  const candidate = raw as Partial<RecommendationConfig>;
+  const autoCalibrate =
+    typeof candidate.autoCalibrate === "boolean"
+      ? candidate.autoCalibrate
+      : DEFAULT_RECOMMENDATION.autoCalibrate;
+  const ceilings = sanitizeCeilings(candidate.ceilings);
+  return ceilings ? { autoCalibrate, ceilings } : { autoCalibrate };
+}
+
+/**
+ * Read the resolved `recommendation` block straight from disk. Exposed so the
+ * read-only /api/recommendation route can share this route's config-reading +
+ * normalization logic instead of re-implementing it. settings.ts stays the
+ * ONLY write path; this is a pure read.
+ */
+export async function getRecommendationConfig(): Promise<RecommendationConfig> {
+  const config = await readConfigFile();
+  return resolveRecommendation(config);
+}
+
+/**
+ * Read the resolved `subscription` block straight from disk. Companion to
+ * {@link getRecommendationConfig} so the recommendation route can learn the
+ * current tier through the same shared resolver. Pure read.
+ */
+export async function getSubscriptionConfig(): Promise<SubscriptionConfig> {
+  const config = await readConfigFile();
+  return resolveSubscription(config);
+}
+
+/**
  * GET /api/settings
  *
- * Returns the resolved `subscription` and `display` blocks from
- * ~/.ccanalytics/config.json, or the DEFAULT_CONFIG fallback (max-20x / $200,
- * userTimezone='UTC') when the file is missing. Always 200 on a fresh install;
- * 500 only on an unexpected fs error.
+ * Returns the resolved `subscription`, `display`, and `recommendation` blocks
+ * from ~/.ccanalytics/config.json, or the DEFAULT_CONFIG fallback (max-20x /
+ * $200, userTimezone='UTC', autoCalibrate=true) when the file is missing.
+ * Always 200 on a fresh install; 500 only on an unexpected fs error.
  */
 router.get("/", async (_req, res, next) => {
   try {
     const config = await readConfigFile();
     const subscription = resolveSubscription(config);
     const display = resolveDisplay(config);
-    res.json(envelope({ subscription, display }, "all"));
+    const recommendation = resolveRecommendation(config);
+    res.json(envelope({ subscription, display, recommendation }, "all"));
   } catch (err) {
     next(err);
   }
@@ -177,16 +286,22 @@ router.get("/", async (_req, res, next) => {
  * Body (all keys optional, but at least one must be present):
  *   {
  *     subscription?: { tier: SubscriptionTier, monthlyUSD?: number },
- *     display?: { userTimezone?: string }
+ *     display?: { userTimezone?: string },
+ *     recommendation?: {
+ *       autoCalibrate?: boolean,
+ *       ceilings?: { [tier]: { fiveHourRequests?: number, ... } }
+ *     }
  *   }
  *
  * Validates each provided key independently; rejects with 400 if any is
  * malformed or contains an invalid IANA timezone. `monthlyUSD` is derived
- * server-side from the canonical tier->price map when omitted, and an empty
- * `userTimezone` is normalised to 'UTC'. Then mkdir -p, read the existing
- * config (or {}), shallow-merge the provided keys, and write it back
- * pretty-printed. Untouched keys (subscription when only display is sent, and
- * vice versa) are preserved from disk.
+ * server-side from the canonical tier->price map when omitted, an empty
+ * `userTimezone` is normalised to 'UTC', and `recommendation` is sanitized
+ * server-side (boolean-coerced `autoCalibrate`; finite/non-negative ceiling
+ * dimensions on known tiers only — anything else dropped). Then mkdir -p, read
+ * the existing config (or {}), shallow-merge ONLY the provided keys, and write
+ * it back pretty-printed. Untouched keys (subscription/display/recommendation
+ * not in the body, plus unknown keys like dbPath) are preserved from disk.
  */
 router.put("/", async (req, res, next) => {
   try {
@@ -194,6 +309,7 @@ router.put("/", async (req, res, next) => {
       | {
           subscription?: { tier?: unknown; monthlyUSD?: unknown };
           display?: { userTimezone?: unknown };
+          recommendation?: { autoCalibrate?: unknown; ceilings?: unknown };
         }
       | undefined;
 
@@ -206,11 +322,16 @@ router.put("/", async (req, res, next) => {
 
     const incomingSub = body.subscription;
     const incomingDisplay = body.display;
-    if (incomingSub === undefined && incomingDisplay === undefined) {
+    const incomingRecommendation = body.recommendation;
+    if (
+      incomingSub === undefined &&
+      incomingDisplay === undefined &&
+      incomingRecommendation === undefined
+    ) {
       return res.status(400).json({
         error: "Bad request",
         message:
-          "Body must include at least one of `subscription` or `display`.",
+          "Body must include at least one of `subscription`, `display`, or `recommendation`.",
       });
     }
 
@@ -263,6 +384,53 @@ router.put("/", async (req, res, next) => {
       }
     }
 
+    // --- Recommendation (preserve existing if not in body) ---
+    // Mirrors the subscription/display gates: reject a non-object payload with
+    // 400, then sanitize numeric ceilings + boolean autoCalibrate server-side.
+    let nextRecommendation: RecommendationConfig | undefined;
+    if (incomingRecommendation !== undefined) {
+      if (
+        !incomingRecommendation ||
+        typeof incomingRecommendation !== "object" ||
+        Array.isArray(incomingRecommendation)
+      ) {
+        return res.status(400).json({
+          error: "Bad request",
+          message: "`recommendation` must be an object.",
+        });
+      }
+      const rawAuto = incomingRecommendation.autoCalibrate;
+      if (rawAuto !== undefined && typeof rawAuto !== "boolean") {
+        return res.status(400).json({
+          error: "Bad request",
+          message: "`recommendation.autoCalibrate` must be a boolean.",
+        });
+      }
+      const rawCeilings = incomingRecommendation.ceilings;
+      if (
+        rawCeilings !== undefined &&
+        (rawCeilings === null ||
+          typeof rawCeilings !== "object" ||
+          Array.isArray(rawCeilings))
+      ) {
+        return res.status(400).json({
+          error: "Bad request",
+          message:
+            "`recommendation.ceilings` must be an object keyed by subscription tier.",
+        });
+      }
+      // autoCalibrate defaults to the current default (true) when omitted; the
+      // ceilings are sanitized to a sparse, finite/non-negative override set.
+      const autoCalibrate =
+        typeof rawAuto === "boolean"
+          ? rawAuto
+          : DEFAULT_RECOMMENDATION.autoCalibrate;
+      const ceilings = sanitizeCeilings(rawCeilings);
+      nextRecommendation = ceilings
+        ? { autoCalibrate, ceilings }
+        : { autoCalibrate };
+    }
+
     // (1) ensure ~/.ccanalytics/ exists, (2) read existing config (or {}),
     // (3) shallow-merge ONLY the provided keys, (4) write back.
     const { dir, file } = resolveConfigPath();
@@ -271,20 +439,27 @@ router.put("/", async (req, res, next) => {
     const merged: Record<string, unknown> = { ...existing };
     if (nextSubscription) merged.subscription = nextSubscription;
     if (nextDisplay) merged.display = nextDisplay;
+    if (nextRecommendation) merged.recommendation = nextRecommendation;
     await fs.writeFile(
       file,
       JSON.stringify(merged, null, 2) + "\n",
       "utf-8",
     );
 
-    // Always return the fully-resolved view (post-merge) so the client gets
-    // both blocks back, regardless of which one(s) were sent.
+    // Always return the fully-resolved view (post-merge) so the client gets all
+    // three blocks back, regardless of which one(s) were sent.
     const finalSubscription =
       nextSubscription ?? resolveSubscription(existing);
     const finalDisplay = nextDisplay ?? resolveDisplay(existing);
+    const finalRecommendation =
+      nextRecommendation ?? resolveRecommendation(existing);
     res.json(
       envelope(
-        { subscription: finalSubscription, display: finalDisplay },
+        {
+          subscription: finalSubscription,
+          display: finalDisplay,
+          recommendation: finalRecommendation,
+        },
         "all",
       ),
     );

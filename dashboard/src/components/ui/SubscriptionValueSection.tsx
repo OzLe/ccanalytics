@@ -11,14 +11,17 @@
  * and a one-line interpretation. Reads the same `useSubscriptionValue` hook so
  * the numbers never diverge from the Overview band.
  *
- * Renders nothing when `tier === "none"`.
+ * It also hosts the read-only "Should I up/downgrade?" recommendation
+ * (`SubscriptionRecommendationCard`, fed by GET /api/recommendation). The ROI
+ * card renders only for a paid tier, but the recommendation card always renders
+ * so the tier-"none" user still sees the neutral usage-stats variant.
  */
 
 import KPICard from "@/components/ui/KPICard";
 import ChartCard from "@/components/ui/ChartCard";
 import { SectionHeader } from "@/components/ui/SectionHeader";
+import SubscriptionRecommendationCard from "@/components/ui/SubscriptionRecommendationCard";
 import { useSubscriptionValue, AVG_DAYS_PER_MONTH } from "@/hooks/useSubscriptionValue";
-import { useSettings } from "@/hooks/useSettings";
 import { formatCost } from "@/lib/formatters";
 import { API_EQUIVALENT_TOOLTIP } from "@/lib/costLabels";
 import { SUBSCRIPTION_TIER_OPTIONS } from "@/lib/types";
@@ -48,13 +51,7 @@ function tierLabel(tierId: string): string {
 }
 
 export default function SubscriptionValueSection() {
-  const settings = useSettings();
   const sv = useSubscriptionValue();
-
-  // No subscription to compare against — render nothing.
-  if (!settings.isLoading && sv.isNeutral) {
-    return null;
-  }
 
   const {
     apiEquivalentUSD,
@@ -68,6 +65,7 @@ export default function SubscriptionValueSection() {
     periodDaysIsEstimate,
     isUnderwater,
     isLoading,
+    isNeutral,
   } = sv;
 
   const periodText = periodLabel(period, periodDays, periodDaysIsEstimate);
@@ -99,9 +97,15 @@ export default function SubscriptionValueSection() {
     <section className="space-y-[var(--space-3)]">
       <SectionHeader
         title="Subscription Value"
-        subtitle="What your usage would cost at API rates vs. your flat subscription fee"
+        subtitle={
+          isNeutral
+            ? "Usage-intensity stats and an up/downgrade recommendation (estimates)"
+            : "What your usage would cost at API rates vs. your flat subscription fee"
+        }
       />
 
+      {/* ROI card — only meaningful on a paid tier (tier "none" has no fee). */}
+      {!isNeutral && (
       <ChartCard
         title="ROI for the Selected Period"
         subtitle={proratedBreakdown}
@@ -167,6 +171,11 @@ export default function SubscriptionValueSection() {
           )}
         </div>
       </ChartCard>
+      )}
+
+      {/* Up/downgrade recommendation — always rendered (handles the neutral
+          tier-"none" stats-only variant itself). */}
+      <SubscriptionRecommendationCard />
     </section>
   );
 }

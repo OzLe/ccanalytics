@@ -7,6 +7,7 @@
  */
 
 import type { OutputFormat } from "./analytics.js";
+import type { TierLimitCeilings } from "../config/limits.js";
 
 /** Discriminator for data source origin. */
 export type SourceType = "claude-code" | "claude-desktop";
@@ -43,6 +44,23 @@ export interface DisplayConfig {
   userTimezone?: string;
 }
 
+/**
+ * Editable rate-limit ceilings + recommendation behaviour. All ceiling values
+ * are ESTIMATES (see src/config/limits.ts and RECOMMENDATION_ESTIMATE_CAVEAT).
+ * This block only tunes the advisory subscription recommendation — it never
+ * affects how cost is computed.
+ */
+export interface RecommendationConfig {
+  /** Opt-in auto-calibration of ceilings to observed peaks. Default: true. */
+  autoCalibrate: boolean;
+  /**
+   * Per-tier ceiling overrides. Sparse: any tier/dimension omitted falls back
+   * to DEFAULT_TIER_LIMITS in src/config/limits.ts. Never stored fully unless
+   * the user edits it.
+   */
+  ceilings?: Partial<Record<SubscriptionTier, Partial<TierLimitCeilings>>>;
+}
+
 /** Top-level configuration for ccanalytics. */
 export interface CCAnalyticsConfig {
   /** Path to DuckDB database file. Default: ~/.ccanalytics/analytics.duckdb */
@@ -67,6 +85,8 @@ export interface CCAnalyticsConfig {
   subscription: SubscriptionConfig;
   /** Display / projection preferences (user timezone, etc.). */
   display?: DisplayConfig;
+  /** Subscription-recommendation ceilings + auto-calibrate toggle. */
+  recommendation?: RecommendationConfig;
 }
 
 /** Configuration for the ingestion pipeline. */

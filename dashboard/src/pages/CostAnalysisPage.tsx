@@ -383,8 +383,9 @@ export default function CostAnalysisPage() {
       </section>
 
       {/* ── Subscription Value (MAX-005) ───────────────────────── */}
-      {/*  Detailed ROI section — placed right after Cost Overview. */}
-      {/*  Renders nothing when subscription.tier === "none".       */}
+      {/*  Detailed ROI card + up/downgrade recommendation, placed   */}
+      {/*  right after Cost Overview. The ROI card hides on tier      */}
+      {/*  "none"; the recommendation card always shows (neutral).    */}
       <SubscriptionValueSection />
 
       {/* ── Cost Trend ─────────────────────────────────────────── */}

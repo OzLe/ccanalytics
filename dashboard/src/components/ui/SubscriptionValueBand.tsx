@@ -14,16 +14,47 @@
  * Renders nothing when `tier === "none"` (no subscription to compare against).
  */
 
-import { TrendingUp, AlertTriangle, Sparkles } from "lucide-react";
+import { TrendingUp, AlertTriangle, Sparkles, ArrowDownRight, ArrowUpRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import Skeleton from "@/components/ui/Skeleton";
-import { Tooltip } from "@/components/ui/Tooltip";
+import Badge from "@/components/ui/Badge";
+import { BandStat } from "@/components/ui/BandStat";
 import { useSubscriptionValue } from "@/hooks/useSubscriptionValue";
 import { useSettings } from "@/hooks/useSettings";
+import { useRecommendation } from "@/hooks/useRecommendation";
 import { formatCost } from "@/lib/formatters";
 import { API_EQUIVALENT_TOOLTIP } from "@/lib/costLabels";
 import { SUBSCRIPTION_TIER_OPTIONS } from "@/lib/types";
 import type { Period } from "@/hooks/useFilters";
+
+/**
+ * Compact one-line verdict chip surfaced in the Overview hero band — only for
+ * the ACTIONABLE verdicts (upgrade / downgrade). "stay"/"neutral" and any
+ * loading/error state render nothing so the hero stays uncluttered; the full
+ * treatment lives in the Cost Analysis `SubscriptionRecommendationCard`. Uses
+ * the same `useRecommendation()` hook so the two surfaces never diverge.
+ */
+function RecommendationChip() {
+  const { data } = useRecommendation();
+  const verdict = data?.recommendation.verdict;
+  if (verdict === "downgrade") {
+    return (
+      <Badge variant="success" size="sm" className="gap-[var(--space-1)]">
+        <ArrowDownRight size={11} strokeWidth={2.5} />
+        Could downgrade
+      </Badge>
+    );
+  }
+  if (verdict === "upgrade") {
+    return (
+      <Badge variant="warning" size="sm" className="gap-[var(--space-1)]">
+        <ArrowUpRight size={11} strokeWidth={2.5} />
+        Consider upgrading
+      </Badge>
+    );
+  }
+  return null;
+}
 
 /** Human-readable label for the active period. */
 function periodLabel(period: Period, periodDays: number, isEstimate: boolean): string {
@@ -46,47 +77,6 @@ function periodLabel(period: Period, periodDays: number, isEstimate: boolean): s
 /** Resolve the human label for a tier id (e.g. "max-20x" → "MAX 20x"). */
 function tierLabel(tierId: string): string {
   return SUBSCRIPTION_TIER_OPTIONS.find((t) => t.id === tierId)?.label ?? tierId;
-}
-
-/** A single compact stat in the band. */
-function BandStat({
-  label,
-  value,
-  tone = "default",
-  tooltip,
-}: {
-  label: string;
-  value: string;
-  tone?: "default" | "positive" | "negative";
-  tooltip?: string;
-}) {
-  const valueColor =
-    tone === "positive"
-      ? "text-[var(--success)]"
-      : tone === "negative"
-        ? "text-[var(--danger)]"
-        : "text-[var(--text-primary)]";
-
-  const labelNode = (
-    <p className="text-caption text-[var(--text-tertiary)]">{label}</p>
-  );
-
-  return (
-    <div className="flex flex-col gap-[var(--space-1)]">
-      {tooltip ? (
-        <Tooltip content={tooltip} position="top" className="max-w-xs whitespace-normal">
-          <span className="cursor-help border-b border-dotted border-[var(--text-tertiary)]">
-            {labelNode}
-          </span>
-        </Tooltip>
-      ) : (
-        labelNode
-      )}
-      <p className={cn("text-h3 font-semibold tabular-nums", valueColor)}>
-        {value}
-      </p>
-    </div>
-  );
 }
 
 export default function SubscriptionValueBand() {
@@ -173,7 +163,7 @@ export default function SubscriptionValueBand() {
             <Icon size={20} strokeWidth={2} />
           </div>
           <div className="min-w-0">
-            <div className="flex items-center gap-[var(--space-2)]">
+            <div className="flex flex-wrap items-center gap-[var(--space-2)]">
               <p className="text-overline text-[var(--text-secondary)]">
                 Subscription Value
               </p>
@@ -183,6 +173,7 @@ export default function SubscriptionValueBand() {
                   {roiText}
                 </span>
               )}
+              <RecommendationChip />
             </div>
             <p className="mt-[var(--space-1)] text-h2 text-[var(--text-primary)]">
               {headline}

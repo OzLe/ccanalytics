@@ -5,7 +5,12 @@ import { Button } from "@/components/ui/Button";
 import ErrorBoundary from "@/components/ui/ErrorBoundary";
 import { Moon, Check } from "lucide-react";
 import { useSettings, useUpdateSettings } from "@/hooks/useSettings";
-import { SUBSCRIPTION_TIER_OPTIONS, type SubscriptionTier } from "@/lib/types";
+import {
+  SUBSCRIPTION_TIER_OPTIONS,
+  type SubscriptionTier,
+  type TierLimitCeilings,
+  type TierLimitOverrides,
+} from "@/lib/types";
 import { formatCost } from "@/lib/formatters";
 
 /* ── Subscription tier picker ─────────────────────────────────── */
@@ -266,6 +271,260 @@ function TimezoneSection() {
   );
 }
 
+/* ── Recommendation (ceilings + auto-calibrate) ────────────────── */
+
+/**
+ * The four editable ceiling dimensions, with human labels. These are TYPE-level
+ * field identifiers (the keys of `TierLimitCeilings`), NOT ceiling numbers — the
+ * numeric defaults live server-side in src/config/limits.ts and reach the UI
+ * only through the API payload (every input is seeded from / saved to that).
+ */
+const CEILING_FIELDS: ReadonlyArray<{
+  key: keyof TierLimitCeilings;
+  label: string;
+}> = [
+  { key: "fiveHourRequests", label: "5h requests" },
+  { key: "fiveHourTokens", label: "5h tokens" },
+  { key: "weeklyRequests", label: "Weekly requests" },
+  { key: "weeklyTokens", label: "Weekly tokens" },
+];
+
+/** Paid tiers get editable ceilings; "none" (pay-as-you-go) has no limits. */
+const CEILING_TIERS = SUBSCRIPTION_TIER_OPTIONS.filter((t) => t.id !== "none");
+
+/** Local edit state: per-tier, per-dimension string (blank = "use default"). */
+type CeilingDraft = Partial<Record<SubscriptionTier, Partial<Record<keyof TierLimitCeilings, string>>>>;
+
+/** Seed the local string draft from the server's sparse override payload. */
+function draftFromOverrides(overrides: TierLimitOverrides | undefined): CeilingDraft {
+  const draft: CeilingDraft = {};
+  if (!overrides) return draft;
+  for (const [tier, dims] of Object.entries(overrides) as [
+    SubscriptionTier,
+    Partial<TierLimitCeilings>,
+  ][]) {
+    if (!dims) continue;
+    const row: Partial<Record<keyof TierLimitCeilings, string>> = {};
+    for (const { key } of CEILING_FIELDS) {
+      const v = dims[key];
+      if (typeof v === "number" && Number.isFinite(v)) row[key] = String(v);
+    }
+    if (Object.keys(row).length > 0) draft[tier] = row;
+  }
+  return draft;
+}
+
+/** Build a sparse {@link TierLimitOverrides} from the local string draft. */
+function overridesFromDraft(draft: CeilingDraft): TierLimitOverrides {
+  const out: TierLimitOverrides = {};
+  for (const tier of CEILING_TIERS) {
+    const row = draft[tier.id];
+    if (!row) continue;
+    const dims: Partial<TierLimitCeilings> = {};
+    for (const { key } of CEILING_FIELDS) {
+      const raw = row[key];
+      if (raw === undefined || raw.trim() === "") continue;
+      const n = Number(raw);
+      // Only finite, non-negative values become overrides; the server applies
+      // the same gate, but keeping the client honest avoids a doomed PUT.
+      if (Number.isFinite(n) && n >= 0) dims[key] = n;
+    }
+    if (Object.keys(dims).length > 0) out[tier.id] = dims;
+  }
+  return out;
+}
+
+/**
+ * Recommendation controls — the `autoCalibrate` toggle and optional per-tier
+ * ceiling overrides, persisted through the shared `useUpdateSettings` mutation
+ * (PUT /api/settings preserves `subscription` / `display` on disk). Honest
+ * "estimate" copy is mandatory: the underlying limits are not published.
+ */
+function RecommendationSection() {
+  const settings = useSettings();
+  const updateSettings = useUpdateSettings();
+
+  const serverAuto = settings.data?.recommendation?.autoCalibrate;
+  const serverOverrides = settings.data?.recommendation?.ceilings;
+
+  // Staged local values, dirty-tracked for an explicit Save.
+  const [autoCalibrate, setAutoCalibrate] = useState(true);
+  const [draft, setDraft] = useState<CeilingDraft>({});
+
+  // Sync staged values whenever the server (re)loads.
+  useEffect(() => {
+    if (typeof serverAuto === "boolean") setAutoCalibrate(serverAuto);
+  }, [serverAuto]);
+
+  useEffect(() => {
+    setDraft(draftFromOverrides(serverOverrides));
+  }, [serverOverrides]);
+
+  const serverDraft = useMemo(
+    () => draftFromOverrides(serverOverrides),
+    [serverOverrides],
+  );
+  const autoDirty = serverAuto !== undefined && autoCalibrate !== serverAuto;
+  const ceilingsDirty =
+    JSON.stringify(overridesFromDraft(draft)) !==
+    JSON.stringify(overridesFromDraft(serverDraft));
+  const isDirty = autoDirty || ceilingsDirty;
+  const isSaving = updateSettings.isPending;
+  const justSaved = updateSettings.isSuccess && !isDirty;
+
+  const setCell = (
+    tier: SubscriptionTier,
+    key: keyof TierLimitCeilings,
+    value: string,
+  ) => {
+    setDraft((prev) => ({
+      ...prev,
+      [tier]: { ...prev[tier], [key]: value },
+    }));
+  };
+
+  const handleSave = () => {
+    const ceilings = overridesFromDraft(draft);
+    updateSettings.mutate({
+      recommendation: {
+        autoCalibrate,
+        // Send an empty object as "no overrides" so the server clears stale
+        // ones; the resolver treats an empty set as sparse/absent.
+        ceilings,
+      },
+    });
+  };
+
+  const inputClass = cn(
+    "w-full rounded-[var(--radius-md)] border border-[var(--border)]",
+    "bg-[var(--bg-elevated)] px-[var(--space-2)] py-[var(--space-1)]",
+    "text-small text-[var(--text-primary)] tabular-nums",
+    "transition-colors duration-[var(--duration-fast)]",
+    "hover:border-[var(--border-hover)]",
+    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]",
+    "focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg-base)]",
+    "disabled:opacity-50",
+  );
+
+  return (
+    <section className="space-y-[var(--space-5)]">
+      <SectionHeader
+        title="Recommendation"
+        subtitle="Up/downgrade advice from local usage — every limit is an estimate (Anthropic's exact limits are not published)"
+      />
+
+      <div
+        className={cn(
+          "rounded-[var(--radius-xl)] border border-[var(--border)]",
+          "bg-[var(--bg-surface)] p-[var(--space-6)] space-y-[var(--space-5)]",
+        )}
+      >
+        {/* Auto-calibrate toggle */}
+        <label className="flex items-start gap-[var(--space-3)] cursor-pointer">
+          <input
+            type="checkbox"
+            checked={autoCalibrate}
+            disabled={settings.isLoading || isSaving}
+            onChange={(e) => setAutoCalibrate(e.target.checked)}
+            className="mt-[var(--space-1)] h-4 w-4 shrink-0 accent-[var(--accent)] disabled:opacity-50"
+          />
+          <span>
+            <span className="text-overline text-[var(--text-primary)]">
+              Auto-calibrate limits
+            </span>
+            <span className="mt-[var(--space-1)] block text-small text-[var(--text-secondary)]">
+              When your observed peak usage exceeds the estimated limit, raise
+              the limit to at least your peak before computing fill percentages
+              — so you're never pinned at a meaningless &gt;100%.
+            </span>
+          </span>
+        </label>
+
+        {/* Per-tier ceiling overrides */}
+        <div className="space-y-[var(--space-3)]">
+          <div>
+            <span className="text-overline text-[var(--text-primary)]">
+              Per-tier limit overrides
+            </span>
+            <p className="mt-[var(--space-1)] text-small text-[var(--text-secondary)]">
+              Leave a field blank to use the built-in estimate for that tier.
+              Values are model requests / blended tokens per rolling window.
+            </p>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[32rem] border-collapse">
+              <thead>
+                <tr>
+                  <th className="px-[var(--space-2)] py-[var(--space-1)] text-left text-caption text-[var(--text-tertiary)]">
+                    Tier
+                  </th>
+                  {CEILING_FIELDS.map((f) => (
+                    <th
+                      key={f.key}
+                      className="px-[var(--space-2)] py-[var(--space-1)] text-left text-caption text-[var(--text-tertiary)]"
+                    >
+                      {f.label}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {CEILING_TIERS.map((tier) => (
+                  <tr key={tier.id}>
+                    <td className="px-[var(--space-2)] py-[var(--space-1)] text-small text-[var(--text-primary)] whitespace-nowrap">
+                      {tier.label}
+                    </td>
+                    {CEILING_FIELDS.map((f) => (
+                      <td key={f.key} className="px-[var(--space-2)] py-[var(--space-1)]">
+                        <input
+                          type="number"
+                          min={0}
+                          step={1}
+                          inputMode="numeric"
+                          placeholder="default"
+                          value={draft[tier.id]?.[f.key] ?? ""}
+                          disabled={settings.isLoading || isSaving}
+                          onChange={(e) => setCell(tier.id, f.key, e.target.value)}
+                          aria-label={`${tier.label} ${f.label}`}
+                          className={inputClass}
+                        />
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-[var(--space-3)] pt-[var(--space-1)]">
+          <Button
+            variant="primary"
+            onClick={handleSave}
+            disabled={!isDirty || isSaving || settings.isLoading}
+          >
+            {isSaving ? "Saving…" : "Save"}
+          </Button>
+
+          {justSaved && (
+            <span className="inline-flex items-center gap-[var(--space-1)] text-small text-[var(--success)]">
+              <Check size={14} strokeWidth={2.5} />
+              Saved
+            </span>
+          )}
+
+          {updateSettings.isError && (
+            <span className="text-small text-[var(--danger)]">
+              Could not save recommendation settings. Please try again.
+            </span>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export default function SettingsPage() {
   return (
     <ErrorBoundary onRetry={() => window.location.reload()}>
@@ -323,6 +582,9 @@ export default function SettingsPage() {
 
         {/* ── Subscription ─────────────────────────────────────── */}
         <SubscriptionSection />
+
+        {/* ── Recommendation ───────────────────────────────────── */}
+        <RecommendationSection />
 
         {/* ── Data Management ──────────────────────────────────── */}
         <section className="space-y-[var(--space-5)]">

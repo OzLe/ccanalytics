@@ -146,6 +146,27 @@ export interface DisplaySettings {
   userTimezone: string;
 }
 
+/**
+ * Sparse per-tier ceiling overrides. Mirrors `TierLimitOverrides` in
+ * src/config/limits.ts: any tier/dimension omitted falls back to
+ * DEFAULT_TIER_LIMITS server-side. ALL VALUES ARE ESTIMATES.
+ */
+export type TierLimitOverrides = Partial<
+  Record<SubscriptionTier, Partial<TierLimitCeilings>>
+>;
+
+/**
+ * Recommendation behaviour returned by GET /api/settings. Mirrors
+ * `RecommendationConfig` in src/types/config.ts — `autoCalibrate` toggles
+ * opt-in calibration of the ESTIMATED ceilings to observed peaks; `ceilings`
+ * is a sparse per-tier override set. Optional for back-compat with older
+ * server builds.
+ */
+export interface RecommendationSettings {
+  autoCalibrate: boolean;
+  ceilings?: TierLimitOverrides;
+}
+
 /** A selectable subscription tier option for the Settings tier picker. */
 export interface SubscriptionTierOption {
   id: SubscriptionTier;
@@ -164,6 +185,103 @@ export const SUBSCRIPTION_TIER_OPTIONS: ReadonlyArray<SubscriptionTierOption> = 
   { id: "max-5x", label: "MAX 5x", monthlyUSD: 100 },
   { id: "max-20x", label: "MAX 20x", monthlyUSD: 200 },
 ];
+
+// ---------------------------------------------------------------------------
+// Subscription recommendation (GET /api/recommendation)
+//
+// Mirrors src/recommendation/engine.ts + src/queries/recommendation-analyzer.ts
+// (+ the ceiling types in src/config/limits.ts) — kept in sync manually because
+// the dashboard build does not import the CLI source for types. ALL numeric
+// ceilings arrive through this API payload; they are NEVER hard-coded in React.
+// Every figure is an ESTIMATE (see the `caveat` field).
+// ---------------------------------------------------------------------------
+
+/** The recommendation verdict. Mirrors `Verdict` in src/recommendation/engine.ts. */
+export type RecommendationVerdict = "upgrade" | "downgrade" | "stay" | "neutral";
+
+/** Confidence band, low < medium < high. Mirrors `Confidence` in the engine. */
+export type RecommendationConfidence = "low" | "medium" | "high";
+
+/** Whether the active ceilings are the published defaults or observed-calibrated. */
+export type CeilingSource = "default" | "calibrated";
+
+/**
+ * Estimated rate-limit ceilings for one tier. Mirrors `TierLimitCeilings` in
+ * src/config/limits.ts. ALL VALUES ARE ESTIMATES.
+ */
+export interface TierLimitCeilings {
+  fiveHourRequests: number;
+  fiveHourTokens: number;
+  weeklyRequests: number;
+  weeklyTokens: number;
+}
+
+/** Per-dimension flag set: `true` where auto-calibration raised the ceiling. */
+export type CalibratedFlags = Record<keyof TierLimitCeilings, boolean>;
+
+/**
+ * Per-window stats over a set of reconstructed windows. Mirrors `WindowStats`
+ * in src/recommendation/windows.ts. Fill fractions are 0..∞ (raw, unclamped).
+ */
+export interface WindowStats {
+  activeWindows: number;
+  peakFill: number;
+  p95Fill: number;
+  medianFill: number;
+  nearLimitWindows: number;
+  peakRequests: number;
+  peakTokens: number;
+}
+
+/** Weekly stats split by model class. Mirrors `PerModelWeekly` in the analyzer. */
+export interface PerModelWeekly {
+  all: WindowStats;
+  sonnet: WindowStats;
+  opus: WindowStats;
+}
+
+/** The default + calibrated ceilings and per-dimension provenance. */
+export interface CeilingReport {
+  default: TierLimitCeilings;
+  calibrated: TierLimitCeilings;
+  calibratedFlags: CalibratedFlags;
+}
+
+/**
+ * The structured recommendation. Mirrors `Recommendation` in
+ * src/recommendation/engine.ts.
+ */
+export interface Recommendation {
+  verdict: RecommendationVerdict;
+  currentTier: SubscriptionTier;
+  /** null for stay/neutral. */
+  suggestedTier: SubscriptionTier | null;
+  /** +extra for upgrade, −saved for downgrade, 0 otherwise. */
+  monthlyDeltaUSD: number;
+  confidence: RecommendationConfidence;
+  confidenceReason: string;
+  headline: string;
+  detail: string;
+  caveat: string;
+}
+
+/**
+ * GET /api/recommendation — the full structured analysis. Mirrors
+ * `RecommendationAnalysis` in src/queries/recommendation-analyzer.ts.
+ */
+export interface RecommendationAnalysis {
+  tier: SubscriptionTier;
+  windowStats5h: WindowStats;
+  weeklyStats: WindowStats;
+  perModelWeekly: PerModelWeekly;
+  ceilings: CeilingReport;
+  ceilingSource: CeilingSource;
+  recommendation: Recommendation;
+  activeDays: number;
+  recencyDays: number;
+  totalTurns: number;
+  caveat: string;
+}
 
 // ---------------------------------------------------------------------------
 // Cost API responses

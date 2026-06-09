@@ -14,3 +14,4 @@ export { ToolAnalyzer } from "./tool-analyzer.js";
 export { SkillAnalyzer } from "./skill-analyzer.js";
 export { TimeSeriesAnalyzer } from "./time-series.js";
 export { PromptAnalyzer } from "./prompt-analyzer.js";
+export { RecommendationAnalyzer } from "./recommendation-analyzer.js";

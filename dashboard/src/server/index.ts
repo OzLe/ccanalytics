@@ -25,6 +25,7 @@ import activityRoutes from "./routes/activity.js";
 import filtersRoutes from "./routes/filters.js";
 import promptsRoutes from "./routes/prompts.js";
 import settingsRoutes from "./routes/settings.js";
+import recommendationRoutes from "./routes/recommendation.js";
 import ingestRoutes from "./routes/ingest.js";
 import { closeDb } from "./helpers/db.js";
 
@@ -74,6 +75,7 @@ function createApp(): express.Application {
   app.use("/api/filters", filtersRoutes);
   app.use("/api/prompts", promptsRoutes);
   app.use("/api/settings", settingsRoutes);
+  app.use("/api/recommendation", recommendationRoutes);
   app.use("/api/ingest", ingestRoutes);
 
   // ---------------------------------------------------------------------------
@@ -171,6 +173,7 @@ const server = app.listen(PORT, () => {
   console.log(`  GET /api/prompts/:turnId`);
   console.log(`  GET /api/settings`);
   console.log(`  PUT /api/settings`);
+  console.log(`  GET /api/recommendation`);
   console.log(`  POST /api/ingest`);
 });
 

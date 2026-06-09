@@ -39,4 +39,10 @@ export const DEFAULT_CONFIG: Readonly<CCAnalyticsConfig> = {
     tier: "max-20x",
     monthlyUSD: 200,
   },
+  recommendation: {
+    // ceilings omitted → DEFAULT_TIER_LIMITS (src/config/limits.ts) is the
+    // effective default. Auto-calibration is opt-in but defaults ON so a user
+    // who exceeds the published estimate is not pinned at a meaningless >100%.
+    autoCalibrate: true,
+  },
 };
