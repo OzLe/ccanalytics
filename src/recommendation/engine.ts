@@ -9,9 +9,12 @@
  * with an explicit confidence level and an honest estimate caveat.
  *
  * IMPORTANT: every signal here derives from ESTIMATED ceilings (see
- * src/config/limits.ts). The dollar deltas reuse tier monthly prices from
- * src/config/subscription.ts (DEFAULT_MONTHLY_USD); this engine computes
- * NOTHING into cost_usd and reads no per-model rate.
+ * src/config/limits.ts). Usage is measured by API-equivalent cost (`cost_usd`)
+ * per rolling window — the unit Anthropic's limits scale with. The monthly
+ * dollar deltas reuse tier monthly prices from src/config/subscription.ts
+ * (DEFAULT_MONTHLY_USD); this engine computes NOTHING into cost_usd and reads no
+ * per-model rate — it only compares already-summed window costs to estimated
+ * ceilings.
  */
 
 import type { SubscriptionTier } from "../types/config.js";
@@ -52,14 +55,10 @@ const CONFIDENCE_ORDER: Record<Confidence, number> = { low: 0, medium: 1, high: 
 
 /** Raw peak usage observed across windows, re-expressible vs any tier ceiling. */
 export interface ObservedPeakUsage {
-  /** Max raw request count across 5h windows. */
-  fiveHourPeakRequests: number;
-  /** Max raw token sum across 5h windows. */
-  fiveHourPeakTokens: number;
-  /** Max raw request count across weekly windows. */
-  weeklyPeakRequests: number;
-  /** Max raw token sum across weekly windows. */
-  weeklyPeakTokens: number;
+  /** Max raw API-equivalent cost (USD) across 5h windows. */
+  fiveHourPeakCostUSD: number;
+  /** Max raw API-equivalent cost (USD) across weekly windows. */
+  weeklyPeakCostUSD: number;
 }
 
 /** Data-volume / recency signals feeding the confidence axis (§5.3). */
@@ -117,21 +116,17 @@ function tierLabel(tier: SubscriptionTier): string {
 }
 
 /**
- * Re-express peak raw usage as a blended fill against a tier's ceilings:
- * `max(peakRequests/ceil.requests, peakTokens/ceil.tokens)`. Zero ceilings
- * guard to 0 (never reached here since neighbours are always paid tiers).
+ * Re-express a peak raw window cost as a fill against a tier's cost ceiling:
+ * `peakCostUSD / ceiling.{fiveHour|weekly}CostUSD`. Zero ceilings guard to 0
+ * (never reached here since neighbours are always paid tiers).
  */
 function peakFillVs(
-  peakRequests: number,
-  peakTokens: number,
+  peakCostUSD: number,
   ceiling: TierLimitCeilings,
   span: "fiveHour" | "weekly",
 ): number {
-  const ceilRequests = span === "fiveHour" ? ceiling.fiveHourRequests : ceiling.weeklyRequests;
-  const ceilTokens = span === "fiveHour" ? ceiling.fiveHourTokens : ceiling.weeklyTokens;
-  const reqFill = ceilRequests > 0 ? peakRequests / ceilRequests : 0;
-  const tokFill = ceilTokens > 0 ? peakTokens / ceilTokens : 0;
-  return Math.max(reqFill, tokFill);
+  const ceil = span === "fiveHour" ? ceiling.fiveHourCostUSD : ceiling.weeklyCostUSD;
+  return ceil > 0 ? peakCostUSD / ceil : 0;
 }
 
 /** Data-volume confidence axis (§5.3). Sparse data ⇒ low. */
@@ -266,7 +261,7 @@ export function recommend(input: RecommendationInput): Recommendation {
       reasonBits.push(`your weekly usage was ${describeFill(weekly.peakFill)}`);
     }
     const detail =
-      confidence === "low"
+      vol === "low"
         ? `Your data is sparse — this is a weak signal; consider re-checking after more usage. That said, ${reasonBits.join(
             " and ",
           )}, which leans toward ${upLabel} (about $${extraMonthlyUSD}/mo more).`
@@ -290,18 +285,8 @@ export function recommend(input: RecommendationInput): Recommendation {
   // tier-DOWN published ceilings.
   if (tierDown) {
     const down = DEFAULT_TIER_LIMITS[tierDown];
-    const fiveHourPeakVsDown = peakFillVs(
-      peaks.fiveHourPeakRequests,
-      peaks.fiveHourPeakTokens,
-      down,
-      "fiveHour",
-    );
-    const weeklyPeakVsDown = peakFillVs(
-      peaks.weeklyPeakRequests,
-      peaks.weeklyPeakTokens,
-      down,
-      "weekly",
-    );
+    const fiveHourPeakVsDown = peakFillVs(peaks.fiveHourPeakCostUSD, down, "fiveHour");
+    const weeklyPeakVsDown = peakFillVs(peaks.weeklyPeakCostUSD, down, "weekly");
     if (fiveHourPeakVsDown < DOWNGRADE_FILL && weeklyPeakVsDown < DOWNGRADE_FILL) {
       // Deciding metric = the LARGER of the two (the binding constraint); margin
       // = how far below the threshold it sits.
@@ -312,7 +297,7 @@ export function recommend(input: RecommendationInput): Recommendation {
       const downLabel = tierLabel(tierDown);
       const peakPct = Math.round(binding * 100);
       const detail =
-        confidence === "low"
+        vol === "low"
           ? `Your data is sparse — this is a weak signal; consider re-checking after more usage. Your peak usage looks like only ~${peakPct}% of what ${downLabel} allows, which leans toward downgrading (about $${savedMonthlyUSD}/mo saved).`
           : `Your peak usage reaches only ~${peakPct}% of the estimated ${downLabel} limit, so you'd likely be comfortable there and save about $${savedMonthlyUSD}/mo.`;
       return {
@@ -338,8 +323,8 @@ export function recommend(input: RecommendationInput): Recommendation {
   if (tierDown) {
     const down = DEFAULT_TIER_LIMITS[tierDown];
     const binding = Math.max(
-      peakFillVs(peaks.fiveHourPeakRequests, peaks.fiveHourPeakTokens, down, "fiveHour"),
-      peakFillVs(peaks.weeklyPeakRequests, peaks.weeklyPeakTokens, down, "weekly"),
+      peakFillVs(peaks.fiveHourPeakCostUSD, down, "fiveHour"),
+      peakFillVs(peaks.weeklyPeakCostUSD, down, "weekly"),
     );
     stayMargins.push(Math.abs(DOWNGRADE_FILL - binding));
   }
@@ -355,7 +340,7 @@ export function recommend(input: RecommendationInput): Recommendation {
     ? `You're already on the highest tier (${tierLabel(
         tier,
       )}). Your usage is heavy — ${sharePct}% of your 5-hour windows reach the estimated limit and your 5-hour peak is ${peakDesc} — but there's no higher tier to move to.`
-    : confidence === "low"
+    : vol === "low"
       ? `Your data is sparse — this is a weak signal; consider re-checking after more usage. So far your usage (5-hour peak ${peakDesc}) sits in a healthy band for ${tierLabel(
           tier,
         )}.`

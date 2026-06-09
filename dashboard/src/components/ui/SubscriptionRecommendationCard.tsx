@@ -111,7 +111,7 @@ function WeeklyStat({ label, stats }: { label: string; stats: WindowStats }) {
     <BandStat
       label={label}
       value={fillPctLabel(stats.peakFill)}
-      tooltip={`Peak weekly usage reached ~${fillPctLabel(
+      tooltip={`Peak weekly API-equivalent cost reached ~${fillPctLabel(
         stats.peakFill,
       )} of the estimated weekly limit across ${stats.activeWindows} window${
         stats.activeWindows === 1 ? "" : "s"
@@ -253,7 +253,7 @@ export default function SubscriptionRecommendationCard() {
           <BandStat
             label="5-hour peak"
             value={fillPctLabel(windowStats5h.peakFill)}
-            tooltip={`Highest 5-hour-window usage in this period, as a share of the estimated 5-hour limit. ${windowStats5h.nearLimitWindows} of ${windowStats5h.activeWindows} windows reached ≥90%.`}
+            tooltip={`Highest 5-hour-window API-equivalent cost in this period, as a share of the estimated 5-hour limit. ${windowStats5h.nearLimitWindows} of ${windowStats5h.activeWindows} windows reached ≥90%.`}
           />
           <WeeklyStat label="Weekly peak (all)" stats={perModelWeekly.all} />
           <WeeklyStat label="Weekly (Sonnet)" stats={perModelWeekly.sonnet} />

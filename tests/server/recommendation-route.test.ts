@@ -105,10 +105,10 @@ const SCHEMA_SQL = `
  * seeded with a controlled, high-usage fixture, plus an isolated config file
  * whose contents the caller supplies.
  *
- * The fixture seeds a burst inside one 5-hour window whose summed tokens
- * exceed the Pro 5h token ceiling (45 × 35,000 = 1,575,000), so a tier=pro
- * recommendation must auto-calibrate when enabled. It also spans sonnet + opus
- * across two distinct weeks so the per-model weekly split is non-trivial.
+ * The fixture seeds a burst inside one 5-hour window whose summed cost_usd
+ * exceeds the Pro 5h cost ceiling ($5), so a tier=pro recommendation must
+ * auto-calibrate when enabled. It also spans sonnet + opus across two distinct
+ * weeks so the per-model weekly split is non-trivial.
  *
  * @param initialConfig - JSON written to the temp config.json before boot.
  */
@@ -144,17 +144,17 @@ async function bootRouter(
 
   await dbHelper.query(SCHEMA_SQL);
 
-  // High-usage fixture: a 3-turn burst in one ~1h window (each 700k tokens →
-  // 2.1M > the Pro 1.575M 5h token ceiling → calibration must engage), then an
-  // opus turn a clear week later so the weekly split shows both classes.
+  // High-usage fixture: a 3-turn burst in one ~1h window (each $4 → $12 > the
+  // Pro $5 5h cost ceiling → calibration must engage), then an opus turn a clear
+  // week later so the weekly split shows both classes.
   await dbHelper.query(`
     INSERT INTO sessions VALUES
-      ('rs-1', '2026-03-01 09:00:00', '2026-03-01 10:01:00', 3660, 'claude-sonnet-4-5', 1, 1, 0, 0, 1.5, 3, 0, '/p/burst', 'burst', 'claude-code'),
-      ('rs-2', '2026-03-10 09:00:00', '2026-03-10 09:01:00', 60,   'claude-opus-4',     1, 1, 0, 0, 0.5, 1, 0, '/p/burst', 'burst', 'claude-code');
+      ('rs-1', '2026-03-01 09:00:00', '2026-03-01 10:01:00', 3660, 'claude-sonnet-4-5', 1, 1, 0, 0, 12.0, 3, 0, '/p/burst', 'burst', 'claude-code'),
+      ('rs-2', '2026-03-10 09:00:00', '2026-03-10 09:01:00', 60,   'claude-opus-4',     1, 1, 0, 0, 0.5,  1, 0, '/p/burst', 'burst', 'claude-code');
     INSERT INTO conversation_turns VALUES
-      ('rt-1', 'rs-1', 'assistant', '2026-03-01 09:00:00', 700000, 0, 0, 0, 0.5, 'claude-sonnet-4-5', 'end_turn', 'breq-1', FALSE, FALSE),
-      ('rt-2', 'rs-1', 'assistant', '2026-03-01 09:30:00', 700000, 0, 0, 0, 0.5, 'claude-sonnet-4-5', 'end_turn', 'breq-2', FALSE, FALSE),
-      ('rt-3', 'rs-1', 'assistant', '2026-03-01 10:00:00', 700000, 0, 0, 0, 0.5, 'claude-sonnet-4-5', 'end_turn', 'breq-3', FALSE, FALSE),
+      ('rt-1', 'rs-1', 'assistant', '2026-03-01 09:00:00', 700000, 0, 0, 0, 4.0, 'claude-sonnet-4-5', 'end_turn', 'breq-1', FALSE, FALSE),
+      ('rt-2', 'rs-1', 'assistant', '2026-03-01 09:30:00', 700000, 0, 0, 0, 4.0, 'claude-sonnet-4-5', 'end_turn', 'breq-2', FALSE, FALSE),
+      ('rt-3', 'rs-1', 'assistant', '2026-03-01 10:00:00', 700000, 0, 0, 0, 4.0, 'claude-sonnet-4-5', 'end_turn', 'breq-3', FALSE, FALSE),
       ('rt-4', 'rs-2', 'assistant', '2026-03-10 09:00:00', 700000, 0, 0, 0, 0.5, 'claude-opus-4',      'end_turn', 'breq-4', FALSE, FALSE);
   `);
 
@@ -189,7 +189,7 @@ describe("recommendation route — GET /api/recommendation (read-only)", () => {
   beforeAll(async () => {
     prevDbPath = process.env.DB_PATH;
     prevConfigPath = process.env.CCANALYTICS_CONFIG_PATH;
-    // tier=pro so the burst (2.1M tokens) clearly exceeds the Pro 5h ceiling.
+    // tier=pro so the burst ($12) clearly exceeds the Pro $5 5h cost ceiling.
     h = await bootRouter({ subscription: { tier: "pro", monthlyUSD: 20 } });
   });
 
@@ -236,7 +236,7 @@ describe("recommendation route — GET /api/recommendation (read-only)", () => {
     expect(body.data.caveat).toBe(RECOMMENDATION_ESTIMATE_CAVEAT);
 
     // Default autoCalibrate (config has no `recommendation` block) is ON, and
-    // the burst exceeds the Pro 5h token ceiling, so calibration must engage.
+    // the burst exceeds the Pro 5h cost ceiling, so calibration must engage.
     expect(body.data.ceilingSource).toBe("calibrated");
   });
 
@@ -329,10 +329,10 @@ describe("settings route — recommendation block round-trip (non-clobbering)", 
         recommendation: {
           autoCalibrate: false,
           ceilings: {
-            pro: { fiveHourRequests: 60, weeklyRequests: 1500 },
+            pro: { fiveHourCostUSD: 6, weeklyCostUSD: 150 },
             // An unknown tier + a bad numeric dimension must be sanitized away.
-            team: { fiveHourRequests: 10 },
-            "max-5x": { fiveHourTokens: -5, weeklyTokens: 9000000 },
+            team: { fiveHourCostUSD: 10 },
+            "max-5x": { fiveHourCostUSD: -5, weeklyCostUSD: 700 },
           },
         },
       }),
@@ -347,7 +347,7 @@ describe("settings route — recommendation block round-trip (non-clobbering)", 
       };
     };
     expect(putBody.data.recommendation.autoCalibrate).toBe(false);
-    expect(putBody.data.recommendation.ceilings?.pro?.fiveHourRequests).toBe(60);
+    expect(putBody.data.recommendation.ceilings?.pro?.fiveHourCostUSD).toBe(6);
 
     // GET round-trips.
     const getRes = await fetch(`${h.baseUrl}/api/settings`);
@@ -362,8 +362,8 @@ describe("settings route — recommendation block round-trip (non-clobbering)", 
       };
     };
     expect(getBody.data.recommendation.autoCalibrate).toBe(false);
-    expect(getBody.data.recommendation.ceilings?.pro?.fiveHourRequests).toBe(60);
-    expect(getBody.data.recommendation.ceilings?.pro?.weeklyRequests).toBe(1500);
+    expect(getBody.data.recommendation.ceilings?.pro?.fiveHourCostUSD).toBe(6);
+    expect(getBody.data.recommendation.ceilings?.pro?.weeklyCostUSD).toBe(150);
     // Other keys preserved (the non-clobbering shallow-merge invariant).
     expect(getBody.data.subscription.tier).toBe("max-5x");
     expect(getBody.data.display.userTimezone).toBe("Asia/Jerusalem");
@@ -384,9 +384,9 @@ describe("settings route — recommendation block round-trip (non-clobbering)", 
     expect(onDisk.dbPath).toBe("/some/custom/path/analytics.duckdb");
     expect(onDisk.recommendation?.autoCalibrate).toBe(false);
     expect(onDisk.recommendation?.ceilings?.team).toBeUndefined();
-    // The negative fiveHourTokens was dropped, but the valid weeklyTokens kept.
-    expect(onDisk.recommendation?.ceilings?.["max-5x"]?.fiveHourTokens).toBeUndefined();
-    expect(onDisk.recommendation?.ceilings?.["max-5x"]?.weeklyTokens).toBe(9000000);
+    // The negative fiveHourCostUSD was dropped, but the valid weeklyCostUSD kept.
+    expect(onDisk.recommendation?.ceilings?.["max-5x"]?.fiveHourCostUSD).toBeUndefined();
+    expect(onDisk.recommendation?.ceilings?.["max-5x"]?.weeklyCostUSD).toBe(700);
   });
 
   it("PUT only `recommendation` preserves an already-persisted subscription", async () => {

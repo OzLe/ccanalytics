@@ -274,19 +274,19 @@ function TimezoneSection() {
 /* ── Recommendation (ceilings + auto-calibrate) ────────────────── */
 
 /**
- * The four editable ceiling dimensions, with human labels. These are TYPE-level
+ * The two editable ceiling dimensions, with human labels. These are TYPE-level
  * field identifiers (the keys of `TierLimitCeilings`), NOT ceiling numbers — the
  * numeric defaults live server-side in src/config/limits.ts and reach the UI
  * only through the API payload (every input is seeded from / saved to that).
+ * Both are API-equivalent USD per rolling window — the unit Anthropic's limits
+ * scale with.
  */
 const CEILING_FIELDS: ReadonlyArray<{
   key: keyof TierLimitCeilings;
   label: string;
 }> = [
-  { key: "fiveHourRequests", label: "5h requests" },
-  { key: "fiveHourTokens", label: "5h tokens" },
-  { key: "weeklyRequests", label: "Weekly requests" },
-  { key: "weeklyTokens", label: "Weekly tokens" },
+  { key: "fiveHourCostUSD", label: "$/5h" },
+  { key: "weeklyCostUSD", label: "$/week" },
 ];
 
 /** Paid tiers get editable ceilings; "none" (pay-as-you-go) has no limits. */
@@ -448,7 +448,8 @@ function RecommendationSection() {
             </span>
             <p className="mt-[var(--space-1)] text-small text-[var(--text-secondary)]">
               Leave a field blank to use the built-in estimate for that tier.
-              Values are model requests / blended tokens per rolling window.
+              Values are API-equivalent USD per rolling window (the unit
+              Anthropic's limits scale with).
             </p>
           </div>
 
@@ -480,8 +481,8 @@ function RecommendationSection() {
                         <input
                           type="number"
                           min={0}
-                          step={1}
-                          inputMode="numeric"
+                          step="any"
+                          inputMode="decimal"
                           placeholder="default"
                           value={draft[tier.id]?.[f.key] ?? ""}
                           disabled={settings.isLoading || isSaving}
