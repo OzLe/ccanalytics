@@ -11,6 +11,7 @@
 import { describe, it, expect } from "vitest";
 import {
   recommend,
+  describeFill,
   NEAR_LIMIT_FILL,
   UPGRADE_NEAR_LIMIT_SHARE,
   UPGRADE_WEEKLY_PEAK,
@@ -297,5 +298,24 @@ describe("recommend — threshold constants are the spec values", () => {
       }),
     );
     expect(r.verdict).toBe("upgrade");
+  });
+});
+
+describe("describeFill — graceful over-limit copy", () => {
+  it("shows the exact percent at or under the estimated limit", () => {
+    expect(describeFill(0)).toBe("~0% of the estimated limit");
+    expect(describeFill(0.5)).toBe("~50% of the estimated limit");
+    expect(describeFill(1)).toBe("~100% of the estimated limit");
+  });
+
+  it("flags modestly-over usage but still shows the percent", () => {
+    expect(describeFill(1.25)).toBe("~125% of the estimated limit (over the estimate)");
+  });
+
+  it("goes qualitative far over the limit (never prints an absurd %)", () => {
+    // Decision stats use absolute ceilings, so a heavy user's fill can be huge
+    // (e.g. 191.66 → 19166%); copy must not print that.
+    expect(describeFill(191.66)).toBe("well above the estimated limit");
+    expect(describeFill(9.58)).toBe("well above the estimated limit");
   });
 });

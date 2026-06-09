@@ -157,6 +157,20 @@ function capitalize(s: string): string {
   return s.length === 0 ? s : (s[0] as string).toUpperCase() + s.slice(1);
 }
 
+/**
+ * Phrase a blended fill fraction for human copy. Decision stats are measured
+ * against the tier's ESTIMATED (default) ceilings, so a heavy user's fill can
+ * run far past 100% — clamp the wording so copy never prints an absurd raw
+ * percentage (e.g. "19166%"). At/under the limit shows the exact percent;
+ * modestly over shows the percent flagged as over; far over is qualitative.
+ */
+export function describeFill(fill: number): string {
+  const pct = Math.round(fill * 100);
+  if (fill <= 1.0) return `~${pct}% of the estimated limit`;
+  if (fill <= 1.5) return `~${pct}% of the estimated limit (over the estimate)`;
+  return `well above the estimated limit`;
+}
+
 /** Build a short human reason explaining which axis bound the confidence. */
 function confidenceReasonText(vol: Confidence, margin: Confidence, combined: Confidence): string {
   if (combined === "high") {
@@ -182,6 +196,17 @@ function confidenceReasonText(vol: Confidence, margin: Confidence, combined: Con
  * **published default** ceilings (DEFAULT_TIER_LIMITS) — auto-calibration only
  * ever raises the CURRENT tier's ceilings, so the smaller tier's estimate is
  * the right yardstick for "would I fit there?".
+ *
+ * IMPORTANT — decision vs display: the `fiveHour`/`weekly` stats passed in here
+ * are computed against the tier's ABSOLUTE (default) ceilings, NOT the
+ * auto-calibrated display ceilings. Calibration exists only so the UI's fill%
+ * is not pinned at a meaningless >100%; if the verdict read calibrated stats,
+ * `weekly.peakFill` would be ~100% by construction and the upgrade triggers
+ * would measure usage against the user's OWN peak instead of the tier limit.
+ * Keeping decisions on the default yardstick makes UPGRADE and DOWNGRADE
+ * symmetric. (The analyzer still returns the calibrated stats separately for
+ * display.) Because default fills can far exceed 1.0, copy uses
+ * {@link describeFill} to phrase over-limit usage without printing absurd %.
  *
  * @param input - Current tier, window stats, observed peaks, ceilings, volume.
  * @returns The structured {@link Recommendation}.
@@ -233,13 +258,12 @@ export function recommend(input: RecommendationInput): Recommendation {
     const extraMonthlyUSD = DEFAULT_MONTHLY_USD[tierUp] - DEFAULT_MONTHLY_USD[tier];
     const upLabel = tierLabel(tierUp);
     const sharePct = Math.round(nearLimitShare * 100);
-    const weeklyPct = Math.round(weekly.peakFill * 100);
     const reasonBits: string[] = [];
     if (shareTriggers) {
       reasonBits.push(`${sharePct}% of your 5-hour windows hit ≥90% of the estimated limit`);
     }
     if (weeklyTriggers) {
-      reasonBits.push(`your weekly usage peaked at ~${weeklyPct}% of the estimated weekly limit`);
+      reasonBits.push(`your weekly usage was ${describeFill(weekly.peakFill)}`);
     }
     const detail =
       confidence === "low"
@@ -321,15 +345,23 @@ export function recommend(input: RecommendationInput): Recommendation {
   }
   const stayMarginConf = marginConfidence(Math.min(...stayMargins));
   const confidence = minConfidence(vol, stayMarginConf);
-  const peakPct = Math.round(fiveHour.peakFill * 100);
-  const detail =
-    confidence === "low"
-      ? `Your data is sparse — this is a weak signal; consider re-checking after more usage. So far your usage (5-hour peak ~${peakPct}% of the estimated limit) sits in a healthy band for ${tierLabel(
+  const peakDesc = describeFill(fiveHour.peakFill);
+  // Reaching STAY while the upgrade signal fired means there is no higher tier
+  // to move to (a top-tier heavy user). Say that honestly rather than calling
+  // heavy usage a "healthy band".
+  const atTopHeavy = (shareTriggers || weeklyTriggers) && !tierUp;
+  const sharePct = Math.round(nearLimitShare * 100);
+  const detail = atTopHeavy
+    ? `You're already on the highest tier (${tierLabel(
+        tier,
+      )}). Your usage is heavy — ${sharePct}% of your 5-hour windows reach the estimated limit and your 5-hour peak is ${peakDesc} — but there's no higher tier to move to.`
+    : confidence === "low"
+      ? `Your data is sparse — this is a weak signal; consider re-checking after more usage. So far your usage (5-hour peak ${peakDesc}) sits in a healthy band for ${tierLabel(
           tier,
         )}.`
       : `Your usage sits in a healthy band for ${tierLabel(
           tier,
-        )} — a 5-hour peak of ~${peakPct}% of the estimated limit, with neither a strong upgrade nor downgrade signal.`;
+        )} — a 5-hour peak of ${peakDesc}, with neither a strong upgrade nor downgrade signal.`;
   return {
     verdict: "stay",
     currentTier: tier,
