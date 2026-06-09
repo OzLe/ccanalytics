@@ -69,6 +69,36 @@ async function seedBurstFixture(db: TestDB): Promise<void> {
   `);
 }
 
+/**
+ * Seed ten separate 5-hour windows (one turn each, on ten consecutive days at
+ * 10:00) for a PRO user: nine at ~95% of the Pro DEFAULT 5h token ceiling
+ * (1,500,000 of 1,575,000) plus one 15,000,000-token spike. The spike forces
+ * auto-calibration to raise the 5h token ceiling to 15M, which collapses the
+ * CALIBRATED near-limit share to 1/10 — while the ABSOLUTE (default) near-limit
+ * share is 10/10. Weekly stays well under the Pro weekly ceiling so only the 5h
+ * signal is in play. This isolates the calibration-decoupling regression.
+ */
+async function seedShareDilutionFixture(db: TestDB): Promise<void> {
+  await db.connection.run(`
+    INSERT INTO sessions (session_id, start_time, project_path, model)
+    VALUES ('sd-1', '2026-02-02 10:00:00', '/p/sd', 'claude-opus-4')
+  `);
+  const rows: string[] = [];
+  for (let i = 0; i < 10; i++) {
+    const day = String(2 + i).padStart(2, "0"); // 2026-02-02 .. 2026-02-11
+    const tokens = i === 0 ? 15_000_000 : 1_500_000; // day 1 = spike
+    rows.push(
+      `('sdt-${i}', 'sd-1', 'assistant', '2026-02-${day} 10:00:00', ${tokens}, 0, 0, 0, 0.5, 'claude-opus-4', 'end_turn', 'sdreq-${i}', FALSE, FALSE)`,
+    );
+  }
+  await db.connection.run(`
+    INSERT INTO conversation_turns (turn_id, session_id, role, timestamp,
+      input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+      cost_usd, model, stop_reason, request_id, has_tool_use, has_thinking)
+    VALUES ${rows.join(",\n      ")}
+  `);
+}
+
 describe("RecommendationAnalyzer", () => {
   let db: TestDB;
   let executor: QueryExecutor;
@@ -202,6 +232,43 @@ describe("RecommendationAnalyzer", () => {
       const res = await analyzer.analyze("none", fullRange, undefined, { nowMs: NOW });
       expect(res.recommendation.verdict).toBe("neutral");
       expect(res.recommendation.suggestedTier).toBeNull();
+    });
+  });
+
+  describe("decision uses ABSOLUTE ceilings, not calibrated (regression)", () => {
+    it("upgrades on frequent near-DEFAULT-limit windows even when auto-calibration dilutes the calibrated share", async () => {
+      await seedShareDilutionFixture(db);
+      const res = await analyzer.analyze("pro", fullRange, undefined, {
+        autoCalibrate: true,
+        nowMs: NOW,
+      });
+
+      // Auto-calibration raised the 5h token ceiling to the 15M spike, so the
+      // CALIBRATED near-limit share is tiny — only the spike window qualifies.
+      expect(res.ceilingSource).toBe("calibrated");
+      expect(res.windowStats5h.activeWindows).toBe(10);
+      expect(res.windowStats5h.nearLimitWindows).toBe(1); // calibrated: spike only
+
+      // The verdict must NOT ride that diluted calibrated share. Measured against
+      // the ABSOLUTE Pro ceiling, ~100% of windows are near-limit → upgrade.
+      // Before decoupling the decision from calibration this returned "stay"
+      // (calibrated share 10% < 15% and weekly under the cap).
+      expect(res.recommendation.verdict).toBe("upgrade");
+      expect(res.recommendation.suggestedTier).toBe("max-5x");
+    });
+
+    it("is unaffected by autoCalibrate=off for the same fixture (verdict stable)", async () => {
+      await seedShareDilutionFixture(db);
+      const res = await analyzer.analyze("pro", fullRange, undefined, {
+        autoCalibrate: false,
+        nowMs: NOW,
+      });
+      // With calibration off the ceilings ARE the defaults, so display and
+      // decision coincide: still an upgrade, now also visible in the display
+      // stats (≥15% of windows near-limit).
+      expect(res.ceilingSource).toBe("default");
+      expect(res.recommendation.verdict).toBe("upgrade");
+      expect(res.windowStats5h.nearLimitWindows).toBe(10);
     });
   });
 });

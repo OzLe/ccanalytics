@@ -235,20 +235,32 @@ export class RecommendationAnalyzer {
     const activeDays = countActiveDays(allRows);
     const recencyDays = computeRecencyDays(allRows, nowMs);
 
+    // VERDICT uses the DEFAULT (absolute) ceilings, NOT the calibrated ones.
+    // Auto-calibration raises a ceiling to the user's own observed peak purely
+    // so the DISPLAYED fill% is not pinned at a meaningless >100% (§3.3). If the
+    // decision also read the calibrated stats, the upgrade triggers would be
+    // measured against the user's own peak instead of the tier's estimated
+    // limit — e.g. `weekly.peakFill` would be ~100% by construction, making the
+    // weekly upgrade trigger a tautology, and the 5h near-limit share would
+    // collapse to "near YOUR peak" rather than "near the tier limit". The
+    // downgrade test already (correctly) uses DEFAULT_TIER_LIMITS, so feeding
+    // the default-ceiling first-pass stats here keeps upgrade and downgrade on
+    // the SAME absolute yardstick. (`peakRequests`/`peakTokens`/`activeWindows`
+    // are ceiling-independent, so only the fill-based fields actually differ.)
     const recommendation = recommend({
       tier,
-      fiveHour: windowStats5h,
-      weekly: weeklyStats,
+      fiveHour: fivePeaksDefault,
+      weekly: weeklyPeaksDefault,
       peaks: {
-        fiveHourPeakRequests: windowStats5h.peakRequests,
-        fiveHourPeakTokens: windowStats5h.peakTokens,
-        weeklyPeakRequests: weeklyStats.peakRequests,
-        weeklyPeakTokens: weeklyStats.peakTokens,
+        fiveHourPeakRequests: fivePeaksDefault.peakRequests,
+        fiveHourPeakTokens: fivePeaksDefault.peakTokens,
+        weeklyPeakRequests: weeklyPeaksDefault.peakRequests,
+        weeklyPeakTokens: weeklyPeaksDefault.peakTokens,
       },
       ceilings: active,
       volume: {
         activeDays,
-        activeWindows: windowStats5h.activeWindows,
+        activeWindows: fivePeaksDefault.activeWindows,
         recencyDays,
       },
     });

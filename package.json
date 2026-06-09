@@ -1,6 +1,6 @@
 {
   "name": "ccanalytics",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "Local-first analytics for Claude Code sessions — cost tracking, cache efficiency, tool usage patterns",
   "type": "module",
   "bin": {
