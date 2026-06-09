@@ -13,8 +13,10 @@ import { apiGet, apiPut } from "@/lib/api";
 import type {
   ApiEnvelope,
   DisplaySettings,
+  RecommendationSettings,
   SubscriptionSettings,
   SubscriptionTier,
+  TierLimitOverrides,
 } from "@/lib/types";
 
 /** Response payload shape for GET/PUT /api/settings. */
@@ -22,15 +24,21 @@ interface SettingsData {
   subscription: SubscriptionSettings;
   /** ACT-001 / SEM2-293: optional for back-compat with older server builds. */
   display?: DisplaySettings;
+  /**
+   * Subscription-recommendation behaviour (auto-calibrate + sparse ceiling
+   * overrides). Optional for back-compat with older server builds.
+   */
+  recommendation?: RecommendationSettings;
 }
 
 /**
- * Request body for PUT /api/settings. Either `subscription` or `display` can
- * be sent on its own; the server preserves the other half from disk.
+ * Request body for PUT /api/settings. Any single key can be sent on its own;
+ * the server preserves the other halves from disk (non-clobbering merge).
  */
 interface UpdateSettingsBody {
   subscription?: { tier: SubscriptionTier; monthlyUSD?: number };
   display?: { userTimezone: string };
+  recommendation?: { autoCalibrate?: boolean; ceilings?: TierLimitOverrides };
 }
 
 /** GET /api/settings — resolved subscription config. */
@@ -77,6 +85,12 @@ export function useUpdateSettings() {
         for (const key of ["activity", "cost", "cache", "tools", "skills", "dashboard"]) {
           queryClient.invalidateQueries({ queryKey: [key] });
         }
+      }
+
+      if (variables.recommendation) {
+        // The recommendation reads the auto-calibrate toggle + ceiling overrides
+        // server-side, so changing either must recompute the verdict.
+        queryClient.invalidateQueries({ queryKey: ["recommendation"] });
       }
     },
   });

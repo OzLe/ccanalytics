@@ -17,6 +17,20 @@ export interface QueryResult<T = Record<string, unknown>> {
 }
 
 /**
+ * Minimal read surface needed to run parameterized SELECTs — the only thing
+ * read-only analyzers (e.g. {@link RecommendationAnalyzer}) depend on. The
+ * concrete {@link QueryExecutor} satisfies it structurally, and so does the
+ * dashboard server's `query()` helper, so a route can hand its singleton
+ * connection to a CLI analyzer without duplicating the analyzer's logic.
+ */
+export interface QueryRunner {
+  query<T = Record<string, unknown>>(
+    sql: string,
+    params?: unknown[],
+  ): Promise<QueryResult<T>>;
+}
+
+/**
  * Normalize a parameter value for DuckDB binding.
  * Converts Date objects to ISO strings so DuckDB can infer types
  * even on empty tables (avoids "Cannot create values of type ANY").
@@ -195,11 +209,11 @@ export class QueryExecutor {
     params?: unknown[],
   ): Promise<T | null> {
     const result = await this.query(sql, params);
-    if (result.rowCount === 0 || result.columnNames.length === 0) {
+    const firstColumn = result.columnNames[0];
+    if (result.rowCount === 0 || firstColumn === undefined) {
       return null;
     }
     const firstRow = result.rows[0] as Record<string, unknown>;
-    const firstColumn = result.columnNames[0];
     const value = firstRow[firstColumn];
     return (value === undefined ? null : value) as T | null;
   }
