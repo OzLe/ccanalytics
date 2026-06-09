@@ -2,9 +2,10 @@
  * @module tests/queries/recommendation-analyzer
  *
  * Integration tests for {@link RecommendationAnalyzer} against a TEMP in-memory
- * DuckDB (§7.2). Seeds turns with KNOWN timestamps + tokens and asserts window
+ * DuckDB (§7.2). Seeds turns with KNOWN timestamps + cost_usd and asserts window
  * reconstruction, the per-model weekly split, auto-calibration provenance, and
- * the final verdict. NEVER touches the live ~/.ccanalytics DB.
+ * the final verdict. Usage is metered by API-equivalent cost (cost_usd) per
+ * rolling window. NEVER touches the live ~/.ccanalytics DB.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -16,16 +17,16 @@ import type { TimeRange } from "../../src/types/index.js";
 
 /**
  * Seed cost-bearing assistant turns directly (no reliance on the shared
- * seedTestData) so timestamps + tokens are fully controlled. All turns are
+ * seedTestData) so timestamps + cost_usd are fully controlled. All turns are
  * `role='assistant'` with a non-synthetic model so they pass costRowPredicate.
  *
  * Layout (all in Feb 2026, UTC):
- *   Day 20 10:00  sonnet  req-a  small tokens   ─┐ window A (5h)
- *   Day 20 12:00  sonnet  req-b  small tokens   ─┘ (2h after anchor → same window)
- *   Day 20 16:30  opus    req-c  small tokens   ──> window B (6.5h after A's anchor)
- *   Mar 05 11:00  opus    req-d  small tokens   ──> a clearly separate WEEK (>7d
- *                                                   after both the all-models and
- *                                                   the opus-only weekly anchors)
+ *   Day 20 10:00  sonnet  $0.01   ─┐ window A (5h)
+ *   Day 20 12:00  sonnet  $0.01   ─┘ (2h after anchor → same window)
+ *   Day 20 16:30  opus    $0.01   ──> window B (6.5h after A's anchor)
+ *   Mar 05 11:00  opus    $0.01   ──> a clearly separate WEEK (>7d
+ *                                     after both the all-models and
+ *                                     the opus-only weekly anchors)
  *
  * Three distinct 5h windows total (A, B, and Mar-05). Across the set the
  * all-models pass yields two weekly windows (Feb-20 and Mar-05); sonnet appears
@@ -49,9 +50,10 @@ async function seedWindowFixture(db: TestDB): Promise<void> {
 }
 
 /**
- * Seed a single 5-hour window whose summed tokens EXCEED the Pro 5h token
- * ceiling (45 × 35,000 = 1,575,000) so auto-calibration must raise the ceiling.
- * Three turns within ~1h, each 700k tokens → 2.1M > 1.575M.
+ * Seed a single 5-hour window whose summed cost_usd EXCEEDS the Pro 5h cost
+ * ceiling ($5) so auto-calibration must raise the ceiling. Three turns within
+ * ~1h, each $4 → $12 > $5. Weekly cost ($12) stays well under the Pro weekly
+ * ceiling ($125), so only the 5h dimension calibrates.
  */
 async function seedBurstFixture(db: TestDB): Promise<void> {
   await db.connection.run(`
@@ -63,20 +65,21 @@ async function seedBurstFixture(db: TestDB): Promise<void> {
       input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
       cost_usd, model, stop_reason, request_id, has_tool_use, has_thinking)
     VALUES
-      ('bt-1', 'bs-1', 'assistant', '2026-03-01 09:00:00', 700000, 0, 0, 0, 0.5, 'claude-sonnet-4-5', 'end_turn', 'breq-1', FALSE, FALSE),
-      ('bt-2', 'bs-1', 'assistant', '2026-03-01 09:30:00', 700000, 0, 0, 0, 0.5, 'claude-sonnet-4-5', 'end_turn', 'breq-2', FALSE, FALSE),
-      ('bt-3', 'bs-1', 'assistant', '2026-03-01 10:00:00', 700000, 0, 0, 0, 0.5, 'claude-sonnet-4-5', 'end_turn', 'breq-3', FALSE, FALSE)
+      ('bt-1', 'bs-1', 'assistant', '2026-03-01 09:00:00', 700000, 0, 0, 0, 4.0, 'claude-sonnet-4-5', 'end_turn', 'breq-1', FALSE, FALSE),
+      ('bt-2', 'bs-1', 'assistant', '2026-03-01 09:30:00', 700000, 0, 0, 0, 4.0, 'claude-sonnet-4-5', 'end_turn', 'breq-2', FALSE, FALSE),
+      ('bt-3', 'bs-1', 'assistant', '2026-03-01 10:00:00', 700000, 0, 0, 0, 4.0, 'claude-sonnet-4-5', 'end_turn', 'breq-3', FALSE, FALSE)
   `);
 }
 
 /**
  * Seed ten separate 5-hour windows (one turn each, on ten consecutive days at
- * 10:00) for a PRO user: nine at ~95% of the Pro DEFAULT 5h token ceiling
- * (1,500,000 of 1,575,000) plus one 15,000,000-token spike. The spike forces
- * auto-calibration to raise the 5h token ceiling to 15M, which collapses the
- * CALIBRATED near-limit share to 1/10 — while the ABSOLUTE (default) near-limit
- * share is 10/10. Weekly stays well under the Pro weekly ceiling so only the 5h
- * signal is in play. This isolates the calibration-decoupling regression.
+ * 10:00) for a PRO user: nine at ~96% of the Pro DEFAULT 5h cost ceiling ($4.80
+ * of $5) plus one $50 spike. The spike forces auto-calibration to raise the 5h
+ * cost ceiling to $50, which collapses the CALIBRATED near-limit share to 1/10 —
+ * while the ABSOLUTE (default) near-limit share is 10/10. The heaviest weekly
+ * window ($50 spike + 6 × $4.80 = $78.80) stays under the Pro weekly ceiling
+ * ($125), so only the 5h signal is in play. This isolates the
+ * calibration-decoupling regression.
  */
 async function seedShareDilutionFixture(db: TestDB): Promise<void> {
   await db.connection.run(`
@@ -86,9 +89,9 @@ async function seedShareDilutionFixture(db: TestDB): Promise<void> {
   const rows: string[] = [];
   for (let i = 0; i < 10; i++) {
     const day = String(2 + i).padStart(2, "0"); // 2026-02-02 .. 2026-02-11
-    const tokens = i === 0 ? 15_000_000 : 1_500_000; // day 1 = spike
+    const cost = i === 0 ? 50.0 : 4.8; // day 1 = spike
     rows.push(
-      `('sdt-${i}', 'sd-1', 'assistant', '2026-02-${day} 10:00:00', ${tokens}, 0, 0, 0, 0.5, 'claude-opus-4', 'end_turn', 'sdreq-${i}', FALSE, FALSE)`,
+      `('sdt-${i}', 'sd-1', 'assistant', '2026-02-${day} 10:00:00', 1000, 0, 0, 0, ${cost}, 'claude-opus-4', 'end_turn', 'sdreq-${i}', FALSE, FALSE)`,
     );
   }
   await db.connection.run(`
@@ -149,6 +152,13 @@ describe("RecommendationAnalyzer", () => {
       expect(res.activeDays).toBe(2);
     });
 
+    it("sums the scanned API-equivalent cost (transparency)", async () => {
+      await seedWindowFixture(db);
+      const res = await analyzer.analyze("max-20x", fullRange, undefined, { nowMs: NOW });
+      // Four turns × $0.01 = $0.04.
+      expect(res.totalCostUSD).toBeCloseTo(0.04, 6);
+    });
+
     it("always carries the estimate caveat", async () => {
       await seedWindowFixture(db);
       const res = await analyzer.analyze("max-20x", fullRange, undefined, { nowMs: NOW });
@@ -163,12 +173,12 @@ describe("RecommendationAnalyzer", () => {
         autoCalibrate: true,
         nowMs: NOW,
       });
-      // 3 × 700k = 2.1M tokens in one 5h window > Pro 5h token ceiling 1.575M.
+      // 3 × $4 = $12 cost in one 5h window > Pro 5h cost ceiling $5.
       expect(res.ceilingSource).toBe("calibrated");
-      expect(res.ceilings.calibratedFlags.fiveHourTokens).toBe(true);
-      expect(res.ceilings.calibrated.fiveHourTokens).toBe(2_100_000);
+      expect(res.ceilings.calibratedFlags.fiveHourCostUSD).toBe(true);
+      expect(res.ceilings.calibrated.fiveHourCostUSD).toBeCloseTo(12, 6);
       // The default is preserved for transparency.
-      expect(res.ceilings.default.fiveHourTokens).toBe(DEFAULT_TIER_LIMITS.pro.fiveHourTokens);
+      expect(res.ceilings.default.fiveHourCostUSD).toBe(DEFAULT_TIER_LIMITS.pro.fiveHourCostUSD);
       // Fill is re-computed against the calibrated ceiling → not pinned > 1.
       expect(res.windowStats5h.peakFill).toBeLessThanOrEqual(1.0001);
     });
@@ -243,16 +253,17 @@ describe("RecommendationAnalyzer", () => {
         nowMs: NOW,
       });
 
-      // Auto-calibration raised the 5h token ceiling to the 15M spike, so the
+      // Auto-calibration raised the 5h cost ceiling to the $50 spike, so the
       // CALIBRATED near-limit share is tiny — only the spike window qualifies.
       expect(res.ceilingSource).toBe("calibrated");
       expect(res.windowStats5h.activeWindows).toBe(10);
       expect(res.windowStats5h.nearLimitWindows).toBe(1); // calibrated: spike only
 
       // The verdict must NOT ride that diluted calibrated share. Measured against
-      // the ABSOLUTE Pro ceiling, ~100% of windows are near-limit → upgrade.
-      // Before decoupling the decision from calibration this returned "stay"
-      // (calibrated share 10% < 15% and weekly under the cap).
+      // the ABSOLUTE Pro cost ceiling ($5), ~100% of windows are near-limit
+      // ($4.80/$5 = 0.96 ≥ 0.90) → upgrade. Before decoupling the decision from
+      // calibration this returned "stay" (calibrated share 10% < 15% and weekly
+      // under the cap).
       expect(res.recommendation.verdict).toBe("upgrade");
       expect(res.recommendation.suggestedTier).toBe("max-5x");
     });

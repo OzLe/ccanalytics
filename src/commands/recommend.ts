@@ -139,6 +139,10 @@ export function registerRecommendCommand(parent: Command): void {
               value: pct(analysis.windowStats5h.peakFill),
             },
             {
+              metric: "5h peak (API-equiv $)",
+              value: `$${analysis.windowStats5h.peakCostUSD.toFixed(2)}`,
+            },
+            {
               metric: "5h window typical (median) fill",
               value: pct(analysis.windowStats5h.medianFill),
             },

@@ -7,7 +7,6 @@
  */
 
 import type { OutputFormat } from "./analytics.js";
-import type { TierLimitCeilings } from "../config/limits.js";
 
 /** Discriminator for data source origin. */
 export type SourceType = "claude-code" | "claude-desktop";
@@ -54,11 +53,15 @@ export interface RecommendationConfig {
   /** Opt-in auto-calibration of ceilings to observed peaks. Default: true. */
   autoCalibrate: boolean;
   /**
-   * Per-tier ceiling overrides. Sparse: any tier/dimension omitted falls back
-   * to DEFAULT_TIER_LIMITS in src/config/limits.ts. Never stored fully unless
-   * the user edits it.
+   * Per-tier ceiling overrides, expressed in API-equivalent USD per rolling
+   * window (`fiveHourCostUSD` / `weeklyCostUSD`) — the unit Anthropic's limits
+   * scale with. Sparse: any tier/dimension omitted falls back to
+   * DEFAULT_TIER_LIMITS in src/config/limits.ts. Never stored fully unless the
+   * user edits it.
    */
-  ceilings?: Partial<Record<SubscriptionTier, Partial<TierLimitCeilings>>>;
+  ceilings?: Partial<
+    Record<SubscriptionTier, Partial<{ fiveHourCostUSD: number; weeklyCostUSD: number }>>
+  >;
 }
 
 /** Top-level configuration for ccanalytics. */

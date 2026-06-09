@@ -15,10 +15,16 @@
  * lives in the pure modules src/recommendation/windows.ts and
  * src/recommendation/engine.ts so it is unit testable without a DB.
  *
+ * Usage is metered by API-equivalent cost (`cost_usd`) per rolling window — the
+ * unit Anthropic's limits scale with (see src/config/limits.ts). The analyzer
+ * sums the stored conversation_turns.cost_usd per window; it never recomputes
+ * cost.
+ *
  * IMPORTANT: read-only and cost-neutral. Per-model rates stay in
  * src/utils/pricing.ts; tier prices stay in src/config/subscription.ts; this
- * analyzer reads neither — it only sums token columns and reconstructs windows.
- * Every figure it returns is an ESTIMATE (see RECOMMENDATION_ESTIMATE_CAVEAT).
+ * analyzer reads neither — it only READS the stored cost_usd column and
+ * reconstructs windows. Every figure it returns is an ESTIMATE (see
+ * RECOMMENDATION_ESTIMATE_CAVEAT).
  */
 
 import type { TimeRange, QueryFilters } from "../types/index.js";
@@ -82,6 +88,8 @@ export interface RecommendationAnalysis {
   recencyDays: number;
   /** Total cost-bearing assistant turns scanned (transparency). */
   totalTurns: number;
+  /** Total API-equivalent cost (USD) scanned across all turns (transparency). */
+  totalCostUSD: number;
   /** The estimate caveat shown on every surface. */
   caveat: string;
 }
@@ -96,11 +104,10 @@ export interface RecommendationOptions {
   nowMs?: number;
 }
 
-/** One row of the §2.1 source query (epoch-ms timestamp + model class). */
+/** One row of the §2.1 source query (epoch-ms timestamp + cost + model class). */
 interface SourceRow {
-  request_id: string | null;
   ts_ms: bigint | number | null;
-  total_tokens: bigint | number | null;
+  cost_usd: number | null;
   model_class: string;
 }
 
@@ -139,9 +146,8 @@ export class RecommendationAnalyzer {
     );
     const sql = `
       SELECT
-        ct.request_id,
         epoch_ms(ct.timestamp) AS ts_ms,
-        (ct.input_tokens + ct.output_tokens + ct.cache_creation_tokens + ct.cache_read_tokens) AS total_tokens,
+        ct.cost_usd AS cost_usd,
         CASE
           WHEN LOWER(COALESCE(ct.model, '')) LIKE '%opus%'   THEN 'opus'
           WHEN LOWER(COALESCE(ct.model, '')) LIKE '%sonnet%' THEN 'sonnet'
@@ -155,8 +161,8 @@ export class RecommendationAnalyzer {
     `;
     const result = await this.executor.query<SourceRow>(sql, [range.start, range.end, ...f.params]);
 
-    // Project rows to the pure TurnRow shape (epoch ms + total tokens). DuckDB
-    // BIGINT columns surface as JS bigint, so coerce with Number().
+    // Project rows to the pure TurnRow shape (epoch ms + API-equivalent cost).
+    // DuckDB BIGINT columns surface as JS bigint, so coerce with Number().
     const allRows: TurnRow[] = [];
     const sonnetRows: TurnRow[] = [];
     const opusRows: TurnRow[] = [];
@@ -164,8 +170,7 @@ export class RecommendationAnalyzer {
       if (r.ts_ms === null || r.ts_ms === undefined) continue;
       const row: TurnRow = {
         timestamp: Number(r.ts_ms),
-        requestId: r.request_id && r.request_id.length > 0 ? r.request_id : null,
-        totalTokens: Number(r.total_tokens ?? 0),
+        costUsd: Number(r.cost_usd ?? 0),
       };
       allRows.push(row);
       if (r.model_class === "sonnet") sonnetRows.push(row);
@@ -181,55 +186,38 @@ export class RecommendationAnalyzer {
     const windows5h = reconstructWindows(allRows, FIVE_HOUR_MS);
     const weeklyWindowsAll = reconstructWindows(allRows, WEEK_MS);
 
-    // First-pass summary against defaults → observed raw peaks for calibration.
-    const fivePeaksDefault = summarizeWindows(windows5h, {
-      requests: defaultCeilings.fiveHourRequests,
-      tokens: defaultCeilings.fiveHourTokens,
-    });
-    const weeklyPeaksDefault = summarizeWindows(weeklyWindowsAll, {
-      requests: defaultCeilings.weeklyRequests,
-      tokens: defaultCeilings.weeklyTokens,
-    });
+    // First-pass summary against defaults → observed raw peak costs for calibration.
+    const fivePeaksDefault = summarizeWindows(windows5h, defaultCeilings.fiveHourCostUSD);
+    const weeklyPeaksDefault = summarizeWindows(weeklyWindowsAll, defaultCeilings.weeklyCostUSD);
 
     const calibration = autoCalibrate
       ? calibrateCeilings(defaultCeilings, {
-          fiveHourRequests: fivePeaksDefault.peakRequests,
-          fiveHourTokens: fivePeaksDefault.peakTokens,
-          weeklyRequests: weeklyPeaksDefault.peakRequests,
-          weeklyTokens: weeklyPeaksDefault.peakTokens,
+          fiveHourCostUSD: fivePeaksDefault.peakCostUSD,
+          weeklyCostUSD: weeklyPeaksDefault.peakCostUSD,
         })
       : {
           default: { ...defaultCeilings },
           calibrated: { ...defaultCeilings },
           calibratedFlags: {
-            fiveHourRequests: false,
-            fiveHourTokens: false,
-            weeklyRequests: false,
-            weeklyTokens: false,
+            fiveHourCostUSD: false,
+            weeklyCostUSD: false,
           },
           ceilingSource: "default" as CeilingSource,
         };
 
     const active = calibration.calibrated;
 
-    // Final summaries against the active (calibrated) ceilings.
-    const windowStats5h = summarizeWindows(windows5h, {
-      requests: active.fiveHourRequests,
-      tokens: active.fiveHourTokens,
-    });
-    const weeklyStats = summarizeWindows(weeklyWindowsAll, {
-      requests: active.weeklyRequests,
-      tokens: active.weeklyTokens,
-    });
+    // Final summaries against the active (calibrated) cost ceilings.
+    const windowStats5h = summarizeWindows(windows5h, active.fiveHourCostUSD);
+    const weeklyStats = summarizeWindows(weeklyWindowsAll, active.weeklyCostUSD);
 
     // §2.5 per-model weekly split — re-run the weekly reconstruction per class
-    // against the SAME (active) weekly ceilings (a documented approximation,
+    // against the SAME (active) weekly cost ceiling (a documented approximation,
     // since exact per-class ceilings are not published).
-    const weeklyCeiling = { requests: active.weeklyRequests, tokens: active.weeklyTokens };
     const perModelWeekly: PerModelWeekly = {
       all: weeklyStats,
-      sonnet: summarizeWindows(reconstructWindows(sonnetRows, WEEK_MS), weeklyCeiling),
-      opus: summarizeWindows(reconstructWindows(opusRows, WEEK_MS), weeklyCeiling),
+      sonnet: summarizeWindows(reconstructWindows(sonnetRows, WEEK_MS), active.weeklyCostUSD),
+      opus: summarizeWindows(reconstructWindows(opusRows, WEEK_MS), active.weeklyCostUSD),
     };
 
     const activeDays = countActiveDays(allRows);
@@ -245,17 +233,15 @@ export class RecommendationAnalyzer {
     // collapse to "near YOUR peak" rather than "near the tier limit". The
     // downgrade test already (correctly) uses DEFAULT_TIER_LIMITS, so feeding
     // the default-ceiling first-pass stats here keeps upgrade and downgrade on
-    // the SAME absolute yardstick. (`peakRequests`/`peakTokens`/`activeWindows`
-    // are ceiling-independent, so only the fill-based fields actually differ.)
+    // the SAME absolute yardstick. (`peakCostUSD`/`activeWindows` are
+    // ceiling-independent, so only the fill-based fields actually differ.)
     const recommendation = recommend({
       tier,
       fiveHour: fivePeaksDefault,
       weekly: weeklyPeaksDefault,
       peaks: {
-        fiveHourPeakRequests: fivePeaksDefault.peakRequests,
-        fiveHourPeakTokens: fivePeaksDefault.peakTokens,
-        weeklyPeakRequests: weeklyPeaksDefault.peakRequests,
-        weeklyPeakTokens: weeklyPeaksDefault.peakTokens,
+        fiveHourPeakCostUSD: fivePeaksDefault.peakCostUSD,
+        weeklyPeakCostUSD: weeklyPeaksDefault.peakCostUSD,
       },
       ceilings: active,
       volume: {
@@ -280,6 +266,7 @@ export class RecommendationAnalyzer {
       activeDays,
       recencyDays,
       totalTurns: allRows.length,
+      totalCostUSD: allRows.reduce((sum, r) => sum + r.costUsd, 0),
       caveat: RECOMMENDATION_ESTIMATE_CAVEAT,
     };
   }

@@ -206,14 +206,13 @@ export type RecommendationConfidence = "low" | "medium" | "high";
 export type CeilingSource = "default" | "calibrated";
 
 /**
- * Estimated rate-limit ceilings for one tier. Mirrors `TierLimitCeilings` in
- * src/config/limits.ts. ALL VALUES ARE ESTIMATES.
+ * Estimated rate-limit ceilings for one tier, expressed in API-equivalent USD
+ * per rolling window — the unit Anthropic's limits scale with. Mirrors
+ * `TierLimitCeilings` in src/config/limits.ts. ALL VALUES ARE ESTIMATES.
  */
 export interface TierLimitCeilings {
-  fiveHourRequests: number;
-  fiveHourTokens: number;
-  weeklyRequests: number;
-  weeklyTokens: number;
+  fiveHourCostUSD: number;
+  weeklyCostUSD: number;
 }
 
 /** Per-dimension flag set: `true` where auto-calibration raised the ceiling. */
@@ -221,7 +220,8 @@ export type CalibratedFlags = Record<keyof TierLimitCeilings, boolean>;
 
 /**
  * Per-window stats over a set of reconstructed windows. Mirrors `WindowStats`
- * in src/recommendation/windows.ts. Fill fractions are 0..∞ (raw, unclamped).
+ * in src/recommendation/windows.ts. Fill fractions are 0..∞ (raw, unclamped) and
+ * measure API-equivalent cost per window vs the tier's cost ceiling.
  */
 export interface WindowStats {
   activeWindows: number;
@@ -229,8 +229,8 @@ export interface WindowStats {
   p95Fill: number;
   medianFill: number;
   nearLimitWindows: number;
-  peakRequests: number;
-  peakTokens: number;
+  /** Max raw API-equivalent cost (USD) across windows. */
+  peakCostUSD: number;
 }
 
 /** Weekly stats split by model class. Mirrors `PerModelWeekly` in the analyzer. */
@@ -280,6 +280,8 @@ export interface RecommendationAnalysis {
   activeDays: number;
   recencyDays: number;
   totalTurns: number;
+  /** Total API-equivalent cost (USD) scanned across all turns (transparency). */
+  totalCostUSD: number;
   caveat: string;
 }
 

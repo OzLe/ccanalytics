@@ -3,9 +3,11 @@
  *
  * Pure-unit tests for the recommendation engine (§5, §7.1). No DB.
  *
- * The engine re-expresses observed peaks against the tier-DOWN tier's PUBLISHED
- * default ceilings (DEFAULT_TIER_LIMITS), so the test fixtures choose peak
- * request/token counts relative to those known numbers.
+ * Usage is measured by API-equivalent cost (`cost_usd`) per rolling window. The
+ * engine re-expresses observed peak window COSTS against the tier-DOWN tier's
+ * PUBLISHED default cost ceilings (DEFAULT_TIER_LIMITS), so the fixtures choose
+ * peak dollar amounts relative to those known numbers
+ * (pro $5/$125, max-5x $25/$625, max-20x $100/$2500 per 5h/week).
  */
 
 import { describe, it, expect } from "vitest";
@@ -35,19 +37,16 @@ function stats(partial: Partial<WindowStats> = {}): WindowStats {
     p95Fill: 0,
     medianFill: 0,
     nearLimitWindows: 0,
-    peakRequests: 0,
-    peakTokens: 0,
+    peakCostUSD: 0,
     ...partial,
   };
 }
 
-/** Build raw observed peaks, defaulting every field to 0. */
+/** Build raw observed peak costs, defaulting every field to 0. */
 function peaks(partial: Partial<ObservedPeakUsage> = {}): ObservedPeakUsage {
   return {
-    fiveHourPeakRequests: 0,
-    fiveHourPeakTokens: 0,
-    weeklyPeakRequests: 0,
-    weeklyPeakTokens: 0,
+    fiveHourPeakCostUSD: 0,
+    weeklyPeakCostUSD: 0,
     ...partial,
   };
 }
@@ -109,10 +108,11 @@ describe("recommend — UPGRADE", () => {
         tier: "max-20x",
         fiveHour: stats({ activeWindows: 20, nearLimitWindows: 10, peakFill: 1.5 }),
         weekly: stats({ peakFill: 1.2 }),
-        // High raw peaks so it cannot downgrade either → stay.
+        // High raw peak costs so it cannot downgrade either → stay.
+        // vs max-5x: 5h $25, weekly $625.
         peaks: peaks({
-          fiveHourPeakRequests: 900,
-          weeklyPeakRequests: 22500,
+          fiveHourPeakCostUSD: 100,
+          weeklyPeakCostUSD: 2500,
         }),
       }),
     );
@@ -123,14 +123,14 @@ describe("recommend — UPGRADE", () => {
 });
 
 describe("recommend — DOWNGRADE", () => {
-  it("downgrades only when BOTH 5h & weekly peak < 0.70 of the tier-DOWN ceiling", () => {
-    // max-5x → pro. Pro 5h req ceiling = 45 (×0.70 = 31.5), weekly = 1125 (×0.70 = 787.5).
+  it("downgrades only when BOTH 5h & weekly peak cost < 0.70 of the tier-DOWN ceiling", () => {
+    // max-5x → pro. Pro 5h ceiling $5 (×0.70 = $3.5), weekly $125 (×0.70 = $87.5).
     const r = recommend(
       input({
         tier: "max-5x",
         peaks: peaks({
-          fiveHourPeakRequests: 20, // 20/45 = 0.44 < 0.70
-          weeklyPeakRequests: 300, // 300/1125 = 0.27 < 0.70
+          fiveHourPeakCostUSD: 2, // 2/5 = 0.40 < 0.70
+          weeklyPeakCostUSD: 30, // 30/125 = 0.24 < 0.70
         }),
       }),
     );
@@ -144,11 +144,11 @@ describe("recommend — DOWNGRADE", () => {
   });
 
   it("does NOT downgrade when the WEEKLY peak alone exceeds the headroom band", () => {
-    // 5h fits pro, but weekly peak 1000/1125 = 0.89 ≥ 0.70 → not both < 0.70 → stay.
+    // 5h fits pro, but weekly peak $115/$125 = 0.92 ≥ 0.70 → not both < 0.70 → stay.
     const r = recommend(
       input({
         tier: "max-5x",
-        peaks: peaks({ fiveHourPeakRequests: 10, weeklyPeakRequests: 1000 }),
+        peaks: peaks({ fiveHourPeakCostUSD: 1, weeklyPeakCostUSD: 115 }),
       }),
     );
     expect(r.verdict).toBe("stay");
@@ -158,24 +158,21 @@ describe("recommend — DOWNGRADE", () => {
     const r = recommend(
       input({
         tier: "pro",
-        peaks: peaks({ fiveHourPeakRequests: 1, weeklyPeakRequests: 1 }),
+        peaks: peaks({ fiveHourPeakCostUSD: 0.1, weeklyPeakCostUSD: 0.1 }),
       }),
     );
     expect(r.verdict).toBe("stay");
     expect(r.suggestedTier).toBeNull();
   });
 
-  it("can downgrade on the TOKEN dimension (low requests, high tokens still fits)", () => {
-    // max-20x → max-5x. max-5x token ceil 5h = 225*35000 = 7,875,000 (×0.7 = 5,512,500).
-    // weekly token ceil = 5625*35000 = 196,875,000 (×0.7 = 137,812,500).
+  it("downgrades max-20x → max-5x when peak cost fits the smaller tier", () => {
+    // max-20x → max-5x. max-5x 5h ceil $25 (×0.7 = $17.5), weekly $625 (×0.7 = $437.5).
     const r = recommend(
       input({
         tier: "max-20x",
         peaks: peaks({
-          fiveHourPeakRequests: 50, // 50/225 = 0.22
-          fiveHourPeakTokens: 1_000_000, // 1e6/7.875e6 = 0.13
-          weeklyPeakRequests: 1000, // 1000/5625 = 0.18
-          weeklyPeakTokens: 50_000_000, // 5e7/1.96875e8 = 0.25
+          fiveHourPeakCostUSD: 5, // 5/25 = 0.20 < 0.70
+          weeklyPeakCostUSD: 100, // 100/625 = 0.16 < 0.70
         }),
       }),
     );
@@ -188,12 +185,13 @@ describe("recommend — DOWNGRADE", () => {
 describe("recommend — STAY", () => {
   it("stays in the healthy band (neither up nor down signal)", () => {
     // max-5x: not near-limit, but peak vs pro is ≥ 0.70 so cannot downgrade.
+    // weekly $100/$125 = 0.80 ≥ 0.70.
     const r = recommend(
       input({
         tier: "max-5x",
         fiveHour: stats({ activeWindows: 20, nearLimitWindows: 1, peakFill: 0.5 }),
         weekly: stats({ peakFill: 0.5 }),
-        peaks: peaks({ fiveHourPeakRequests: 40, weeklyPeakRequests: 1000 }),
+        peaks: peaks({ fiveHourPeakCostUSD: 4, weeklyPeakCostUSD: 100 }),
       }),
     );
     expect(r.verdict).toBe("stay");
@@ -211,7 +209,7 @@ describe("recommend — NEUTRAL (tier none)", () => {
         ceilings: DEFAULT_TIER_LIMITS.none,
         fiveHour: stats({ activeWindows: 10, nearLimitWindows: 10, peakFill: 9 }),
         weekly: stats({ peakFill: 9 }),
-        peaks: peaks({ fiveHourPeakRequests: 5000 }),
+        peaks: peaks({ fiveHourPeakCostUSD: 5000 }),
       }),
     );
     expect(r.verdict).toBe("neutral");
@@ -287,14 +285,14 @@ describe("recommend — threshold constants are the spec values", () => {
   });
 
   it("evaluates UPGRADE before DOWNGRADE (at-limit wins edge cases)", () => {
-    // Construct a row where the 5h near-limit fires AND raw peaks look small vs
-    // the down tier. Upgrade must win.
+    // Construct a row where the 5h near-limit fires AND raw peak costs look small
+    // vs the down tier. Upgrade must win.
     const r = recommend(
       input({
         tier: "max-5x",
         fiveHour: stats({ activeWindows: 20, nearLimitWindows: 5, peakFill: 1.0 }),
         weekly: stats({ peakFill: 0.1 }),
-        peaks: peaks({ fiveHourPeakRequests: 1, weeklyPeakRequests: 1 }),
+        peaks: peaks({ fiveHourPeakCostUSD: 0.1, weeklyPeakCostUSD: 0.1 }),
       }),
     );
     expect(r.verdict).toBe("upgrade");
@@ -317,5 +315,39 @@ describe("describeFill — graceful over-limit copy", () => {
     // (e.g. 191.66 → 19166%); copy must not print that.
     expect(describeFill(191.66)).toBe("well above the estimated limit");
     expect(describeFill(9.58)).toBe("well above the estimated limit");
+  });
+});
+
+describe("detail wording — 'sparse' is gated on data VOLUME, not borderline margin", () => {
+  it("does NOT say 'sparse' when confidence is low only because the margin is borderline", () => {
+    // Plenty of data (HIGH_VOLUME) but 13.3% near-limit sits just under the 15%
+    // upgrade threshold → low confidence via the MARGIN axis, not volume.
+    const r = recommend(
+      input({
+        tier: "max-5x",
+        fiveHour: stats({ activeWindows: 30, nearLimitWindows: 4, peakFill: 0.5 }),
+        weekly: stats({ peakFill: 0.1 }),
+        peaks: peaks({ fiveHourPeakCostUSD: 4, weeklyPeakCostUSD: 10 }), // 0.8 / 0.08 vs Pro → no downgrade
+        volume: HIGH_VOLUME,
+      }),
+    );
+    expect(r.verdict).toBe("stay");
+    expect(r.confidence).toBe("low");
+    expect(r.detail).not.toContain("sparse");
+    expect(r.confidenceReason.toLowerCase()).toContain("borderline");
+  });
+
+  it("DOES say 'sparse' when the data volume itself is low", () => {
+    const r = recommend(
+      input({
+        tier: "max-5x",
+        fiveHour: stats({ activeWindows: 1, nearLimitWindows: 0, peakFill: 0.3 }),
+        weekly: stats({ peakFill: 0.1 }),
+        peaks: peaks({ fiveHourPeakCostUSD: 4, weeklyPeakCostUSD: 10 }),
+        volume: SPARSE_VOLUME,
+      }),
+    );
+    expect(r.confidence).toBe("low");
+    expect(r.detail).toContain("sparse");
   });
 });

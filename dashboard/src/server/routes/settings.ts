@@ -174,8 +174,9 @@ function resolveDisplay(
  * {@link TierLimitOverrides}. Defensive (this guards the only write path):
  *
  *   - Only known {@link SubscriptionTier} keys survive (drops e.g. "team").
- *   - Within each tier, only the four numeric {@link TierLimitCeilings}
- *     dimensions survive, and only when finite and non-negative — NaN,
+ *   - Within each tier, only the two numeric {@link TierLimitCeilings} cost
+ *     dimensions (`fiveHourCostUSD` / `weeklyCostUSD`, API-equivalent USD per
+ *     rolling window) survive, and only when finite and non-negative — NaN,
  *     Infinity, negatives and non-numbers are dropped.
  *   - A tier whose every dimension was dropped is omitted entirely, so the
  *     persisted shape stays sparse (any omitted tier/dimension falls back to
@@ -289,7 +290,7 @@ router.get("/", async (_req, res, next) => {
  *     display?: { userTimezone?: string },
  *     recommendation?: {
  *       autoCalibrate?: boolean,
- *       ceilings?: { [tier]: { fiveHourRequests?: number, ... } }
+ *       ceilings?: { [tier]: { fiveHourCostUSD?: number, weeklyCostUSD?: number } }
  *     }
  *   }
  *

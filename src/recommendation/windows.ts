@@ -9,8 +9,10 @@
  * read-only and bind-param-simple. This mirrors how CostAnalyzer pulls grouped
  * rows and aggregates them in JS.
  *
- * IMPORTANT: the fill percentages produced here are ESTIMATES (see
- * src/config/limits.ts). Nothing here reads or recomputes cost.
+ * Usage is measured by API-equivalent cost (`cost_usd`) per window — the unit
+ * Anthropic's 5h / weekly limits actually scale with (see src/config/limits.ts).
+ * Each window sums the stored conversation_turns.cost_usd; nothing here reads or
+ * recomputes cost. The fill percentages produced here are ESTIMATES.
  */
 
 /** Rolling-window span constants (§2.3). */
@@ -28,55 +30,48 @@ export const NEAR_LIMIT_FILL = 0.9;
 export interface TurnRow {
   /** Epoch milliseconds of the turn timestamp. */
   timestamp: number;
-  /** Request id, or null/empty for older data (triggers the §2.2 fallback). */
-  requestId: string | null;
-  /** input + output + cache_creation + cache_read for this turn. */
-  totalTokens: number;
+  /** Stored API-equivalent cost (USD) for this turn (conversation_turns.cost_usd). */
+  costUsd: number;
 }
 
 /**
- * A reconstructed rolling window. `requests` applies the §2.2 fallback:
- * distinct request ids when present, else the assistant-turn count.
+ * A reconstructed rolling window. `turns` is the assistant-turn count (used for
+ * activeWindows / info); `costUsd` is the summed API-equivalent cost — the
+ * metering-aligned consumption signal.
  */
 export interface ReconstructedWindow {
-  /** Epoch ms of the first request that opened the window. */
+  /** Epoch ms of the first turn that opened the window. */
   anchor: number;
-  /** §2.2 prompt-like unit: distinct request ids, or assistant turns if none. */
-  requests: number;
-  /** Distinct request ids observed (0 when all rows lacked a request id). */
-  distinctRequestIds: number;
-  /** Count of assistant turns in the window (the fallback unit). */
-  assistantTurns: number;
-  /** Summed total_tokens across the window. */
-  tokens: number;
+  /** Count of assistant turns in the window. */
+  turns: number;
+  /** Summed API-equivalent cost (USD) across the window. */
+  costUsd: number;
 }
 
 /** Per-window stats over a set of reconstructed windows (§2.4). */
 export interface WindowStats {
   /** Number of reconstructed windows (drives confidence as activeWindows). */
   activeWindows: number;
-  /** Max blended fill% across windows (the primary signal). */
+  /** Max cost-fill% across windows (the primary signal). */
   peakFill: number;
-  /** 95th-percentile blended fill% (nearest-rank). */
+  /** 95th-percentile cost-fill% (nearest-rank). */
   p95Fill: number;
-  /** Median blended fill%. */
+  /** Median cost-fill%. */
   medianFill: number;
   /** Count of windows with fill% ≥ {@link NEAR_LIMIT_FILL}. */
   nearLimitWindows: number;
-  /** Max raw request count across windows (auto-calibration input). */
-  peakRequests: number;
-  /** Max raw token sum across windows (auto-calibration input). */
-  peakTokens: number;
+  /** Max raw API-equivalent cost (USD) across windows (auto-calibration input). */
+  peakCostUSD: number;
 }
 
 /**
  * Greedy session-start anchoring (§2.3), reused for the 5h and weekly passes.
  *
- * The FIRST request opens a window `[t, t+span)`; every request before
- * `t+span` accrues to it; the first request at/after `t+span` opens the next
- * window. This is a rolling window keyed off first-activity (resets N after the
- * session's first activity, not on a fixed wall clock), which is why it is done
- * in TS anchored on the row timestamp.
+ * The FIRST turn opens a window `[t, t+span)`; every turn before `t+span`
+ * accrues to it; the first turn at/after `t+span` opens the next window. This
+ * is a rolling window keyed off first-activity (resets N after the session's
+ * first activity, not on a fixed wall clock), which is why it is done in TS
+ * anchored on the row timestamp.
  *
  * Rows MUST be sorted ascending by timestamp (the SQL `ORDER BY ct.timestamp`
  * guarantees this); the function does not re-sort.
@@ -90,60 +85,45 @@ export function reconstructWindows(
   windowMs: number,
 ): ReconstructedWindow[] {
   const windows: ReconstructedWindow[] = [];
-  // The window object currently being filled + its set of distinct request ids.
-  // Holding the live `ReconstructedWindow` reference (rather than re-reading
+  // The window object currently being filled. Holding the live
+  // `ReconstructedWindow` reference (rather than re-reading
   // `windows[windows.length - 1]` each row) keeps the aggregate update simple
   // and avoids an unchecked index access on every iteration.
   let current: ReconstructedWindow | null = null;
-  let requestIds = new Set<string>();
 
   for (const r of rows) {
     if (current === null || r.timestamp >= current.anchor + windowMs) {
-      requestIds = new Set<string>();
       current = {
         anchor: r.timestamp,
-        requests: 0,
-        distinctRequestIds: 0,
-        assistantTurns: 0,
-        tokens: 0,
+        turns: 0,
+        costUsd: 0,
       };
       windows.push(current);
     }
-    if (r.requestId) {
-      requestIds.add(r.requestId);
-    }
-    current.assistantTurns += 1;
-    current.tokens += r.totalTokens;
-    current.distinctRequestIds = requestIds.size;
-    // §2.2 fallback: distinct request ids when present, else assistant turns.
-    current.requests =
-      current.distinctRequestIds > 0
-        ? current.distinctRequestIds
-        : current.assistantTurns;
+    current.turns += 1;
+    current.costUsd += r.costUsd;
   }
 
   return windows;
 }
 
 /**
- * Blended fill% for a window (§2.3): `max(requests/ceiling, tokens/ceiling)` —
- * either dimension can drive the signal. Returns the RAW (unclamped) value so
- * thresholds see the true intensity; callers clamp only for display.
+ * Cost-fill% for a window (§2.3): `window.costUsd / ceilingCostUSD`. Returns the
+ * RAW (unclamped) value so thresholds see the true intensity; callers clamp only
+ * for display.
  *
- * Divide-by-zero guard: a zero ceiling (tier "none") yields fill 0 for that
- * dimension, so "none" never produces a spurious signal.
+ * Divide-by-zero guard: a zero ceiling (tier "none") yields fill 0, so "none"
+ * never produces a spurious signal.
  *
  * @param window - A reconstructed window.
- * @param ceiling - The tier ceilings (requests + tokens) for the window span.
- * @returns Blended fill fraction (0..∞ before any display clamp).
+ * @param ceilingCostUSD - The tier's cost ceiling (USD) for the window span.
+ * @returns Cost-fill fraction (0..∞ before any display clamp).
  */
 export function windowFill(
-  window: Pick<ReconstructedWindow, "requests" | "tokens">,
-  ceiling: { requests: number; tokens: number },
+  window: Pick<ReconstructedWindow, "costUsd">,
+  ceilingCostUSD: number,
 ): number {
-  const reqFill = ceiling.requests > 0 ? window.requests / ceiling.requests : 0;
-  const tokFill = ceiling.tokens > 0 ? window.tokens / ceiling.tokens : 0;
-  return Math.max(reqFill, tokFill);
+  return ceilingCostUSD > 0 ? window.costUsd / ceilingCostUSD : 0;
 }
 
 /**
@@ -182,17 +162,17 @@ export function median(values: number[]): number {
 
 /**
  * Reduce a set of reconstructed windows to {@link WindowStats} against the
- * given ceiling (§2.4). Computes peak/p95/median fill, the near-limit window
- * count (fill ≥ {@link NEAR_LIMIT_FILL}), and the raw peak request/token counts
- * used as auto-calibration inputs.
+ * given cost ceiling (§2.4). Computes peak/p95/median cost-fill, the near-limit
+ * window count (fill ≥ {@link NEAR_LIMIT_FILL}), and the raw peak window cost
+ * used as the auto-calibration input.
  *
  * @param windows - Reconstructed windows for one span.
- * @param ceiling - Tier ceilings (requests + tokens) for that span.
+ * @param ceilingCostUSD - The tier's cost ceiling (USD) for that span.
  * @returns Aggregate window statistics (all zero for an empty window set).
  */
 export function summarizeWindows(
   windows: ReconstructedWindow[],
-  ceiling: { requests: number; tokens: number },
+  ceilingCostUSD: number,
 ): WindowStats {
   if (windows.length === 0) {
     return {
@@ -201,18 +181,15 @@ export function summarizeWindows(
       p95Fill: 0,
       medianFill: 0,
       nearLimitWindows: 0,
-      peakRequests: 0,
-      peakTokens: 0,
+      peakCostUSD: 0,
     };
   }
-  const fills = windows.map((w) => windowFill(w, ceiling));
-  let peakRequests = 0;
-  let peakTokens = 0;
+  const fills = windows.map((w) => windowFill(w, ceilingCostUSD));
+  let peakCostUSD = 0;
   let nearLimitWindows = 0;
   for (const w of windows) {
-    if (w.requests > peakRequests) peakRequests = w.requests;
-    if (w.tokens > peakTokens) peakTokens = w.tokens;
-    const fill = windowFill(w, ceiling);
+    if (w.costUsd > peakCostUSD) peakCostUSD = w.costUsd;
+    const fill = windowFill(w, ceilingCostUSD);
     if (fill >= NEAR_LIMIT_FILL) nearLimitWindows += 1;
   }
   return {
@@ -221,8 +198,7 @@ export function summarizeWindows(
     p95Fill: percentile(fills, 0.95),
     medianFill: median(fills),
     nearLimitWindows,
-    peakRequests,
-    peakTokens,
+    peakCostUSD,
   };
 }
 
