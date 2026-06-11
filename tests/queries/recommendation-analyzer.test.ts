@@ -245,6 +245,40 @@ describe("RecommendationAnalyzer", () => {
     });
   });
 
+  describe("v2 engine wiring (fable split, signals, trend)", () => {
+    it("splits Claude 5 (fable/mythos) turns into the 'fable' weekly class", async () => {
+      await seedWindowFixture(db);
+      await db.connection.run(`
+        INSERT INTO conversation_turns (turn_id, session_id, role, timestamp,
+          input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+          cost_usd, model, stop_reason, request_id, has_tool_use, has_thinking)
+        VALUES
+          ('ft-1', 'rs-1', 'assistant', '2026-02-21 09:00:00', 1000, 500, 0, 0, 0.05, 'claude-fable-5', 'end_turn', 'freq-1', FALSE, FALSE),
+          ('ft-2', 'rs-1', 'assistant', '2026-03-06 09:00:00', 1000, 500, 0, 0, 0.05, 'claude-mythos-5', 'end_turn', 'freq-2', FALSE, FALSE)
+      `);
+      const res = await analyzer.analyze("max-20x", fullRange, undefined, { nowMs: NOW });
+      // Feb-21 and Mar-06 are >7d apart → two fable weekly windows; the fable
+      // turns must NOT leak into the opus/sonnet classes.
+      expect(res.perModelWeekly.fable.activeWindows).toBe(2);
+      expect(res.perModelWeekly.sonnet.activeWindows).toBe(1);
+      expect(res.perModelWeekly.opus.activeWindows).toBe(2);
+    });
+
+    it("feeds the engine raw windows: signals + trend + run-rate are populated", async () => {
+      await seedShareDilutionFixture(db);
+      const res = await analyzer.analyze("pro", fullRange, undefined, { nowMs: NOW });
+      const { signals, trend } = res.recommendation;
+      expect(signals.activeWindows5h).toBe(10);
+      // 9 windows at $4.80 (96% of Pro's $5) + the $50 spike → all 10 near-limit.
+      expect(signals.nearLimitCount5h).toBe(10);
+      // $93.20 over 9 days → ≈ $310/mo run-rate.
+      expect(signals.monthlyRunRateUSD).toBeGreaterThan(250);
+      expect(signals.monthlyRunRateUSD).toBeLessThan(400);
+      expect(["rising", "falling", "flat", "unknown"]).toContain(trend);
+      expect(signals.bestFitTier).toBe("max-5x");
+    });
+  });
+
   describe("decision uses ABSOLUTE ceilings, not calibrated (regression)", () => {
     it("upgrades on frequent near-DEFAULT-limit windows even when auto-calibration dilutes the calibrated share", async () => {
       await seedShareDilutionFixture(db);

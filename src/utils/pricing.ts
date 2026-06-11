@@ -33,21 +33,28 @@ export interface ModelPricing {
  * ones (e.g. `claude-opus-4-7` before `claude-opus-4`).
  *
  * Rates verified against the official Anthropic pricing table
- * (platform.claude.com/docs/en/about-claude/pricing, May 2026):
- *   Opus 4.5 / 4.6 / 4.7 = 5 / 25 / 6.25 / 0.5
- *   Opus 4 family        = 15 / 75 / 18.75 / 1.5
- *   Sonnet 4.x           = 3 / 15 / 3.75 / 0.3
- *   Haiku 4.5            = 1 / 5 / 1.25 / 0.1
+ * (platform.claude.com/docs/en/about-claude/pricing, June 2026):
+ *   Fable 5 / Mythos 5         = 10 / 50 / 12.5 / 1.0
+ *   Opus 4.5 / 4.6 / 4.7 / 4.8 = 5 / 25 / 6.25 / 0.5
+ *   Opus 4 family (4.0 / 4.1)  = 15 / 75 / 18.75 / 1.5
+ *   Sonnet 4.x                 = 3 / 15 / 3.75 / 0.3
+ *   Haiku 4.5                  = 1 / 5 / 1.25 / 0.1
  * cache-write = 1.25x input and cache-read = 0.1x input for every entry.
  */
 const PRICING: [string, ModelPricing][] = [
+  // Claude 5 family — Fable 5 is the generally-available id; Mythos 5 is the
+  // same model + rates via Project Glasswing. $10/$50 per MTok (above Opus-tier).
+  ["claude-fable-5", { inputPerM: 10, outputPerM: 50, cacheCreationPerM: 12.5, cacheReadPerM: 1 }],
+  ["claude-mythos-5", { inputPerM: 10, outputPerM: 50, cacheCreationPerM: 12.5, cacheReadPerM: 1 }],
   // Claude 4 family — specific models before broader prefixes (first match wins)
   ["claude-opus-4-5", { inputPerM: 5, outputPerM: 25, cacheCreationPerM: 6.25, cacheReadPerM: 0.5 }],
   ["claude-opus-4-6", { inputPerM: 5, outputPerM: 25, cacheCreationPerM: 6.25, cacheReadPerM: 0.5 }],
-  // claude-opus-4-7: Opus 4.7 — official rates 5/25/6.25/0.5. MUST precede the
-  // broad "claude-opus-4" prefix below, otherwise it falls through to the
-  // Opus-4 ($15/$75/...) rates and is overcharged 3x (COST-001).
+  // claude-opus-4-7 / claude-opus-4-8: official rates 5/25/6.25/0.5. They MUST
+  // precede the broad "claude-opus-4" prefix below, otherwise they fall through
+  // to the Opus-4 ($15/$75/...) rates and are overcharged 3x (COST-001 for 4.7;
+  // COST-008 found claude-opus-4-8 with exactly this fallthrough).
   ["claude-opus-4-7", { inputPerM: 5, outputPerM: 25, cacheCreationPerM: 6.25, cacheReadPerM: 0.5 }],
+  ["claude-opus-4-8", { inputPerM: 5, outputPerM: 25, cacheCreationPerM: 6.25, cacheReadPerM: 0.5 }],
   ["claude-opus-4", { inputPerM: 15, outputPerM: 75, cacheCreationPerM: 18.75, cacheReadPerM: 1.5 }],
   // Sonnet 4.x — claude-sonnet-4-5 / -4-6 / -4-7 all resolve here via the
   // broad "claude-sonnet-4" prefix (rates are identical across the 4.x line).

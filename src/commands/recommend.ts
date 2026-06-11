@@ -35,7 +35,8 @@ const VALID_PERIODS = ["today", "7d", "30d", "90d", "all"] as const;
  * Output sections (table format):
  *   - Current tier
  *   - 5-hour window: peak / typical (median) fill
- *   - Weekly window: peak fill incl. per-model (all / Sonnet / Opus)
+ *   - Weekly window: peak fill incl. per-model (all / Sonnet / Opus / Fable)
+ *   - Est. monthly API-equivalent run-rate + usage trend
  *   - Recommendation: headline + verdict + confidence + monthly $ delta + rationale
  *   - The RECOMMENDATION_ESTIMATE_CAVEAT line
  *
@@ -162,6 +163,15 @@ export function registerRecommendCommand(parent: Command): void {
               metric: "Weekly peak fill (Opus)",
               value: pct(analysis.perModelWeekly.opus.peakFill),
             },
+            {
+              metric: "Weekly peak fill (Fable)",
+              value: pct(analysis.perModelWeekly.fable.peakFill),
+            },
+            {
+              metric: "Est. monthly run-rate (API-equiv)",
+              value: `$${rec.signals.monthlyRunRateUSD.toFixed(2)}/mo`,
+            },
+            { metric: "Usage trend", value: rec.trend },
             { metric: "Ceiling source", value: analysis.ceilingSource },
             { metric: "Recommendation", value: rec.headline },
             { metric: "Verdict", value: rec.verdict },

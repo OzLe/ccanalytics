@@ -95,6 +95,60 @@ describe("COST-001: claude-opus-4-7 pricing", () => {
   });
 });
 
+describe("COST-008: Claude 5 family (Fable/Mythos) + Opus 4.8 pricing", () => {
+  it("prices claude-fable-5 at the official $10/$50/$12.50/$1.00 rates", () => {
+    expect(getPricing("claude-fable-5")).toEqual({
+      inputPerM: 10,
+      outputPerM: 50,
+      cacheCreationPerM: 12.5,
+      cacheReadPerM: 1,
+    });
+  });
+
+  it("prices claude-mythos-5 identically to claude-fable-5 (same model)", () => {
+    expect(getPricing("claude-mythos-5")).toEqual(getPricing("claude-fable-5"));
+  });
+
+  it("does NOT price Fable 5 at the DEFAULT (Sonnet) rates anymore", () => {
+    expect(hasKnownPricing("claude-fable-5")).toBe(true);
+    expect(getPricing("claude-fable-5")).not.toEqual(getDefaultPricing());
+  });
+
+  it("prices claude-opus-4-8 at $5/$25/$6.25/$0.50, NOT the broad Opus-4 fallthrough", () => {
+    expect(getPricing("claude-opus-4-8")).toEqual({
+      inputPerM: 5,
+      outputPerM: 25,
+      cacheCreationPerM: 6.25,
+      cacheReadPerM: 0.5,
+    });
+    // The fallthrough this guards against: claude-opus-4 = $15/$75 (3x higher).
+    expect(getPricing("claude-opus-4").inputPerM).toBe(15);
+  });
+
+  it("matches dated variants by prefix", () => {
+    expect(getPricing("claude-fable-5-20260601")).toEqual(getPricing("claude-fable-5"));
+    expect(getPricing("claude-opus-4-8-20260301")).toEqual(getPricing("claude-opus-4-8"));
+  });
+
+  it("orders claude-opus-4-8 BEFORE the broad claude-opus-4 prefix (first match wins)", () => {
+    const prefixes = getPricingEntries().map(([p]) => p);
+    expect(prefixes.indexOf("claude-opus-4-8")).toBeLessThan(prefixes.indexOf("claude-opus-4"));
+  });
+
+  it("emits the new entries in every generated SQL rate CASE", () => {
+    const sql = buildRateCaseSql("outputPerM");
+    expect(sql).toContain("claude-fable-5%' THEN 50");
+    expect(sql).toContain("claude-mythos-5%' THEN 50");
+    expect(sql).toContain("claude-opus-4-8%' THEN 25");
+  });
+
+  it("computes the correct cache-savings rates (input − cacheRead)", () => {
+    const sql = buildCacheSavingsRateCaseSql();
+    expect(sql).toContain("claude-fable-5%' THEN 9"); // 10 − 1
+    expect(sql).toContain("claude-opus-4-8%' THEN 4.5"); // 5 − 0.5
+  });
+});
+
 describe("COST-001/COST-003: shared rate source — SQL CASE cannot drift", () => {
   // The dashboard cost/cache routes GENERATE their SQL CASE from this table.
   // These tests assert the generator output matches the table exactly, so a
@@ -165,6 +219,9 @@ describe("COST-001/COST-003: shared rate source — SQL CASE cannot drift", () =
       return getDefaultPricing()[key];
     };
     const sampleModels = [
+      "claude-fable-5",
+      "claude-mythos-5",
+      "claude-opus-4-8",
       "claude-opus-4-7-20260401",
       "claude-opus-4-6",
       "claude-opus-4-5-20251101",
@@ -204,6 +261,8 @@ describe("COST-001: every model present in the DB has an exact pricing entry", (
   // ~/.ccanalytics/analytics.duckdb at the time of the COST-001 audit. Keep it
   // in sync when new models appear — that is exactly the signal this guards.
   const MODELS_IN_DB = [
+    "claude-fable-5",
+    "claude-opus-4-8",
     "claude-opus-4-7",
     "claude-opus-4-6",
     "claude-opus-4-5-20251101",

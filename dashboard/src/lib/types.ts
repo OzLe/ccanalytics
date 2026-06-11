@@ -238,6 +238,8 @@ export interface PerModelWeekly {
   all: WindowStats;
   sonnet: WindowStats;
   opus: WindowStats;
+  /** Claude 5 (Fable/Mythos) split. Optional for back-compat with older servers. */
+  fable?: WindowStats;
 }
 
 /** The default + calibrated ceilings and per-dimension provenance. */
@@ -247,6 +249,26 @@ export interface CeilingReport {
   calibratedFlags: CalibratedFlags;
 }
 
+/** Usage direction over the period. Mirrors `UsageTrend` in the engine. */
+export type UsageTrend = "rising" | "falling" | "flat" | "unknown";
+
+/**
+ * Structured per-axis evidence behind the verdict. Mirrors
+ * `RecommendationSignals` in src/recommendation/engine.ts.
+ */
+export interface RecommendationSignals {
+  nearLimitCount5h: number;
+  nearLimitShare5h: number;
+  activeWindows5h: number;
+  nearLimitCountWeekly: number;
+  weeklyWindows: number;
+  /** Estimated monthly API-equivalent run-rate (USD); 0 when no data. */
+  monthlyRunRateUSD: number;
+  trend: UsageTrend;
+  recentPressure: boolean;
+  bestFitTier: SubscriptionTier | null;
+}
+
 /**
  * The structured recommendation. Mirrors `Recommendation` in
  * src/recommendation/engine.ts.
@@ -254,14 +276,21 @@ export interface CeilingReport {
 export interface Recommendation {
   verdict: RecommendationVerdict;
   currentTier: SubscriptionTier;
-  /** null for stay/neutral. */
+  /** null for stay/neutral. May be "none" (pay-as-you-go) for a downgrade. */
   suggestedTier: SubscriptionTier | null;
-  /** +extra for upgrade, −saved for downgrade, 0 otherwise. */
+  /**
+   * +extra for upgrade, −saved for downgrade, 0 otherwise. Moves involving
+   * pay-as-you-go use the estimated net monthly impact vs the API run-rate.
+   */
   monthlyDeltaUSD: number;
   confidence: RecommendationConfidence;
   confidenceReason: string;
   headline: string;
   detail: string;
+  /** Usage direction over the period. Optional for back-compat. */
+  trend?: UsageTrend;
+  /** Structured per-axis evidence. Optional for back-compat. */
+  signals?: RecommendationSignals;
   caveat: string;
 }
 
