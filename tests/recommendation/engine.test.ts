@@ -1,12 +1,12 @@
 /**
  * @module tests/recommendation/engine
  *
- * Pure-unit tests for the recommendation engine (§5, §7.1). No DB.
+ * Pure-unit tests for the v2 recommendation engine (§5, §7.1). No DB.
  *
- * Usage is measured by API-equivalent cost (`cost_usd`) per rolling window. The
- * engine re-expresses observed peak window COSTS against the tier-DOWN tier's
- * PUBLISHED default cost ceilings (DEFAULT_TIER_LIMITS), so the fixtures choose
- * peak dollar amounts relative to those known numbers
+ * Usage is measured by API-equivalent cost (`cost_usd`) per rolling window.
+ * The engine receives RAW reconstructed windows and assesses EVERY paid tier
+ * against its own DEFAULT (override-resolved) ceilings, so fixtures choose
+ * window dollar amounts relative to the known defaults
  * (pro $5/$125, max-5x $25/$625, max-20x $100/$2500 per 5h/week).
  */
 
@@ -14,41 +14,37 @@ import { describe, it, expect } from "vitest";
 import {
   recommend,
   describeFill,
+  computeTrend,
   NEAR_LIMIT_FILL,
   UPGRADE_NEAR_LIMIT_SHARE,
-  UPGRADE_WEEKLY_PEAK,
+  STRAIN_MIN_NEAR_LIMIT_WINDOWS,
+  WEEKLY_STRAIN_MIN_WINDOWS,
+  WEEKLY_STRAIN_SHARE,
   DOWNGRADE_FILL,
+  DOWNGRADE_PEAK_FILL,
+  PAYG_BREAK_EVEN_RATIO,
+  SUBSCRIBE_FEE_SHARE,
   type RecommendationInput,
+  type WindowSample,
+  type DataVolume,
 } from "../../src/recommendation/engine.js";
-import {
-  DEFAULT_TIER_LIMITS,
-  RECOMMENDATION_ESTIMATE_CAVEAT,
-} from "../../src/config/limits.js";
+import { RECOMMENDATION_ESTIMATE_CAVEAT } from "../../src/config/limits.js";
 import { DEFAULT_MONTHLY_USD } from "../../src/config/subscription.js";
-import type { WindowStats } from "../../src/recommendation/windows.js";
 import type { SubscriptionTier } from "../../src/types/config.js";
-import type { ObservedPeakUsage, DataVolume } from "../../src/recommendation/engine.js";
 
-/** Build a WindowStats with sensible defaults, overriding a few fields. */
-function stats(partial: Partial<WindowStats> = {}): WindowStats {
-  return {
-    activeWindows: 0,
-    peakFill: 0,
-    p95Fill: 0,
-    medianFill: 0,
-    nearLimitWindows: 0,
-    peakCostUSD: 0,
-    ...partial,
-  };
-}
+const HOUR = 3_600_000;
+const DAY = 24 * HOUR;
+const WEEK = 7 * DAY;
+const BASE = Date.UTC(2026, 0, 5);
 
-/** Build raw observed peak costs, defaulting every field to 0. */
-function peaks(partial: Partial<ObservedPeakUsage> = {}): ObservedPeakUsage {
-  return {
-    fiveHourPeakCostUSD: 0,
-    weeklyPeakCostUSD: 0,
-    ...partial,
-  };
+/** Build windows from costs: one window per `gapMs` starting at BASE. */
+function win(
+  costs: number[],
+  opts: { startMs?: number; gapMs?: number } = {},
+): WindowSample[] {
+  const start = opts.startMs ?? BASE;
+  const gap = opts.gapMs ?? DAY;
+  return costs.map((costUsd, i) => ({ anchor: start + i * gap, costUsd }));
 }
 
 /** High-volume signal (drives volumeConfidence to "high"). */
@@ -56,144 +52,313 @@ const HIGH_VOLUME: DataVolume = { activeDays: 20, activeWindows: 30, recencyDays
 /** Sparse signal (drives volumeConfidence to "low"). */
 const SPARSE_VOLUME: DataVolume = { activeDays: 1, activeWindows: 1, recencyDays: 40 };
 
-function input(over: Partial<RecommendationInput>): RecommendationInput {
-  const tier: SubscriptionTier = over.tier ?? "max-5x";
+/** Build a full input; totals/span derive from the 5h windows unless given. */
+function input(
+  over: Partial<RecommendationInput> & { tier?: SubscriptionTier },
+): RecommendationInput {
+  const windows5h = over.windows5h ?? [];
+  const windowsWeekly = over.windowsWeekly ?? [];
+  const totalCostUSD =
+    over.totalCostUSD ?? windows5h.reduce((s, w) => s + w.costUsd, 0);
+  const first = windows5h[0];
+  const last = windows5h[windows5h.length - 1];
+  const activitySpanDays =
+    over.activitySpanDays ??
+    (first && last ? Math.max((last.anchor - first.anchor) / DAY, 1) : 0);
   return {
-    tier,
-    fiveHour: stats(),
-    weekly: stats(),
-    peaks: peaks(),
-    ceilings: DEFAULT_TIER_LIMITS[tier],
-    volume: HIGH_VOLUME,
-    ...over,
+    tier: over.tier ?? "max-5x",
+    windows5h,
+    windowsWeekly,
+    totalCostUSD,
+    activitySpanDays,
+    volume: over.volume ?? HIGH_VOLUME,
+    ...(over.ceilingOverrides ? { ceilingOverrides: over.ceilingOverrides } : {}),
   };
 }
 
-describe("recommend — UPGRADE", () => {
-  it("upgrades when near-limit share ≥ 0.15 (5h axis)", () => {
-    // 4 of 20 windows near-limit = 0.20 ≥ 0.15.
+describe("recommend — UPGRADE (persistent pressure)", () => {
+  it("upgrades on a persistent 5h near-limit share (count ≥2, share ≥15%)", () => {
+    // Pro: 5 of 10 windows at $4.80 (96% of the $5 ceiling), interleaved so
+    // pressure exists in the recent half too.
+    const costs = [4.8, 1, 4.8, 1, 4.8, 1, 4.8, 1, 4.8, 1];
+    const r = recommend(input({ tier: "pro", windows5h: win(costs) }));
+    expect(r.verdict).toBe("upgrade");
+    expect(r.suggestedTier).toBe("max-5x");
+    expect(r.monthlyDeltaUSD).toBe(DEFAULT_MONTHLY_USD["max-5x"] - DEFAULT_MONTHLY_USD["pro"]);
+    expect(r.monthlyDeltaUSD).toBe(80);
+    expect(r.confidence).toBe("high"); // share 0.5 vs 0.15 → big margin; high volume
+    expect(r.caveat).toBe(RECOMMENDATION_ESTIMATE_CAVEAT);
+  });
+
+  it("upgrades on repeated near-limit WEEKLY windows even when 5h is calm", () => {
+    // Pro weekly ceiling $125 → ≥$112.50 is near-limit. 2 of 3 weeks near.
+    const r = recommend(
+      input({
+        tier: "pro",
+        windows5h: win(Array(10).fill(1)),
+        windowsWeekly: win([115, 120, 30], { gapMs: WEEK }),
+      }),
+    );
+    expect(r.verdict).toBe("upgrade");
+    expect(r.suggestedTier).toBe("max-5x");
+  });
+
+  it("does NOT upgrade on a SINGLE anomalous weekly spike (v1 regression)", () => {
+    // v1 triggered on weekly PEAK ≥90% — one heavy week flipped the verdict.
+    // v2 needs ≥2 near-limit weeks (or ≥50% of a short period's weeks).
+    const r = recommend(
+      input({
+        tier: "pro",
+        windows5h: win(Array(10).fill(2)), // run-rate well above PAYG cutoff
+        windowsWeekly: win([113, 30, 30, 30], { gapMs: WEEK }),
+      }),
+    );
+    expect(r.verdict).toBe("stay");
+    expect(r.signals.nearLimitCountWeekly).toBe(1);
+    expect(r.signals.weeklyWindows).toBe(4);
+  });
+
+  it("does NOT upgrade on a single near-limit 5h window (count < 2)", () => {
+    // 1 of 4 windows near-limit = 25% share, but no absolute support.
+    const r = recommend(input({ tier: "pro", windows5h: win([4.8, 1, 1, 1]) }));
+    expect(r.verdict).toBe("stay");
+    expect(r.signals.nearLimitCount5h).toBe(1);
+  });
+
+  it("skips PAST a tier that would also be strained (multi-step upgrade)", () => {
+    // Pro windows at $30: 6× the Pro ceiling AND 120% of MAX 5x's $25 — but
+    // only 30% of MAX 20x's $100. v1 would have suggested the still-too-small
+    // MAX 5x; v2 goes straight to MAX 20x.
+    const r = recommend(input({ tier: "pro", windows5h: win([30, 30, 30, 30, 30]) }));
+    expect(r.verdict).toBe("upgrade");
+    expect(r.suggestedTier).toBe("max-20x");
+    expect(r.monthlyDeltaUSD).toBe(180); // 200 − 20
+    expect(r.detail).toContain("MAX 5x");
+    expect(r.detail.toLowerCase()).toContain("skip");
+  });
+
+  it("still suggests the TOP tier when even it would be strained (most headroom)", () => {
+    const r = recommend(input({ tier: "pro", windows5h: win([150, 150, 150, 150, 150]) }));
+    expect(r.verdict).toBe("upgrade");
+    expect(r.suggestedTier).toBe("max-20x");
+    expect(r.detail).toContain("may press even");
+  });
+
+  it("stays (honestly) at the top tier under heavy usage", () => {
+    // MAX 20x: $95 windows ≥ 90% of the $100 ceiling, no higher tier exists.
+    const r = recommend(
+      input({ tier: "max-20x", windows5h: win([95, 95, 95, 95, 95, 95]) }),
+    );
+    expect(r.verdict).toBe("stay");
+    expect(r.suggestedTier).toBeNull();
+    expect(r.monthlyDeltaUSD).toBe(0);
+    expect(r.detail).toContain("highest tier");
+  });
+
+  it("wins precedence over the pay-as-you-go downgrade (at-limit signal first)", () => {
+    // Two near-limit windows 60 days apart with a long activity span: the
+    // run-rate ($9.60/mo) qualifies for PAYG, but the strain must win.
     const r = recommend(
       input({
         tier: "max-5x",
-        fiveHour: stats({ activeWindows: 20, nearLimitWindows: 4, peakFill: 0.95 }),
+        windows5h: win([24, 24], { gapMs: 60 * DAY }),
+        activitySpanDays: 150,
       }),
     );
     expect(r.verdict).toBe("upgrade");
     expect(r.suggestedTier).toBe("max-20x");
-    // $ delta = price gap from the SSOT.
-    expect(r.monthlyDeltaUSD).toBe(
-      DEFAULT_MONTHLY_USD["max-20x"] - DEFAULT_MONTHLY_USD["max-5x"],
-    );
-    expect(r.monthlyDeltaUSD).toBe(100); // 200 − 100
-    expect(r.caveat).toBe(RECOMMENDATION_ESTIMATE_CAVEAT);
-  });
-
-  it("upgrades when the weekly peak fill ≥ 0.90 even if 5h share is low", () => {
-    const r = recommend(
-      input({
-        tier: "pro",
-        fiveHour: stats({ activeWindows: 20, nearLimitWindows: 0 }),
-        weekly: stats({ peakFill: 0.93 }),
-      }),
-    );
-    expect(r.verdict).toBe("upgrade");
-    expect(r.suggestedTier).toBe("max-5x");
-    expect(r.monthlyDeltaUSD).toBe(DEFAULT_MONTHLY_USD["max-5x"] - DEFAULT_MONTHLY_USD["pro"]);
-    expect(r.monthlyDeltaUSD).toBe(80); // 100 − 20
-  });
-
-  it("does NOT upgrade at the top tier (max-20x); falls through to stay/downgrade", () => {
-    const r = recommend(
-      input({
-        tier: "max-20x",
-        fiveHour: stats({ activeWindows: 20, nearLimitWindows: 10, peakFill: 1.5 }),
-        weekly: stats({ peakFill: 1.2 }),
-        // High raw peak costs so it cannot downgrade either → stay.
-        // vs max-5x: 5h $25, weekly $625.
-        peaks: peaks({
-          fiveHourPeakCostUSD: 100,
-          weeklyPeakCostUSD: 2500,
-        }),
-      }),
-    );
-    expect(r.verdict).toBe("stay");
-    expect(r.suggestedTier).toBeNull();
-    expect(r.monthlyDeltaUSD).toBe(0);
   });
 });
 
-describe("recommend — DOWNGRADE", () => {
-  it("downgrades only when BOTH 5h & weekly peak cost < 0.70 of the tier-DOWN ceiling", () => {
-    // max-5x → pro. Pro 5h ceiling $5 (×0.70 = $3.5), weekly $125 (×0.70 = $87.5).
+describe("recommend — recency gate (stale pressure)", () => {
+  it("stays when all near-limit pressure sits in the EARLIER half of the period", () => {
+    // First five windows pressed the Pro limit; the recent five are light.
+    const costs = [4.8, 4.8, 4.8, 4.8, 4.8, 0.5, 0.5, 0.5, 0.5, 0.5];
+    const r = recommend(input({ tier: "pro", windows5h: win(costs) }));
+    expect(r.verdict).toBe("stay");
+    expect(r.detail).toContain("Earlier in this period");
+    expect(r.signals.recentPressure).toBe(false);
+  });
+
+  it("upgrades when the pressure IS recent (light early, heavy late)", () => {
+    const costs = [0.5, 0.5, 0.5, 0.5, 0.5, 4.8, 4.8, 4.8, 4.8, 4.8];
+    const r = recommend(input({ tier: "pro", windows5h: win(costs) }));
+    expect(r.verdict).toBe("upgrade");
+    expect(r.signals.recentPressure).toBe(true);
+  });
+});
+
+describe("recommend — DOWNGRADE (tier fit)", () => {
+  it("downgrades when typical AND peak usage fit the smaller tier", () => {
+    // MAX 5x → Pro: $2 windows are 40% of Pro's $5; weekly 32% of $125.
     const r = recommend(
       input({
         tier: "max-5x",
-        peaks: peaks({
-          fiveHourPeakCostUSD: 2, // 2/5 = 0.40 < 0.70
-          weeklyPeakCostUSD: 30, // 30/125 = 0.24 < 0.70
-        }),
+        windows5h: win(Array(10).fill(2)),
+        windowsWeekly: win([35, 40], { gapMs: WEEK }),
       }),
     );
     expect(r.verdict).toBe("downgrade");
     expect(r.suggestedTier).toBe("pro");
-    // $ delta is NEGATIVE (savings) = current − down.
-    expect(r.monthlyDeltaUSD).toBe(
-      -(DEFAULT_MONTHLY_USD["max-5x"] - DEFAULT_MONTHLY_USD["pro"]),
-    );
+    expect(r.monthlyDeltaUSD).toBe(-(DEFAULT_MONTHLY_USD["max-5x"] - DEFAULT_MONTHLY_USD["pro"]));
     expect(r.monthlyDeltaUSD).toBe(-80);
   });
 
-  it("does NOT downgrade when the WEEKLY peak alone exceeds the headroom band", () => {
-    // 5h fits pro, but weekly peak $115/$125 = 0.92 ≥ 0.70 → not both < 0.70 → stay.
+  it("tolerates a single outlier spike via the p90 typical test (v1 regression)", () => {
+    // 19 windows at $2 (40% of Pro) + ONE at $4.50 (90% of Pro). v1's
+    // peak-only test (peak < 70%) blocked this downgrade; v2 reads p90 = 40%
+    // and peak 90% ≤ 100% → still fits.
+    const costs = [...Array(10).fill(2), 4.5, ...Array(9).fill(2)];
     const r = recommend(
       input({
         tier: "max-5x",
-        peaks: peaks({ fiveHourPeakCostUSD: 1, weeklyPeakCostUSD: 115 }),
+        windows5h: win(costs),
+        windowsWeekly: win([40, 45], { gapMs: WEEK }),
       }),
     );
+    expect(r.verdict).toBe("downgrade");
+    expect(r.suggestedTier).toBe("pro");
+  });
+
+  it("does NOT downgrade when even one window would exceed the smaller tier", () => {
+    // One $5.50 window is 110% of Pro's ceiling — peak gate fails.
+    const costs = [...Array(10).fill(2), 5.5, ...Array(9).fill(2)];
+    const r = recommend(input({ tier: "max-5x", windows5h: win(costs) }));
     expect(r.verdict).toBe("stay");
   });
 
-  it("does NOT downgrade at the bottom tier (pro); stays", () => {
-    const r = recommend(
-      input({
-        tier: "pro",
-        peaks: peaks({ fiveHourPeakCostUSD: 0.1, weeklyPeakCostUSD: 0.1 }),
-      }),
-    );
+  it("does NOT downgrade when TYPICAL usage is too high for the smaller tier", () => {
+    // $4 windows = 80% of Pro typical (p90 > 70%), even though peak ≤ 100%.
+    const r = recommend(input({ tier: "max-5x", windows5h: win(Array(20).fill(4)) }));
     expect(r.verdict).toBe("stay");
-    expect(r.suggestedTier).toBeNull();
   });
 
-  it("downgrades max-20x → max-5x when peak cost fits the smaller tier", () => {
-    // max-20x → max-5x. max-5x 5h ceil $25 (×0.7 = $17.5), weekly $625 (×0.7 = $437.5).
+  it("downgrades TWO steps when usage clears the smallest tier (max-20x → pro)", () => {
     const r = recommend(
       input({
         tier: "max-20x",
-        peaks: peaks({
-          fiveHourPeakCostUSD: 5, // 5/25 = 0.20 < 0.70
-          weeklyPeakCostUSD: 100, // 100/625 = 0.16 < 0.70
-        }),
+        windows5h: win(Array(10).fill(2)),
+        windowsWeekly: win([35, 40], { gapMs: WEEK }),
+      }),
+    );
+    expect(r.verdict).toBe("downgrade");
+    expect(r.suggestedTier).toBe("pro");
+    expect(r.monthlyDeltaUSD).toBe(-180); // 200 − 20
+  });
+
+  it("downgrades one step when usage fits max-5x but not pro", () => {
+    // $15 windows: 60% of MAX 5x (fits) but 300% of Pro (does not).
+    const r = recommend(
+      input({
+        tier: "max-20x",
+        windows5h: win(Array(10).fill(15)),
+        windowsWeekly: win([300, 320], { gapMs: WEEK }),
       }),
     );
     expect(r.verdict).toBe("downgrade");
     expect(r.suggestedTier).toBe("max-5x");
-    expect(r.monthlyDeltaUSD).toBe(-(DEFAULT_MONTHLY_USD["max-20x"] - DEFAULT_MONTHLY_USD["max-5x"]));
+    expect(r.monthlyDeltaUSD).toBe(-100); // 200 − 100
+  });
+
+  it("respects per-tier ceiling OVERRIDES in the fit test (v1 inconsistency fix)", () => {
+    // $4.80 windows are 96% of Pro's DEFAULT $5 ceiling → no fit. With the
+    // user's own Pro override at $50, the same usage is 9.6% → fits.
+    const windows5h = win(Array(10).fill(4.8));
+    const without = recommend(input({ tier: "max-5x", windows5h }));
+    expect(without.verdict).toBe("stay");
+    const withOverride = recommend(
+      input({
+        tier: "max-5x",
+        windows5h,
+        ceilingOverrides: { pro: { fiveHourCostUSD: 50, weeklyCostUSD: 1250 } },
+      }),
+    );
+    expect(withOverride.verdict).toBe("downgrade");
+    expect(withOverride.suggestedTier).toBe("pro");
   });
 });
 
-describe("recommend — STAY", () => {
-  it("stays in the healthy band (neither up nor down signal)", () => {
-    // max-5x: not near-limit, but peak vs pro is ≥ 0.70 so cannot downgrade.
-    // weekly $100/$125 = 0.80 ≥ 0.70.
+describe("recommend — pay-as-you-go break-even", () => {
+  it("recommends dropping to API pay-as-you-go when the run-rate is far below the Pro fee", () => {
+    // $0.20/day × 20 days → ~$6.30/mo run-rate ≤ 60% of Pro's $20.
+    const r = recommend(input({ tier: "pro", windows5h: win(Array(20).fill(0.2)) }));
+    expect(r.verdict).toBe("downgrade");
+    expect(r.suggestedTier).toBe("none");
+    expect(r.monthlyDeltaUSD).toBeLessThan(0);
+    expect(r.headline).toContain("Pay-as-you-go");
+    expect(r.detail).toContain("API list prices");
+  });
+
+  it("beats the tier-fit downgrade when PAYG is the cheapest option (max-5x → none)", () => {
+    const r = recommend(input({ tier: "max-5x", windows5h: win(Array(20).fill(0.2)) }));
+    expect(r.verdict).toBe("downgrade");
+    expect(r.suggestedTier).toBe("none"); // not "pro"
+    // saves ≈ $100 − ~$6 run-rate.
+    expect(r.monthlyDeltaUSD).toBeLessThanOrEqual(-90);
+  });
+
+  it("falls back to the tier-fit downgrade when the run-rate is above the PAYG cutoff", () => {
+    // $1/day × 20 days → ~$31.60/mo run-rate > $12 cutoff, but fits Pro.
+    const r = recommend(input({ tier: "max-5x", windows5h: win(Array(20).fill(1)) }));
+    expect(r.verdict).toBe("downgrade");
+    expect(r.suggestedTier).toBe("pro");
+  });
+
+  it("is GATED on data volume — sparse data never suggests cancelling", () => {
     const r = recommend(
-      input({
-        tier: "max-5x",
-        fiveHour: stats({ activeWindows: 20, nearLimitWindows: 1, peakFill: 0.5 }),
-        weekly: stats({ peakFill: 0.5 }),
-        peaks: peaks({ fiveHourPeakCostUSD: 4, weeklyPeakCostUSD: 100 }),
-      }),
+      input({ tier: "pro", windows5h: win(Array(20).fill(0.2)), volume: SPARSE_VOLUME }),
     );
+    expect(r.verdict).toBe("stay"); // pro has no smaller paid tier
+    expect(r.suggestedTier).toBeNull();
+    expect(r.detail.toLowerCase()).toContain("sparse");
+  });
+});
+
+describe("recommend — tier 'none' (subscribe break-even)", () => {
+  it("suggests the smallest tier that FITS the usage and undercuts the API run-rate", () => {
+    // $40 windows daily → run-rate ≈ $1,263/mo. Pro and MAX 5x would both be
+    // strained; MAX 20x fits and costs $200 ≤ 80% of the run-rate.
+    const r = recommend(input({ tier: "none", windows5h: win(Array(20).fill(40)) }));
+    expect(r.verdict).toBe("upgrade");
+    expect(r.suggestedTier).toBe("max-20x");
+    expect(r.headline).toContain("subscribing");
+    expect(r.monthlyDeltaUSD).toBeLessThan(0); // flat fee saves vs API spend
+  });
+
+  it("suggests Pro for a moderate API user whose usage fits Pro's limits", () => {
+    // $2/day → run-rate ≈ $62/mo; Pro $20 ≤ 80% of that and unstrained.
+    const r = recommend(input({ tier: "none", windows5h: win(Array(30).fill(2)) }));
+    expect(r.verdict).toBe("upgrade");
+    expect(r.suggestedTier).toBe("pro");
+    expect(r.monthlyDeltaUSD).toBeLessThan(0);
+  });
+
+  it("stays neutral for a light API user (no tier beats the run-rate)", () => {
+    const r = recommend(input({ tier: "none", windows5h: win(Array(10).fill(0.2)) }));
+    expect(r.verdict).toBe("neutral");
+    expect(r.suggestedTier).toBeNull();
+    expect(r.monthlyDeltaUSD).toBe(0);
+    expect(r.detail).toContain("/mo");
+  });
+
+  it("stays neutral on sparse data regardless of a heavy run-rate", () => {
+    const r = recommend(
+      input({ tier: "none", windows5h: win(Array(10).fill(40)), volume: SPARSE_VOLUME }),
+    );
+    expect(r.verdict).toBe("neutral");
+  });
+
+  it("stays neutral with zero usage", () => {
+    const r = recommend(input({ tier: "none" }));
+    expect(r.verdict).toBe("neutral");
+    expect(r.caveat).toBe(RECOMMENDATION_ESTIMATE_CAVEAT);
+  });
+});
+
+describe("recommend — STAY (healthy band)", () => {
+  it("stays when neither strained nor fitting a smaller tier", () => {
+    // MAX 5x: $4 windows = 16% of the tier (calm) but 80% of Pro (no fit).
+    const r = recommend(input({ tier: "max-5x", windows5h: win(Array(10).fill(4)) }));
     expect(r.verdict).toBe("stay");
     expect(r.suggestedTier).toBeNull();
     expect(r.monthlyDeltaUSD).toBe(0);
@@ -201,34 +366,36 @@ describe("recommend — STAY", () => {
   });
 });
 
-describe("recommend — NEUTRAL (tier none)", () => {
-  it("returns neutral with no suggestion for API pay-as-you-go", () => {
-    const r = recommend(
-      input({
-        tier: "none",
-        ceilings: DEFAULT_TIER_LIMITS.none,
-        fiveHour: stats({ activeWindows: 10, nearLimitWindows: 10, peakFill: 9 }),
-        weekly: stats({ peakFill: 9 }),
-        peaks: peaks({ fiveHourPeakCostUSD: 5000 }),
-      }),
-    );
-    expect(r.verdict).toBe("neutral");
-    expect(r.suggestedTier).toBeNull();
-    expect(r.monthlyDeltaUSD).toBe(0);
-    expect(r.caveat).toBe(RECOMMENDATION_ESTIMATE_CAVEAT);
+describe("computeTrend", () => {
+  it("detects rising usage (recent half ≥1.35× earlier)", () => {
+    expect(computeTrend(win([1, 1, 1, 8, 8, 8]))).toBe("rising");
+  });
+
+  it("detects falling usage (recent half ≤0.74× earlier)", () => {
+    expect(computeTrend(win([8, 8, 8, 1, 1, 1]))).toBe("falling");
+  });
+
+  it("reports flat for steady usage", () => {
+    expect(computeTrend(win([2, 2, 2, 2.2, 2, 2]))).toBe("flat");
+  });
+
+  it("reports unknown with fewer than 6 windows", () => {
+    expect(computeTrend(win([1, 1, 8, 8, 8]))).toBe("unknown");
+  });
+
+  it("reports unknown when one half has too few windows (degenerate split)", () => {
+    const skewed = [
+      ...win([1, 1, 1, 1, 1], { gapMs: HOUR * 6 }),
+      ...win([9], { startMs: BASE + 100 * DAY }),
+    ];
+    expect(computeTrend(skewed)).toBe("unknown");
   });
 });
 
-describe("recommend — confidence (§5.3: min of volume & margin)", () => {
+describe("recommend — confidence (volume × margin × trend)", () => {
   it("is HIGH when volume is high AND the margin is large", () => {
-    // Upgrade: share 0.50 vs 0.15 → margin 0.35 ≥ 0.15 → high; volume high → high.
-    const r = recommend(
-      input({
-        tier: "max-5x",
-        volume: HIGH_VOLUME,
-        fiveHour: stats({ activeWindows: 20, nearLimitWindows: 10, peakFill: 1.0 }),
-      }),
-    );
+    const costs = [4.8, 1, 4.8, 1, 4.8, 1, 4.8, 1, 4.8, 1]; // share 0.5 ≫ 0.15
+    const r = recommend(input({ tier: "pro", windows5h: win(costs) }));
     expect(r.verdict).toBe("upgrade");
     expect(r.confidence).toBe("high");
   });
@@ -236,66 +403,87 @@ describe("recommend — confidence (§5.3: min of volume & margin)", () => {
   it("is LOW (and softens the detail) when data is sparse, even with a big margin", () => {
     const r = recommend(
       input({
-        tier: "max-5x",
-        volume: SPARSE_VOLUME, // → low volume axis
-        fiveHour: stats({ activeWindows: 1, nearLimitWindows: 1, peakFill: 1.0 }),
+        tier: "pro",
+        windows5h: win([4.8, 4.8, 4.8]),
+        volume: SPARSE_VOLUME,
       }),
     );
     expect(r.verdict).toBe("upgrade");
-    expect(r.confidence).toBe("low"); // min(low, high) = low
+    expect(r.confidence).toBe("low");
     expect(r.detail.toLowerCase()).toContain("sparse");
     expect(r.confidenceReason.toLowerCase()).toContain("sparse");
   });
 
-  it("is MEDIUM when volume is medium and margin is high", () => {
-    // medium volume: activeDays 5, activeWindows 6 (not high), recency large.
-    const r = recommend(
-      input({
-        tier: "max-5x",
-        volume: { activeDays: 5, activeWindows: 6, recencyDays: 10 },
-        fiveHour: stats({ activeWindows: 6, nearLimitWindows: 6, peakFill: 1.0 }),
-      }),
-    );
+  it("is LOW when the margin is tiny even with high volume (borderline signal)", () => {
+    // Exactly 3 of 20 near-limit = 15.0% — right at the threshold.
+    const costs = Array(20).fill(1) as number[];
+    costs[0] = 4.8;
+    costs[10] = 4.8;
+    costs[19] = 4.8;
+    const r = recommend(input({ tier: "pro", windows5h: win(costs) }));
     expect(r.verdict).toBe("upgrade");
-    expect(r.confidence).toBe("medium"); // min(medium, high) = medium
+    expect(r.confidence).toBe("low");
+    expect(r.confidenceReason.toLowerCase()).toContain("threshold");
   });
 
-  it("is LOW when the margin is tiny even with high volume (borderline signal)", () => {
-    // Upgrade share exactly at threshold → margin ~0 → low margin axis.
-    // 3 of 20 = 0.15 exactly ≥ 0.15 triggers; margin = 0 → low.
+  it("caps confidence at MEDIUM when the trend contradicts the verdict", () => {
+    // Strong upgrade signal but usage falling hard: $20 windows early,
+    // $4.60 (still near-limit) recently → upgrade with capped confidence.
+    const costs = [20, 20, 20, 20, 20, 4.6, 4.6, 4.6, 4.6, 4.6];
+    const r = recommend(input({ tier: "pro", windows5h: win(costs) }));
+    expect(r.verdict).toBe("upgrade");
+    expect(r.trend).toBe("falling");
+    expect(r.confidence).toBe("medium");
+    expect(r.confidenceReason.toLowerCase()).toContain("trending down");
+  });
+
+  it("does NOT say 'sparse' when confidence is low only because the margin is borderline", () => {
+    const costs = Array(20).fill(1) as number[];
+    costs[0] = 4.8;
+    costs[10] = 4.8;
+    costs[19] = 4.8;
+    const r = recommend(input({ tier: "pro", windows5h: win(costs) }));
+    expect(r.confidence).toBe("low");
+    expect(r.detail).not.toContain("sparse");
+  });
+});
+
+describe("recommend — signals payload (transparency)", () => {
+  it("exposes the per-axis evidence behind the verdict", () => {
     const r = recommend(
       input({
-        tier: "max-5x",
-        volume: HIGH_VOLUME,
-        fiveHour: stats({ activeWindows: 20, nearLimitWindows: 3, peakFill: 0.95 }),
+        tier: "pro",
+        windows5h: win(Array(10).fill(2)),
+        windowsWeekly: win([113, 30, 30, 30], { gapMs: WEEK }),
       }),
     );
-    expect(r.verdict).toBe("upgrade");
-    expect(r.confidence).toBe("low"); // min(high, low) = low
-    expect(r.confidenceReason.toLowerCase()).toContain("threshold");
+    expect(r.signals.activeWindows5h).toBe(10);
+    expect(r.signals.weeklyWindows).toBe(4);
+    expect(r.signals.nearLimitCount5h).toBe(0);
+    expect(r.signals.nearLimitCountWeekly).toBe(1);
+    expect(r.signals.monthlyRunRateUSD).toBeGreaterThan(0);
+    expect(r.signals.bestFitTier).toBe("pro");
+    expect(["rising", "falling", "flat", "unknown"]).toContain(r.signals.trend);
+  });
+
+  it("reports the best-fit tier as the smallest unstrained tier", () => {
+    // $30 windows strain pro AND max-5x; max-20x is the smallest that copes.
+    const r = recommend(input({ tier: "pro", windows5h: win(Array(5).fill(30)) }));
+    expect(r.signals.bestFitTier).toBe("max-20x");
   });
 });
 
 describe("recommend — threshold constants are the spec values", () => {
-  it("exposes the exact §5.2 thresholds", () => {
+  it("exposes the exact §5.2 v2 thresholds", () => {
     expect(NEAR_LIMIT_FILL).toBe(0.9);
     expect(UPGRADE_NEAR_LIMIT_SHARE).toBe(0.15);
-    expect(UPGRADE_WEEKLY_PEAK).toBe(0.9);
+    expect(STRAIN_MIN_NEAR_LIMIT_WINDOWS).toBe(2);
+    expect(WEEKLY_STRAIN_MIN_WINDOWS).toBe(2);
+    expect(WEEKLY_STRAIN_SHARE).toBe(0.5);
     expect(DOWNGRADE_FILL).toBe(0.7);
-  });
-
-  it("evaluates UPGRADE before DOWNGRADE (at-limit wins edge cases)", () => {
-    // Construct a row where the 5h near-limit fires AND raw peak costs look small
-    // vs the down tier. Upgrade must win.
-    const r = recommend(
-      input({
-        tier: "max-5x",
-        fiveHour: stats({ activeWindows: 20, nearLimitWindows: 5, peakFill: 1.0 }),
-        weekly: stats({ peakFill: 0.1 }),
-        peaks: peaks({ fiveHourPeakCostUSD: 0.1, weeklyPeakCostUSD: 0.1 }),
-      }),
-    );
-    expect(r.verdict).toBe("upgrade");
+    expect(DOWNGRADE_PEAK_FILL).toBe(1.0);
+    expect(PAYG_BREAK_EVEN_RATIO).toBe(0.6);
+    expect(SUBSCRIBE_FEE_SHARE).toBe(0.8);
   });
 });
 
@@ -311,43 +499,7 @@ describe("describeFill — graceful over-limit copy", () => {
   });
 
   it("goes qualitative far over the limit (never prints an absurd %)", () => {
-    // Decision stats use absolute ceilings, so a heavy user's fill can be huge
-    // (e.g. 191.66 → 19166%); copy must not print that.
     expect(describeFill(191.66)).toBe("well above the estimated limit");
     expect(describeFill(9.58)).toBe("well above the estimated limit");
-  });
-});
-
-describe("detail wording — 'sparse' is gated on data VOLUME, not borderline margin", () => {
-  it("does NOT say 'sparse' when confidence is low only because the margin is borderline", () => {
-    // Plenty of data (HIGH_VOLUME) but 13.3% near-limit sits just under the 15%
-    // upgrade threshold → low confidence via the MARGIN axis, not volume.
-    const r = recommend(
-      input({
-        tier: "max-5x",
-        fiveHour: stats({ activeWindows: 30, nearLimitWindows: 4, peakFill: 0.5 }),
-        weekly: stats({ peakFill: 0.1 }),
-        peaks: peaks({ fiveHourPeakCostUSD: 4, weeklyPeakCostUSD: 10 }), // 0.8 / 0.08 vs Pro → no downgrade
-        volume: HIGH_VOLUME,
-      }),
-    );
-    expect(r.verdict).toBe("stay");
-    expect(r.confidence).toBe("low");
-    expect(r.detail).not.toContain("sparse");
-    expect(r.confidenceReason.toLowerCase()).toContain("borderline");
-  });
-
-  it("DOES say 'sparse' when the data volume itself is low", () => {
-    const r = recommend(
-      input({
-        tier: "max-5x",
-        fiveHour: stats({ activeWindows: 1, nearLimitWindows: 0, peakFill: 0.3 }),
-        weekly: stats({ peakFill: 0.1 }),
-        peaks: peaks({ fiveHourPeakCostUSD: 4, weeklyPeakCostUSD: 10 }),
-        volume: SPARSE_VOLUME,
-      }),
-    );
-    expect(r.confidence).toBe("low");
-    expect(r.detail).toContain("sparse");
   });
 });

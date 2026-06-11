@@ -54,7 +54,7 @@ import {
 import { recommend, type Recommendation } from "../recommendation/engine.js";
 
 /** Model class used for the per-model weekly split (§2.5). */
-export type ModelClass = "all" | "sonnet" | "opus";
+export type ModelClass = "all" | "sonnet" | "opus" | "fable";
 
 /** Weekly stats per model class (§2.5). */
 export type PerModelWeekly = Record<ModelClass, WindowStats>;
@@ -74,7 +74,7 @@ export interface RecommendationAnalysis {
   windowStats5h: WindowStats;
   /** All-models weekly window stats against the active ceilings. */
   weeklyStats: WindowStats;
-  /** Weekly stats split by model class (all / sonnet / opus). */
+  /** Weekly stats split by model class (all / sonnet / opus / fable). */
   perModelWeekly: PerModelWeekly;
   /** Default + calibrated ceilings + per-dimension calibrated flags. */
   ceilings: CeilingReport;
@@ -149,6 +149,8 @@ export class RecommendationAnalyzer {
         epoch_ms(ct.timestamp) AS ts_ms,
         ct.cost_usd AS cost_usd,
         CASE
+          WHEN LOWER(COALESCE(ct.model, '')) LIKE '%fable%'
+            OR LOWER(COALESCE(ct.model, '')) LIKE '%mythos%' THEN 'fable'
           WHEN LOWER(COALESCE(ct.model, '')) LIKE '%opus%'   THEN 'opus'
           WHEN LOWER(COALESCE(ct.model, '')) LIKE '%sonnet%' THEN 'sonnet'
           ELSE 'other'
@@ -166,6 +168,7 @@ export class RecommendationAnalyzer {
     const allRows: TurnRow[] = [];
     const sonnetRows: TurnRow[] = [];
     const opusRows: TurnRow[] = [];
+    const fableRows: TurnRow[] = [];
     for (const r of result.rows) {
       if (r.ts_ms === null || r.ts_ms === undefined) continue;
       const row: TurnRow = {
@@ -175,6 +178,7 @@ export class RecommendationAnalyzer {
       allRows.push(row);
       if (r.model_class === "sonnet") sonnetRows.push(row);
       else if (r.model_class === "opus") opusRows.push(row);
+      else if (r.model_class === "fable") fableRows.push(row);
     }
 
     // Resolve the override-merged DEFAULT ceilings for the tier, then (per §3.3)
@@ -211,44 +215,50 @@ export class RecommendationAnalyzer {
     const windowStats5h = summarizeWindows(windows5h, active.fiveHourCostUSD);
     const weeklyStats = summarizeWindows(weeklyWindowsAll, active.weeklyCostUSD);
 
-    // §2.5 per-model weekly split — re-run the weekly reconstruction per class
-    // against the SAME (active) weekly cost ceiling (a documented approximation,
-    // since exact per-class ceilings are not published).
+    // §2.5 per-model weekly split (all / sonnet / opus / fable) — re-run the
+    // weekly reconstruction per class against the SAME (active) weekly cost
+    // ceiling (a documented approximation, since exact per-class ceilings are
+    // not published).
     const perModelWeekly: PerModelWeekly = {
       all: weeklyStats,
       sonnet: summarizeWindows(reconstructWindows(sonnetRows, WEEK_MS), active.weeklyCostUSD),
       opus: summarizeWindows(reconstructWindows(opusRows, WEEK_MS), active.weeklyCostUSD),
+      fable: summarizeWindows(reconstructWindows(fableRows, WEEK_MS), active.weeklyCostUSD),
     };
 
     const activeDays = countActiveDays(allRows);
     const recencyDays = computeRecencyDays(allRows, nowMs);
+    const totalCostUSD = allRows.reduce((sum, r) => sum + r.costUsd, 0);
+
+    // Observed-activity span (first→last turn, in days) for the engine's
+    // monthly run-rate extrapolation. Clamped to ≥1 day so a single burst
+    // cannot divide by ~0; zero when there is no data at all.
+    const firstTs = allRows.length > 0 ? (allRows[0] as TurnRow).timestamp : 0;
+    const lastTs =
+      allRows.length > 0 ? (allRows[allRows.length - 1] as TurnRow).timestamp : 0;
+    const activitySpanDays =
+      allRows.length > 0 ? Math.max((lastTs - firstTs) / (24 * 60 * 60 * 1000), 1) : 0;
 
     // VERDICT uses the DEFAULT (absolute) ceilings, NOT the calibrated ones.
     // Auto-calibration raises a ceiling to the user's own observed peak purely
-    // so the DISPLAYED fill% is not pinned at a meaningless >100% (§3.3). If the
-    // decision also read the calibrated stats, the upgrade triggers would be
-    // measured against the user's own peak instead of the tier's estimated
-    // limit — e.g. `weekly.peakFill` would be ~100% by construction, making the
-    // weekly upgrade trigger a tautology, and the 5h near-limit share would
-    // collapse to "near YOUR peak" rather than "near the tier limit". The
-    // downgrade test already (correctly) uses DEFAULT_TIER_LIMITS, so feeding
-    // the default-ceiling first-pass stats here keeps upgrade and downgrade on
-    // the SAME absolute yardstick. (`peakCostUSD`/`activeWindows` are
-    // ceiling-independent, so only the fill-based fields actually differ.)
+    // so the DISPLAYED fill% is not pinned at a meaningless >100% (§3.3). If
+    // the decision read calibrated stats, the upgrade triggers would measure
+    // usage against the user's OWN peak instead of the tier limit. The v2
+    // engine therefore receives the RAW windows and re-derives every per-tier
+    // signal from each tier's default (override-resolved) ceilings itself —
+    // calibration stays display-only by construction.
     const recommendation = recommend({
       tier,
-      fiveHour: fivePeaksDefault,
-      weekly: weeklyPeaksDefault,
-      peaks: {
-        fiveHourPeakCostUSD: fivePeaksDefault.peakCostUSD,
-        weeklyPeakCostUSD: weeklyPeaksDefault.peakCostUSD,
-      },
-      ceilings: active,
+      windows5h,
+      windowsWeekly: weeklyWindowsAll,
+      totalCostUSD,
+      activitySpanDays,
       volume: {
         activeDays,
-        activeWindows: fivePeaksDefault.activeWindows,
+        activeWindows: windows5h.length,
         recencyDays,
       },
+      ceilingOverrides: options?.ceilingOverrides,
     });
 
     return {
@@ -266,7 +276,7 @@ export class RecommendationAnalyzer {
       activeDays,
       recencyDays,
       totalTurns: allRows.length,
-      totalCostUSD: allRows.reduce((sum, r) => sum + r.costUsd, 0),
+      totalCostUSD,
       caveat: RECOMMENDATION_ESTIMATE_CAVEAT,
     };
   }

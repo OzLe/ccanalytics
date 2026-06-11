@@ -151,14 +151,15 @@ export default function SubscriptionRecommendationCard() {
   const treatment = VERDICT_TREATMENT[rec.verdict];
   const { Icon } = treatment;
 
-  // $ delta phrasing reuses the existing "saved"/"extra" ROI language:
-  //   downgrade → monthlyDeltaUSD is negative ⇒ "$X/mo saved" (success)
-  //   upgrade   → positive ⇒ "$X/mo extra" (warning)
+  // $ delta phrasing reuses the existing "saved"/"extra" ROI language, keyed
+  // on the SIGN of the delta (not the verdict): a "subscribe" upgrade from
+  // pay-as-you-go carries a NEGATIVE delta (the flat fee undercuts the API
+  // run-rate), and must read as savings, not additional cost.
   const deltaAbs = Math.abs(rec.monthlyDeltaUSD);
   const deltaLabel =
-    rec.verdict === "downgrade"
+    rec.monthlyDeltaUSD < 0
       ? "Est. monthly savings"
-      : rec.verdict === "upgrade"
+      : rec.monthlyDeltaUSD > 0
         ? "Est. additional cost"
         : "Monthly delta";
   const deltaValue =
@@ -166,11 +167,20 @@ export default function SubscriptionRecommendationCard() {
       ? "$0.00"
       : `${formatCost(deltaAbs)}/mo`;
   const deltaVariant =
-    rec.verdict === "downgrade"
+    rec.monthlyDeltaUSD < 0
       ? "success"
-      : rec.verdict === "upgrade"
+      : rec.monthlyDeltaUSD > 0
         ? "warning"
         : "default";
+
+  // Usage-trend chip (optional payload field; older servers omit it). The
+  // "unknown" state (too few windows to claim a direction) renders nothing.
+  const trend = rec.trend;
+  const showTrend = trend === "rising" || trend === "falling" || trend === "flat";
+  const trendLabel =
+    trend === "rising" ? "usage rising" : trend === "falling" ? "usage falling" : "usage flat";
+  const trendTooltip =
+    "Direction of your 5-hour window costs: the recent half of the period compared to the earlier half.";
 
   // ceilingSource indicator wording — "calibrated" vs the honest "estimate".
   const ceilingLabel =
@@ -225,6 +235,17 @@ export default function SubscriptionRecommendationCard() {
                     {rec.confidence} confidence
                   </Badge>
                 </Tooltip>
+                {showTrend && (
+                  <Tooltip
+                    content={trendTooltip}
+                    position="top"
+                    className="max-w-xs whitespace-normal"
+                  >
+                    <Badge variant="outline" size="sm" className="cursor-help">
+                      {trendLabel}
+                    </Badge>
+                  </Tooltip>
+                )}
               </div>
               <p className="mt-[var(--space-1)] text-h2 text-[var(--text-primary)]">
                 {rec.headline}
@@ -249,7 +270,12 @@ export default function SubscriptionRecommendationCard() {
         </div>
 
         {/* ── Usage stats: 5h peak + weekly per-model peaks ── */}
-        <div className="grid grid-cols-2 gap-[var(--space-4)] border-t border-[var(--border)] pt-[var(--space-4)] sm:grid-cols-4">
+        <div
+          className={cn(
+            "grid grid-cols-2 gap-[var(--space-4)] border-t border-[var(--border)] pt-[var(--space-4)]",
+            perModelWeekly.fable ? "sm:grid-cols-5" : "sm:grid-cols-4",
+          )}
+        >
           <BandStat
             label="5-hour peak"
             value={fillPctLabel(windowStats5h.peakFill)}
@@ -258,6 +284,9 @@ export default function SubscriptionRecommendationCard() {
           <WeeklyStat label="Weekly peak (all)" stats={perModelWeekly.all} />
           <WeeklyStat label="Weekly (Sonnet)" stats={perModelWeekly.sonnet} />
           <WeeklyStat label="Weekly (Opus)" stats={perModelWeekly.opus} />
+          {perModelWeekly.fable && (
+            <WeeklyStat label="Weekly (Fable)" stats={perModelWeekly.fable} />
+          )}
         </div>
 
         {/* ── Ceiling provenance + the mandatory estimate caveat ── */}
