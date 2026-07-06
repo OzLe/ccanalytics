@@ -37,7 +37,7 @@ export interface ModelPricing {
  *   Fable 5 / Mythos 5         = 10 / 50 / 12.5 / 1.0
  *   Opus 4.5 / 4.6 / 4.7 / 4.8 = 5 / 25 / 6.25 / 0.5
  *   Opus 4 family (4.0 / 4.1)  = 15 / 75 / 18.75 / 1.5
- *   Sonnet 4.x                 = 3 / 15 / 3.75 / 0.3
+ *   Sonnet 5 / Sonnet 4.x      = 3 / 15 / 3.75 / 0.3
  *   Haiku 4.5                  = 1 / 5 / 1.25 / 0.1
  * cache-write = 1.25x input and cache-read = 0.1x input for every entry.
  */
@@ -56,6 +56,15 @@ const PRICING: [string, ModelPricing][] = [
   ["claude-opus-4-7", { inputPerM: 5, outputPerM: 25, cacheCreationPerM: 6.25, cacheReadPerM: 0.5 }],
   ["claude-opus-4-8", { inputPerM: 5, outputPerM: 25, cacheCreationPerM: 6.25, cacheReadPerM: 0.5 }],
   ["claude-opus-4", { inputPerM: 15, outputPerM: 75, cacheCreationPerM: 18.75, cacheReadPerM: 1.5 }],
+  // Sonnet 5 — Claude 5 Sonnet-tier. Standard list rates match the Sonnet 4.x
+  // line (3 / 15 / 3.75 / 0.3). The $2/$10 introductory input/output promo
+  // (through 2026-08-31) is intentionally NOT encoded: this table tracks
+  // standard list prices like every other entry, and these rates equal
+  // DEFAULT_PRICING, so the explicit entry changes no already-stored cost — it
+  // just stops claude-sonnet-5 tripping reportUnknownModels() (COST-007).
+  // Distinct prefix from "claude-sonnet-4", so its order vs the 4.x entries
+  // does not matter for first-match resolution.
+  ["claude-sonnet-5", { inputPerM: 3, outputPerM: 15, cacheCreationPerM: 3.75, cacheReadPerM: 0.3 }],
   // Sonnet 4.x — claude-sonnet-4-5 / -4-6 / -4-7 all resolve here via the
   // broad "claude-sonnet-4" prefix (rates are identical across the 4.x line).
   // An explicit claude-sonnet-4-6 entry is listed so a model present in the DB
