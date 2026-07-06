@@ -980,3 +980,94 @@ export interface IngestResult {
   parseErrors: number;
   durationMs: number;
 }
+
+// ---------------------------------------------------------------------------
+// F-SA: Agents & Workflows API responses (migration 6)
+// ---------------------------------------------------------------------------
+
+/** GET /api/agents/summary — the KPI bundle for the Agents & Workflows page. */
+export interface AgentsSummary {
+  totalSubAgents: number;
+  workflowRuns: number;
+  orchestratingSessions: number;
+  /** total sub-agents / orchestrating sessions. */
+  avgFanOut: number;
+  /** most sub-agents spawned by any single session. */
+  maxFanOut: number;
+  maxSpawnDepth: number;
+  topSubagentType: string | null;
+  totalToolCalls: number;
+  /** SUM(sub_agents.cost_usd) — never part of the main cost SSOT. */
+  orchestrationCostUSD: number;
+  /** orchestration + main cost of the orchestrating sessions (the only blend). */
+  blendedCostUSD: number;
+  /** orchestrationCostUSD / blendedCostUSD. */
+  orchestrationCostPct: number;
+}
+
+/** GET /api/agents/by-type row — per subagent_type rollup. */
+export interface AgentTypeRow {
+  subagentType: string;
+  agentRuns: number;
+  pct: number;
+  totalCostUSD: number;
+  totalTokens: number;
+  totalToolCalls: number;
+  avgTurns: number;
+  /** KPI-006: null when no agent of this type has a known success outcome. */
+  successRate: number | null;
+}
+
+/** GET /api/agents/workflows row — one dynamic-workflow run. */
+export interface WorkflowRow {
+  runId: string;
+  parentSessionId: string | null;
+  workflowName: string | null;
+  status: string | null;
+  numPhases: number | null;
+  /** COUNT(sub_agents) for the run — authoritative over the manifest count. */
+  agentsObserved: number;
+  fanOutPerPhase: number | null;
+  totalCostUSD: number;
+  totalToolCalls: number;
+  durationSeconds: number | null;
+  startTime: string | null;
+}
+
+/** A node in the orchestration tree (GET /api/agents/tree). */
+export interface AgentTreeNode {
+  id: string;
+  label: string;
+  kind: "session" | "workflow" | "agent";
+  subagentType?: string;
+  costUSD?: number;
+  children: AgentTreeNode[];
+}
+
+/** One lane in the parallel-agent Gantt (GET /api/agents/timeline). */
+export interface AgentTimelineLane {
+  agentId: string;
+  subagentType: string | null;
+  start: string;
+  end: string;
+  turns: number;
+  toolCalls: number;
+  costUSD: number;
+}
+
+/** GET /api/agents/timeline — the session window + one lane per sub-agent. */
+export interface AgentTimeline {
+  windowStart: string;
+  windowEnd: string;
+  lanes: AgentTimelineLane[];
+}
+
+/** GET /api/agents/cost-attribution row — main vs orchestration split. */
+export interface AgentCostAttributionRow {
+  sessionId: string;
+  projectName: string | null;
+  mainCostUSD: number;
+  orchestrationCostUSD: number;
+  orchestrationCostPct: number;
+  subAgentsSpawned: number;
+}
