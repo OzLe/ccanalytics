@@ -138,6 +138,27 @@ export function extractSessionId(filename: string): {
 }
 
 /**
+ * Extract the `agentId` from a sub-agent transcript filename
+ * (`agent-<agentId>.jsonl` -> `<agentId>`).
+ *
+ * Unlike {@link extractSessionId}, this does NOT fold the agentId into a
+ * `sessionId` (F-SA): sub-agent parent attribution is keyed on the record's own
+ * inner `sessionId`, and the agentId is a distinct identity that is only unique
+ * WITHIN a parent session (the composite-PK reason).
+ *
+ * @param filename - Sub-agent JSONL filename (with or without path)
+ * @returns The parsed agentId
+ */
+export function parseAgentFilename(filename: string): { agentId: string } {
+  const basename = path.basename(filename, ".jsonl");
+  return {
+    agentId: basename.startsWith("agent-")
+      ? basename.slice("agent-".length)
+      : basename,
+  };
+}
+
+/**
  * Ensure a directory exists, creating it and parents if needed.
  *
  * @param dirPath - Directory path to ensure exists

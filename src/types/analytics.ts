@@ -643,6 +643,96 @@ export interface ErrorRow {
   retry_count: number;
 }
 
+/**
+ * F-SA (migration 6): one row per `agent-<agentId>.jsonl` sub-agent transcript,
+ * AGGREGATE grain. PK is the COMPOSITE `(parent_session_id, agent_id)` — agentId
+ * is NOT globally unique. `parent_session_id` is the record's OWN `sessionId`
+ * (reliable), not the containing dir name. `cost_usd` is summed at ingest via
+ * the SAME `calculateCost()`/pricing SSOT as conversation_turns, but lives here
+ * so the main cost views are untouched.
+ */
+export interface SubAgentRow {
+  parent_session_id: string;
+  agent_id: string;
+  /** Containing `<session>/` dir name (provenance; may differ from parent_session_id). */
+  session_dir: string | null;
+  /** 'regular' (async Agent sub-agent) | 'workflow' (spawned by a Workflow run). */
+  agent_class: string | null;
+  /** meta.json `agentType` (both classes carry it); 'workflow-subagent' fallback. */
+  subagent_type: string | null;
+  /** 'wf_<runId>' for workflow sub-agents; null for regular. */
+  workflow_run_id: string | null;
+  /** Regular only: meta.json `toolUseId` -> the parent `Agent` tool_use.id. */
+  spawn_tool_use_id: string | null;
+  spawn_depth: number | null;
+  is_fork: boolean | null;
+  /** Best-effort workflow role/phase (manifest workflowProgress) — null for now. */
+  workflow_label: string | null;
+  workflow_phase: string | null;
+  entrypoint: string | null;
+  /** Dominant model by turn count. */
+  model: string | null;
+  git_branch: string | null;
+  start_time: Date | null;
+  end_time: Date | null;
+  duration_seconds: number | null;
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_tokens: number;
+  cache_read_tokens: number;
+  cost_usd: number;
+  num_turns: number;
+  num_tool_calls: number;
+  /** Best-effort from the last assistant stop_reason (end_turn=TRUE, max_tokens=FALSE). */
+  success: boolean | null;
+  project_path: string | null;
+  source_file: string | null;
+}
+
+/**
+ * F-SA (migration 6): a tool call made BY a sub-agent. Separate from
+ * `tool_calls` (no turn_id FK; never JOINed to conversation_turns). PK is the
+ * globally-unique tool_use block id.
+ */
+export interface SubAgentToolCallRow {
+  tool_call_id: string;
+  parent_session_id: string;
+  agent_id: string;
+  tool_name: string;
+  tool_type: string;
+  mcp_server: string | null;
+  success: boolean | null;
+  error_message: string | null;
+  parameters: Record<string, unknown> | null;
+  skill_name: string | null;
+  skill_caller_type: string | null;
+}
+
+/**
+ * F-SA (migration 6): one row per dynamic-workflow RUN (`wf_<runId>`). Sourced
+ * primarily from the `<session>/workflows/wf_<runId>.json` MANIFEST; a stub is
+ * upserted from a workflow sub-agent's run-dir path when no manifest exists.
+ * `manifest_*` columns are ADVISORY — the authoritative agent count is
+ * COUNT(sub_agents) for the run (v_workflow_summary).
+ */
+export interface WorkflowRunRow {
+  run_id: string;
+  parent_session_id: string | null;
+  task_id: string | null;
+  workflow_name: string | null;
+  summary: string | null;
+  status: string | null;
+  default_model: string | null;
+  num_phases: number | null;
+  manifest_agent_count: number | null;
+  manifest_total_tokens: number | null;
+  manifest_total_tool_calls: number | null;
+  start_time: Date | null;
+  end_time: Date | null;
+  duration_seconds: number | null;
+  source_file: string | null;
+}
+
 /** Row type for the ingestion_state table. */
 export interface IngestionState {
   file_path: string;
