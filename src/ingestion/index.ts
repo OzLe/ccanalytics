@@ -173,6 +173,13 @@ export class IngestionPipeline {
               modelsSeen.add(turn.model);
             }
           }
+          // F-SA: sub-agent transcripts carry real billable models too (e.g.
+          // a sub-agent-only claude-sonnet-5) — fold them into the same scan.
+          for (const sa of batch.subAgents ?? []) {
+            if (sa.model) {
+              modelsSeen.add(sa.model);
+            }
+          }
 
           // Insert batch into database
           await this.inserter.insert(batch);
@@ -186,7 +193,11 @@ export class IngestionPipeline {
 
           result.filesProcessed++;
           result.entriesIngested +=
-            batch.conversationTurns.length + batch.toolCalls.length;
+            batch.conversationTurns.length +
+            batch.toolCalls.length +
+            (batch.subAgents?.length ?? 0) +
+            (batch.subAgentToolCalls?.length ?? 0) +
+            (batch.workflowRuns?.length ?? 0);
         } catch (err) {
           result.filesFailed++;
           result.failedFiles.push({

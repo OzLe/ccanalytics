@@ -6,6 +6,8 @@
  */
 
 import type { Stats } from "node:fs";
+import * as path from "node:path";
+import * as os from "node:os";
 
 /** Options for Chokidar watcher initialization. */
 export interface ChokidarManagerOptions {
@@ -37,7 +39,14 @@ export class ChokidarManager {
    */
   async start(options: ChokidarManagerOptions): Promise<void> {
     const chokidar = await import("chokidar");
-    const watcher = chokidar.watch(options.patterns, {
+    // F-SA: chokidar v5 dropped glob support, so the old
+    // `~/.claude/projects/**/*.jsonl` pattern matched NOTHING (the `~` and `**`
+    // were never expanded). Instead we resolve each pattern to its concrete
+    // DIRECTORY root and let chokidar watch it recursively (v5 auto-adds new
+    // nested dirs, e.g. a freshly-created <session>/subagents/), filtering to
+    // the files we ingest via `ignored`.
+    const roots = options.patterns.map(toWatchRoot);
+    const watcher = chokidar.watch(roots, {
       awaitWriteFinish: {
         stabilityThreshold: options.stabilityThreshold,
         pollInterval: 100,
@@ -46,6 +55,7 @@ export class ChokidarManager {
       persistent: true,
       usePolling: options.usePolling,
       interval: options.pollInterval,
+      ignored: (p: string, stats?: Stats) => ignorePath(p, stats),
     });
 
     watcher.on("add", (filePath: string, stats?: Stats) => {
@@ -105,4 +115,39 @@ export class ChokidarManager {
     }
     return count;
   }
+}
+
+/**
+ * Resolve a configured watch pattern to a concrete directory chokidar v5 can
+ * watch: expand a leading `~`, then drop the glob tail (everything from the
+ * first glob metacharacter). e.g. `~/.claude/projects/**​/*.jsonl` ->
+ * `/Users/me/.claude/projects`.
+ */
+export function toWatchRoot(pattern: string): string {
+  const expanded = pattern.startsWith("~")
+    ? path.join(os.homedir(), pattern.slice(1))
+    : pattern;
+  const globIdx = expanded.search(/[*?{[]/);
+  const base = globIdx === -1 ? expanded : expanded.slice(0, globIdx);
+  const trimmed = base.replace(/[/\\]+$/, "");
+  return trimmed.length > 0 ? trimmed : path.sep;
+}
+
+/**
+ * chokidar `ignored` predicate — returns TRUE to skip a path. Directories are
+ * always traversed (so new nested dirs are picked up); among files we keep only
+ * session/sub-agent transcripts (`*.jsonl`, including `agent-*.jsonl`) and
+ * workflow manifests (`wf_*.json`), dropping `*.meta.json` sidecars and any
+ * other file. Matches the F-SA ingestion discovery filter.
+ */
+export function ignorePath(p: string, stats?: Stats): boolean {
+  const base = path.basename(p);
+  if (base.endsWith(".meta.json")) return true; // sub-agent sidecars
+  if (stats && !stats.isDirectory()) {
+    if (base.endsWith(".jsonl")) return false;
+    if (base.startsWith("wf_") && base.endsWith(".json")) return false;
+    return true; // some other file — ignore
+  }
+  // Directory, or stats not yet resolved: allow (chokidar re-checks with stats).
+  return false;
 }

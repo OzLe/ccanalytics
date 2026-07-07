@@ -795,3 +795,128 @@ WHERE skill IS NOT NULL
 GROUP BY session_id, skill
 HAVING COUNT(*) >= 2
 ORDER BY invocations_in_session DESC, session_id, skill;
+
+-- ---------------------------------------------------------------------------
+-- Migration 6 (F-SA) — Sub-Agent & Workflow views. Mirrored verbatim inside
+-- applyMigration6() in src/db/schema.ts (same BOTH-places contract as
+-- v_skill_usage): if a definition changes, update both so they cannot drift.
+-- These read ONLY the new sub_agents / sub_agent_tool_calls / workflow_runs
+-- tables (+ sessions/conversation_turns for the blended session view), so the
+-- existing cost SSOT is untouched.
+-- ---------------------------------------------------------------------------
+
+-- v_subagent_usage: per subagent_type rollup — runs, cost, tokens, tool
+-- activity, success. total_tokens is the TOK-001 2-way headline (input+output);
+-- context_volume_tokens is the 4-way (incl. cache replay). success_rate uses
+-- the KPI-006 NULL rule (unknown-success rows excluded from the denominator).
+CREATE OR REPLACE VIEW v_subagent_usage AS
+SELECT
+    COALESCE(subagent_type, '(unknown)')                    AS subagent_type,
+    COUNT(*)                                                AS agent_runs,
+    SUM(cost_usd)                                           AS total_cost_usd,
+    SUM(input_tokens + output_tokens)                       AS total_tokens,
+    SUM(input_tokens + output_tokens
+        + cache_creation_tokens + cache_read_tokens)        AS context_volume_tokens,
+    SUM(num_tool_calls)                                     AS total_tool_calls,
+    ROUND(AVG(num_tool_calls), 2)                           AS avg_tools_per_agent,
+    ROUND(AVG(num_turns), 2)                                AS avg_turns_per_agent,
+    CASE
+        WHEN COUNT(*) FILTER (WHERE success IS NOT NULL) > 0
+        THEN ROUND(
+            COUNT(*) FILTER (WHERE success = TRUE)::DOUBLE /
+            COUNT(*) FILTER (WHERE success IS NOT NULL)::DOUBLE,
+            4
+        )
+        ELSE NULL
+    END                                                     AS success_rate
+FROM sub_agents
+GROUP BY COALESCE(subagent_type, '(unknown)')
+ORDER BY total_cost_usd DESC;
+
+-- v_workflow_summary: per workflow RUN. agents_observed = COUNT(sub_agents) is
+-- AUTHORITATIVE (the manifest agent_count under-counts). LEFT JOIN from
+-- workflow_runs (a stub row is upserted for every workflow_run_id seen in
+-- sub_agents, so orphan runs still surface).
+CREATE OR REPLACE VIEW v_workflow_summary AS
+WITH agent_agg AS (
+    SELECT
+        workflow_run_id,
+        COUNT(*)                          AS agents_observed,
+        SUM(cost_usd)                     AS total_cost_usd,
+        SUM(input_tokens + output_tokens) AS total_tokens,
+        SUM(num_tool_calls)               AS total_tool_calls
+    FROM sub_agents
+    WHERE workflow_run_id IS NOT NULL
+    GROUP BY workflow_run_id
+)
+SELECT
+    w.run_id,
+    w.parent_session_id,
+    w.workflow_name,
+    w.status,
+    w.num_phases,
+    COALESCE(a.agents_observed, 0)                          AS agents_observed,
+    CASE
+        WHEN COALESCE(w.num_phases, 0) > 0
+        THEN ROUND(COALESCE(a.agents_observed, 0)::DOUBLE / w.num_phases::DOUBLE, 2)
+        ELSE NULL
+    END                                                     AS fan_out_per_phase,
+    COALESCE(a.total_cost_usd, 0.0)                         AS total_cost_usd,
+    COALESCE(a.total_tokens, 0)                             AS total_tokens,
+    COALESCE(a.total_tool_calls, 0)                         AS total_tool_calls,
+    w.duration_seconds,
+    w.start_time,
+    w.end_time
+FROM workflow_runs w
+LEFT JOIN agent_agg a ON a.workflow_run_id = w.run_id
+ORDER BY total_cost_usd DESC;
+
+-- v_session_orchestration: the ONLY blended-cost surface. main_cost_usd is the
+-- unchanged SSOT SUM(conversation_turns.cost_usd); orchestration_cost_usd is
+-- SUM(sub_agents.cost_usd); blended/share are derived. One row per session that
+-- spawned at least one sub-agent or workflow run.
+CREATE OR REPLACE VIEW v_session_orchestration AS
+WITH main AS (
+    SELECT session_id, SUM(cost_usd) AS main_cost_usd
+    FROM conversation_turns
+    GROUP BY session_id
+),
+sub AS (
+    SELECT
+        parent_session_id                   AS session_id,
+        COUNT(*)                            AS sub_agents_spawned,
+        SUM(cost_usd)                       AS orchestration_cost_usd,
+        SUM(num_tool_calls)                 AS subagent_tool_calls,
+        SUM(input_tokens + output_tokens)   AS subagent_tokens
+    FROM sub_agents
+    GROUP BY parent_session_id
+),
+wf AS (
+    SELECT parent_session_id AS session_id, COUNT(*) AS workflow_runs
+    FROM workflow_runs
+    GROUP BY parent_session_id
+)
+SELECT
+    s.session_id,
+    s.project_name,
+    COALESCE(sub.sub_agents_spawned, 0)         AS sub_agents_spawned,
+    COALESCE(wf.workflow_runs, 0)               AS workflow_runs,
+    COALESCE(m.main_cost_usd, 0.0)              AS main_cost_usd,
+    COALESCE(sub.orchestration_cost_usd, 0.0)   AS orchestration_cost_usd,
+    COALESCE(m.main_cost_usd, 0.0) + COALESCE(sub.orchestration_cost_usd, 0.0)
+                                                AS blended_cost_usd,
+    CASE
+        WHEN COALESCE(m.main_cost_usd, 0) + COALESCE(sub.orchestration_cost_usd, 0) > 0
+        THEN ROUND(
+            COALESCE(sub.orchestration_cost_usd, 0)::DOUBLE /
+            (COALESCE(m.main_cost_usd, 0) + COALESCE(sub.orchestration_cost_usd, 0))::DOUBLE,
+            4
+        )
+        ELSE 0.0
+    END                                         AS orchestration_cost_share
+FROM sessions s
+LEFT JOIN main m ON m.session_id = s.session_id
+LEFT JOIN sub    ON sub.session_id = s.session_id
+LEFT JOIN wf     ON wf.session_id = s.session_id
+WHERE COALESCE(sub.sub_agents_spawned, 0) > 0 OR COALESCE(wf.workflow_runs, 0) > 0
+ORDER BY orchestration_cost_usd DESC;

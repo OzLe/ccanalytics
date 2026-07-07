@@ -20,6 +20,9 @@ import type {
   ConversationTurnRow,
   ToolCallRow,
   SessionSkillRow,
+  SubAgentRow,
+  SubAgentToolCallRow,
+  WorkflowRunRow,
   ContentBlock,
   ToolUseBlock,
   SkillListingAttachment,
@@ -64,7 +67,30 @@ export class ClaudeCodeAdapter implements ISourceAdapter {
     file: DiscoveredFile,
     fromByteOffset: number = 0,
   ): Promise<AdapterParseResult> {
-    const result = await this.parser.parseFile(file.absolutePath, fromByteOffset);
+    // F-SA: workflow-manifest files are a single JSON object, not JSONL — the
+    // parsed manifest already rides on file.metadata (read at discovery). Skip
+    // the line parser and advance the byte offset to EOF so it is only
+    // reprocessed when the manifest's size changes (running -> completed).
+    if (file.kind === "workflow-manifest") {
+      return {
+        userMessages: [],
+        assistantMessages: [],
+        parseErrors: 0,
+        bytesRead: file.sizeBytes - fromByteOffset,
+        linesProcessed: 0,
+        loadedSkills: [],
+      };
+    }
+
+    // F-SA: sub-agent transcripts store an AGGREGATE row, so a grown file must
+    // be re-aggregated from the TOP (not just its delta) or the stored totals
+    // would be overwritten with only the newest turns. Parse the whole file and
+    // advance the offset to EOF.
+    const parseFromTop = file.kind === "subagent";
+    const result = await this.parser.parseFile(
+      file.absolutePath,
+      parseFromTop ? 0 : fromByteOffset,
+    );
 
     const userMessages: ParsedUserMessage[] = [];
     const assistantMessages: ParsedAssistantMessage[] = [];
@@ -116,7 +142,8 @@ export class ClaudeCodeAdapter implements ISourceAdapter {
       userMessages,
       assistantMessages,
       parseErrors: result.parseErrors,
-      bytesRead: result.bytesRead,
+      // For a re-aggregated sub-agent file, land the offset exactly at EOF.
+      bytesRead: parseFromTop ? file.sizeBytes - fromByteOffset : result.bytesRead,
       linesProcessed: result.linesProcessed,
       loadedSkills,
     };
@@ -152,6 +179,17 @@ export class ClaudeCodeAdapter implements ISourceAdapter {
     userMessages: ParsedUserMessage[],
     loadedSkills?: ParsedLoadedSkillRecord[],
   ): InsertionBatch {
+    // F-SA: sub-agent transcripts and workflow manifests do NOT flow into
+    // sessions / conversation_turns / tool_calls — that would clobber the
+    // parent session's ON CONFLICT upsert and inflate the cost SSOT. They
+    // populate the dedicated migration-6 tables instead.
+    if (file.kind === "workflow-manifest") {
+      return emptyBatch({ workflowRuns: buildWorkflowRunRows(file) });
+    }
+    if (file.kind === "subagent") {
+      return buildSubAgentBatch(file, assistantMessages, userMessages);
+    }
+
     const turns: ConversationTurnRow[] = [];
     const toolCalls: ToolCallRow[] = [];
 
@@ -494,5 +532,251 @@ function getUsage(msg: {
     output_tokens: u?.output_tokens ?? 0,
     cache_creation_input_tokens: u?.cache_creation_input_tokens ?? 0,
     cache_read_input_tokens: u?.cache_read_input_tokens ?? 0,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// F-SA: sub-agent + workflow-manifest batch builders
+// ---------------------------------------------------------------------------
+
+/** A full InsertionBatch with all-empty arrays, merged with the given rows. */
+function emptyBatch(overrides: Partial<InsertionBatch>): InsertionBatch {
+  return {
+    sessions: [],
+    conversationTurns: [],
+    toolCalls: [],
+    errors: [],
+    sessionSkills: [],
+    subAgents: [],
+    subAgentToolCalls: [],
+    workflowRuns: [],
+    ...overrides,
+  };
+}
+
+/**
+ * F-SA: build the aggregate `sub_agents` row (+ its `sub_agent_tool_calls`, +
+ * a `workflow_runs` stub for workflow agents) from a sub-agent transcript.
+ *
+ * Cost is summed per-turn via the SAME `calculateCost()` SSOT as the main path;
+ * it is exact even for a mixed-model agent because it sums before aggregation.
+ * Parent attribution keys on the record's OWN `sessionId` (reliable), never the
+ * containing dir name.
+ */
+function buildSubAgentBatch(
+  file: DiscoveredFile,
+  assistantMessages: ParsedAssistantMessage[],
+  userMessages: ParsedUserMessage[],
+): InsertionBatch {
+  const parentSessionId =
+    assistantMessages[0]?.sessionId ??
+    userMessages[0]?.sessionId ??
+    file.parentSessionId ??
+    file.sessionId;
+  const agentId = file.agentId ?? file.sessionId;
+  const workflowRunId = file.workflowRunId ?? null;
+  const agentClass = workflowRunId ? "workflow" : "regular";
+  const meta = (file.metadata ?? {}) as Record<string, unknown>;
+
+  // tool_use_id -> result, from this transcript's own tool_result blocks.
+  const toolResultMap = new Map<
+    string,
+    { isError: boolean; content: string | null }
+  >();
+  for (const msg of userMessages) {
+    for (const block of msg.content as ContentBlock[]) {
+      if (block.type === "tool_result") {
+        const content =
+          typeof block.content === "string"
+            ? block.content
+            : Array.isArray(block.content)
+              ? block.content.map((c: { text?: string }) => c.text ?? "").join("\n")
+              : null;
+        toolResultMap.set(block.tool_use_id, {
+          isError: block.is_error === true,
+          content,
+        });
+      }
+    }
+  }
+
+  const subAgentToolCalls: SubAgentToolCallRow[] = [];
+  const modelCounts = new Map<string, number>();
+  const timestamps: Date[] = [];
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cacheCreation = 0;
+  let cacheRead = 0;
+  let costUsd = 0;
+  let gitBranch: string | null = null;
+  let lastStopReason: string | null = null;
+
+  for (const u of userMessages) timestamps.push(new Date(u.timestamp));
+
+  for (const msg of assistantMessages) {
+    const usage = msg.usage;
+    const model = msg.model ?? null;
+    inputTokens += usage.input_tokens;
+    outputTokens += usage.output_tokens;
+    cacheCreation += usage.cache_creation_input_tokens;
+    cacheRead += usage.cache_read_input_tokens;
+    costUsd += calculateCost(
+      model,
+      usage.input_tokens,
+      usage.output_tokens,
+      usage.cache_creation_input_tokens,
+      usage.cache_read_input_tokens,
+    );
+    timestamps.push(new Date(msg.timestamp));
+    if (model) modelCounts.set(model, (modelCounts.get(model) ?? 0) + 1);
+    if (!gitBranch && msg.metadata.gitBranch) gitBranch = msg.metadata.gitBranch;
+    if (msg.stopReason) lastStopReason = msg.stopReason;
+
+    for (const block of msg.content as ContentBlock[]) {
+      if (block.type !== "tool_use") continue;
+      const toolName = block.name;
+      let toolType = "builtin";
+      let mcpServer: string | null = null;
+      if (toolName.startsWith("mcp__")) {
+        toolType = "mcp";
+        const parts = toolName.split("__");
+        if (parts.length >= 3) mcpServer = parts[1];
+      }
+      const result = toolResultMap.get(block.id);
+      const skillBlock = block as ToolUseBlock;
+      const isSkill = toolName === "Skill";
+      subAgentToolCalls.push({
+        tool_call_id: block.id,
+        parent_session_id: parentSessionId,
+        agent_id: agentId,
+        tool_name: toolName,
+        tool_type: toolType,
+        mcp_server: mcpServer,
+        success: result != null ? !result.isError : null,
+        error_message: result?.isError ? result.content : null,
+        parameters: block.input ?? null,
+        skill_name: isSkill ? ((skillBlock.input?.skill as string) ?? null) : null,
+        skill_caller_type: isSkill ? (skillBlock.caller?.type ?? null) : null,
+      });
+    }
+  }
+
+  timestamps.sort((a, b) => a.getTime() - b.getTime());
+  const startTime = timestamps.length > 0 ? timestamps[0] : null;
+  const endTime = timestamps.length > 1 ? timestamps[timestamps.length - 1] : null;
+  const durationSeconds =
+    startTime && endTime ? (endTime.getTime() - startTime.getTime()) / 1000 : null;
+
+  // Dominant model by turn count.
+  let model: string | null = null;
+  let bestCount = -1;
+  for (const [m, n] of modelCounts) {
+    if (n > bestCount) {
+      bestCount = n;
+      model = m;
+    }
+  }
+
+  const success =
+    lastStopReason == null
+      ? null
+      : lastStopReason === "end_turn"
+        ? true
+        : lastStopReason === "max_tokens"
+          ? false
+          : null;
+
+  const subAgent: SubAgentRow = {
+    parent_session_id: parentSessionId,
+    agent_id: agentId,
+    session_dir: file.parentSessionId ?? null,
+    agent_class: agentClass,
+    subagent_type:
+      (meta.agentType as string) ??
+      (agentClass === "workflow" ? "workflow-subagent" : null),
+    workflow_run_id: workflowRunId,
+    spawn_tool_use_id: (meta.toolUseId as string) ?? null,
+    spawn_depth: typeof meta.spawnDepth === "number" ? meta.spawnDepth : null,
+    is_fork: typeof meta.isFork === "boolean" ? meta.isFork : null,
+    workflow_label: null,
+    workflow_phase: null,
+    entrypoint: null,
+    model,
+    git_branch: gitBranch,
+    start_time: startTime,
+    end_time: endTime,
+    duration_seconds: durationSeconds,
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    cache_creation_tokens: cacheCreation,
+    cache_read_tokens: cacheRead,
+    cost_usd: costUsd,
+    num_turns: assistantMessages.length + userMessages.length,
+    num_tool_calls: subAgentToolCalls.length,
+    success,
+    project_path: file.projectPath,
+    source_file: file.absolutePath,
+  };
+
+  const workflowRuns: WorkflowRunRow[] = workflowRunId
+    ? [stubWorkflowRun(workflowRunId, parentSessionId)]
+    : [];
+
+  return emptyBatch({ subAgents: [subAgent], subAgentToolCalls, workflowRuns });
+}
+
+/** F-SA: build the `workflow_runs` row from a parsed `wf_*.json` manifest. */
+function buildWorkflowRunRows(file: DiscoveredFile): WorkflowRunRow[] {
+  const m = (file.metadata ?? {}) as Record<string, unknown>;
+  const runId = (m.runId as string) ?? file.workflowRunId ?? null;
+  if (!runId) return [];
+  const num = (v: unknown): number | null => (typeof v === "number" ? v : null);
+  const startMs = typeof m.startTime === "number" ? m.startTime : null;
+  const durMs = typeof m.durationMs === "number" ? m.durationMs : null;
+  return [
+    {
+      run_id: runId,
+      parent_session_id: file.parentSessionId ?? null,
+      task_id: (m.taskId as string) ?? null,
+      workflow_name: (m.workflowName as string) ?? null,
+      summary: (m.summary as string) ?? null,
+      status: (m.status as string) ?? null,
+      default_model: (m.defaultModel as string) ?? null,
+      num_phases: Array.isArray(m.phases) ? m.phases.length : null,
+      manifest_agent_count: num(m.agentCount),
+      manifest_total_tokens: num(m.totalTokens),
+      manifest_total_tool_calls: num(m.totalToolCalls),
+      start_time: startMs != null ? new Date(startMs) : null,
+      end_time: startMs != null && durMs != null ? new Date(startMs + durMs) : null,
+      duration_seconds: durMs != null ? durMs / 1000 : null,
+      source_file: file.absolutePath,
+    },
+  ];
+}
+
+/**
+ * F-SA: a minimal `workflow_runs` row for a run dir that has no manifest yet.
+ * The inserter upserts with COALESCE so this never clobbers a real manifest.
+ */
+function stubWorkflowRun(
+  runId: string,
+  parentSessionId: string,
+): WorkflowRunRow {
+  return {
+    run_id: runId,
+    parent_session_id: parentSessionId,
+    task_id: null,
+    workflow_name: null,
+    summary: null,
+    status: null,
+    default_model: null,
+    num_phases: null,
+    manifest_agent_count: null,
+    manifest_total_tokens: null,
+    manifest_total_tool_calls: null,
+    start_time: null,
+    end_time: null,
+    duration_seconds: null,
+    source_file: null,
   };
 }

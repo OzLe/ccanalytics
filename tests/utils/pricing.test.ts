@@ -149,6 +149,43 @@ describe("COST-008: Claude 5 family (Fable/Mythos) + Opus 4.8 pricing", () => {
   });
 });
 
+describe("F-SA: claude-sonnet-5 pricing (sub-agent model)", () => {
+  it("prices claude-sonnet-5 at the Sonnet standard list rates 3/15/3.75/0.3", () => {
+    expect(getPricing("claude-sonnet-5")).toEqual({
+      inputPerM: 3,
+      outputPerM: 15,
+      cacheCreationPerM: 3.75,
+      cacheReadPerM: 0.3,
+    });
+  });
+
+  it("is a KNOWN model even though its rates equal DEFAULT (silences COST-007)", () => {
+    expect(hasKnownPricing("claude-sonnet-5")).toBe(true);
+    // Rates equal DEFAULT_PRICING by design — the explicit entry exists to
+    // silence the unknown-model warning, not to change any computed cost.
+    expect(getPricing("claude-sonnet-5")).toEqual(getDefaultPricing());
+  });
+
+  it("has its own explicit entry (does not lean on the broad claude-sonnet-4 prefix)", () => {
+    const prefixes = getPricingEntries().map(([p]) => p);
+    expect(prefixes).toContain("claude-sonnet-5");
+  });
+
+  it("computes cost identically to Sonnet 4.x for the same tokens", () => {
+    const s5 = calculateCost("claude-sonnet-5", 1_000_000, 100_000, 0, 0);
+    const s46 = calculateCost("claude-sonnet-4-6", 1_000_000, 100_000, 0, 0);
+    expect(s5).toBeCloseTo(s46, 6);
+    expect(s5).toBeCloseTo(4.5, 6); // 1M*$3 + 100K*$15
+  });
+
+  it("does not warn for claude-sonnet-5 in reportUnknownModels", () => {
+    const warnings: string[] = [];
+    const unknown = reportUnknownModels(["claude-sonnet-5"], (m) => warnings.push(m));
+    expect(unknown).toEqual([]);
+    expect(warnings).toHaveLength(0);
+  });
+});
+
 describe("COST-001/COST-003: shared rate source — SQL CASE cannot drift", () => {
   // The dashboard cost/cache routes GENERATE their SQL CASE from this table.
   // These tests assert the generator output matches the table exactly, so a
@@ -267,6 +304,8 @@ describe("COST-001: every model present in the DB has an exact pricing entry", (
     "claude-opus-4-6",
     "claude-opus-4-5-20251101",
     "claude-sonnet-4-6",
+    // Sonnet 5 appears in sub-agent transcripts (F-SA / migration 6) — priced.
+    "claude-sonnet-5",
     "claude-sonnet-4-5-20250929",
     "claude-haiku-4-5-20251001",
     // "<synthetic>" is an intentional placeholder (0 tokens) — excluded.

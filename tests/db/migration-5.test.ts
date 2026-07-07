@@ -47,6 +47,7 @@ async function createV4Db(): Promise<{
       session_id VARCHAR NOT NULL,
       role VARCHAR NOT NULL,
       timestamp TIMESTAMP NOT NULL,
+      cost_usd DOUBLE DEFAULT 0.0,
       content_text TEXT
     )`);
   await connection.run(`
@@ -134,7 +135,7 @@ async function maxVersion(conn: DuckDBConnection): Promise<number> {
 }
 
 describe("schema migration 5 (Skill Analysis / F2D)", () => {
-  it("migrate() on a v4 DB applies migration 5 and bumps version to 5", async () => {
+  it("migrate() on a v4 DB applies pending migrations up to the current version", async () => {
     const { connection } = await createV4Db();
     const mgr = new SchemaManager();
 
@@ -142,9 +143,9 @@ describe("schema migration 5 (Skill Analysis / F2D)", () => {
 
     const applied = await mgr.migrate(connection);
 
-    // Only migration 5 is pending on a v4 DB.
-    expect(applied).toBe(1);
-    expect(await maxVersion(connection)).toBe(5);
+    // Migrations 5 AND 6 are pending on a v4 DB (CURRENT_VERSION is 6).
+    expect(applied).toBe(2);
+    expect(await maxVersion(connection)).toBe(6);
 
     connection.closeSync();
   });
@@ -216,13 +217,13 @@ describe("schema migration 5 (Skill Analysis / F2D)", () => {
     const { connection } = await createV4Db();
     const mgr = new SchemaManager();
 
-    await mgr.migrate(connection); // v4 -> v5
-    expect(await maxVersion(connection)).toBe(5);
+    await mgr.migrate(connection); // v4 -> current (v6)
+    expect(await maxVersion(connection)).toBe(6);
 
     // Second call: nothing pending, returns 0, no error, version unchanged.
     const appliedAgain = await mgr.migrate(connection);
     expect(appliedAgain).toBe(0);
-    expect(await maxVersion(connection)).toBe(5);
+    expect(await maxVersion(connection)).toBe(6);
 
     // And applyMigration5's statements are themselves idempotent — running
     // migrate() a third time still does not throw or duplicate the v5 row.

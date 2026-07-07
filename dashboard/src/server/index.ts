@@ -27,6 +27,7 @@ import promptsRoutes from "./routes/prompts.js";
 import settingsRoutes from "./routes/settings.js";
 import recommendationRoutes from "./routes/recommendation.js";
 import ingestRoutes from "./routes/ingest.js";
+import agentsRoutes from "./routes/agents.js";
 import { closeDb } from "./helpers/db.js";
 
 /**
@@ -77,6 +78,7 @@ function createApp(): express.Application {
   app.use("/api/settings", settingsRoutes);
   app.use("/api/recommendation", recommendationRoutes);
   app.use("/api/ingest", ingestRoutes);
+  app.use("/api/agents", agentsRoutes);
 
   // ---------------------------------------------------------------------------
   // 404 handler for unmatched /api routes

@@ -153,3 +153,104 @@ CREATE INDEX IF NOT EXISTS idx_tools_skill_name          ON tool_calls (skill_na
 INSERT INTO schema_migrations (version, description)
 VALUES (5, 'Skill Analysis: session_skills table + tool_calls.skill_name/skill_caller_type columns + v_skill_usage view')
 ON CONFLICT (version) DO NOTHING;
+
+-- =============================================================================
+-- Migration 6 — Sub-Agent & Workflow Attribution (F-SA)
+-- Additive only: CREATE TABLE / CREATE INDEX, all IF NOT EXISTS. Mirrors
+-- applyMigration6() in src/db/schema.ts (SA-01..SA-04); the v_subagent_usage /
+-- v_workflow_summary / v_session_orchestration views live in sql/views.sql so
+-- they are re-created with the other views. Re-running this whole file is a
+-- no-op.
+--
+-- WHY SEPARATE TABLES (not is_sidechain columns on conversation_turns /
+-- tool_calls): every existing cost/token/cache view and its ~49 inline route
+-- mirrors read straight from those two tables with no sessions join. A
+-- sub-agent row there would silently inflate ALL of them (the parallel-inline-
+-- SQL drift the views.sql header warns about). Keeping sub-agent data in its
+-- own tables means the cost SSOT (SUM(conversation_turns.cost_usd)) stays
+-- byte-for-byte unchanged. sub_agents.cost_usd is computed at ingest with the
+-- SAME calculateCost()/pricing.ts SSOT but is NEVER summed by an existing
+-- surface — only v_session_orchestration blends it, explicitly and opt-in.
+-- =============================================================================
+
+-- SA-01: one row per agent-<agentId>.jsonl transcript (AGGREGATE grain).
+-- PK is COMPOSITE — agentId is NOT globally unique across sessions.
+CREATE TABLE IF NOT EXISTS sub_agents (
+    parent_session_id     VARCHAR     NOT NULL,   -- record.sessionId (reliable), NOT the dir name
+    agent_id              VARCHAR     NOT NULL,    -- filename agent-<id> == record.agentId
+    session_dir           VARCHAR,                 -- containing <session>/ dir name (provenance)
+    agent_class           VARCHAR,                 -- 'regular' | 'workflow'
+    subagent_type         VARCHAR,
+    workflow_run_id       VARCHAR,                 -- 'wf_<runId>' for workflow agents, else NULL
+    spawn_tool_use_id     VARCHAR,                 -- regular: meta.toolUseId -> parent Agent tool_use.id
+    spawn_depth           INTEGER,
+    is_fork               BOOLEAN,
+    workflow_label        VARCHAR,
+    workflow_phase        VARCHAR,
+    entrypoint            VARCHAR,
+    model                 VARCHAR,                 -- dominant model by turn count
+    git_branch            VARCHAR,
+    start_time            TIMESTAMP,
+    end_time              TIMESTAMP,
+    duration_seconds      INTEGER,
+    input_tokens          BIGINT      DEFAULT 0,
+    output_tokens         BIGINT      DEFAULT 0,
+    cache_creation_tokens BIGINT      DEFAULT 0,
+    cache_read_tokens     BIGINT      DEFAULT 0,
+    cost_usd              DOUBLE      DEFAULT 0.0,
+    num_turns             INTEGER     DEFAULT 0,
+    num_tool_calls        INTEGER     DEFAULT 0,
+    success               BOOLEAN,                 -- best-effort from last assistant stop_reason
+    project_path          VARCHAR,
+    source_file           VARCHAR,
+    PRIMARY KEY (parent_session_id, agent_id)
+);
+CREATE INDEX IF NOT EXISTS idx_sub_agents_session  ON sub_agents (parent_session_id);
+CREATE INDEX IF NOT EXISTS idx_sub_agents_workflow ON sub_agents (workflow_run_id);
+CREATE INDEX IF NOT EXISTS idx_sub_agents_type     ON sub_agents (subagent_type);
+
+-- SA-02: sub-agent tool calls — SEPARATE from tool_calls (no turn_id FK; never
+-- JOINed to conversation_turns; never touched by main-session tool views). PK
+-- is the globally-unique tool_use block id.
+CREATE TABLE IF NOT EXISTS sub_agent_tool_calls (
+    tool_call_id          VARCHAR     PRIMARY KEY,
+    parent_session_id     VARCHAR     NOT NULL,
+    agent_id              VARCHAR     NOT NULL,
+    tool_name             VARCHAR     NOT NULL,
+    tool_type             VARCHAR     NOT NULL DEFAULT 'builtin',
+    mcp_server            VARCHAR,
+    success               BOOLEAN,
+    error_message         VARCHAR,
+    parameters            JSON,
+    skill_name            VARCHAR,
+    skill_caller_type     VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_sub_tools_agent ON sub_agent_tool_calls (parent_session_id, agent_id);
+CREATE INDEX IF NOT EXISTS idx_sub_tools_name  ON sub_agent_tool_calls (tool_name);
+
+-- SA-03: one row per workflow RUN (wf_<runId>). Sourced from the
+-- <session>/workflows/wf_<runId>.json manifest (a NEW file -> incremental-safe),
+-- with a stub upserted from a workflow agent's run-dir path when no manifest.
+CREATE TABLE IF NOT EXISTS workflow_runs (
+    run_id                    VARCHAR  PRIMARY KEY,   -- 'wf_<runId>'
+    parent_session_id         VARCHAR,
+    task_id                   VARCHAR,
+    workflow_name             VARCHAR,
+    summary                   TEXT,
+    status                    VARCHAR,
+    default_model             VARCHAR,
+    num_phases                INTEGER,
+    manifest_agent_count      INTEGER,               -- ADVISORY; authoritative count = COUNT(sub_agents)
+    manifest_total_tokens     BIGINT,
+    manifest_total_tool_calls INTEGER,
+    start_time                TIMESTAMP,
+    end_time                  TIMESTAMP,
+    duration_seconds          INTEGER,
+    source_file               VARCHAR                -- manifest path; NULL for stub rows
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_session ON workflow_runs (parent_session_id);
+
+-- SA-04: record schema version 6
+INSERT INTO schema_migrations (version, description)
+VALUES (6, 'Sub-Agent & Workflow Attribution: sub_agents + sub_agent_tool_calls + workflow_runs tables + v_subagent_usage/v_workflow_summary/v_session_orchestration views')
+ON CONFLICT (version) DO NOTHING;
