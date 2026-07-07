@@ -278,37 +278,48 @@ function normalizeParam(value: unknown): DuckDBValue {
  * Serializes statement execution on the single shared connection.
  *
  * `@duckdb/node-api` intermittently throws "Failed to execute prepared
- * statement" when two statements run concurrently on ONE connection — e.g. the
- * `/api/agents/tree` handler's `Promise.all` of 3 queries, or two dashboard
- * requests in flight at once (the whole server shares this singleton conn).
- * Every `query()` chains onto this tail so at most one statement runs at a
- * time. The tail is kept non-rejecting so a failed query can never wedge the
- * queue for the callers behind it.
+ * statement" when two statements run concurrently on ONE connection. The whole
+ * API server shares this singleton conn, so every statement must funnel through
+ * this tail so at most one runs at a time — read `query()` calls AND the
+ * ingestion write path, which would otherwise race reads during a manual
+ * `POST /api/ingest` (see `getIngestConnection`). The tail is kept
+ * non-rejecting so a failed statement can never wedge the queue behind it.
  */
 let queryTail: Promise<unknown> = Promise.resolve();
 
 /**
- * Execute a parameterized SQL query and return typed results.
- *
- * Serialized against every other `query()` call on the shared connection (see
- * `queryTail`); concurrent callers are queued, not run in parallel.
- *
- * @param sql - SQL query with $1, $2, ... placeholders
- * @param params - Bind parameters
- * @returns Query result with typed rows
+ * Run `fn` exclusively on the shared connection: it starts only after every
+ * previously-enqueued statement has settled, and the next enqueued statement
+ * waits for it. This is the single serialization point for the connection;
+ * both the read path ({@link query}) and the ingestion write proxy
+ * ({@link getIngestConnection}) go through it.
  */
-export async function query<T = Record<string, unknown>>(
-  sql: string,
-  params?: unknown[],
-): Promise<DbResult<T>> {
-  const result = queryTail.then(() => execQuery<T>(sql, params));
-  // Advance the tail with a swallowed copy so the next query still runs even
-  // if this one rejects; the real outcome is returned to this caller.
+function runExclusive<T>(fn: () => Promise<T>): Promise<T> {
+  const result = queryTail.then(fn);
+  // Advance the tail with a swallowed copy so the next task still runs even if
+  // this one rejects; the real outcome is returned to this caller.
   queryTail = result.then(
     () => undefined,
     () => undefined,
   );
   return result;
+}
+
+/**
+ * Execute a parameterized SQL query and return typed results.
+ *
+ * Serialized against every other statement on the shared connection (see
+ * {@link runExclusive}); concurrent callers are queued, not run in parallel.
+ *
+ * @param sql - SQL query with $1, $2, ... placeholders
+ * @param params - Bind parameters
+ * @returns Query result with typed rows
+ */
+export function query<T = Record<string, unknown>>(
+  sql: string,
+  params?: unknown[],
+): Promise<DbResult<T>> {
+  return runExclusive(() => execQuery<T>(sql, params));
 }
 
 /** The actual statement execution, run one-at-a-time via {@link query}. */
@@ -375,6 +386,39 @@ export function getDbPathInfo(): string {
 }
 
 /**
+ * Wrap a connection so its statement-executing methods (`run` /
+ * `runAndReadAll`) funnel through {@link runExclusive} — i.e. share the read
+ * path's serialization queue — while every other member forwards to the real
+ * connection untouched.
+ *
+ * The ingestion pipeline (batch-inserter, offset tracker, schema migrations)
+ * executes SQL exclusively via those two methods, so wrapping them stops
+ * ingestion writes from running concurrently with dashboard reads on the shared
+ * connection during a `POST /api/ingest`. Reads still interleave BETWEEN
+ * ingestion statements, so the dashboard stays responsive.
+ *
+ * Non-wrapped functions are bound to the REAL connection (not the proxy) so a
+ * driver method that internally calls `this.run(...)` hits the real `run`, not
+ * the wrapped one — otherwise a statement enqueued from inside another
+ * enqueued statement would wait on the queue behind itself and deadlock.
+ */
+function serializedConnection(conn: DuckDBConnection): DuckDBConnection {
+  const handler: ProxyHandler<DuckDBConnection> = {
+    get(target, prop) {
+      const value = Reflect.get(target, prop) as unknown;
+      if (typeof value !== "function") return value;
+      if (prop === "run" || prop === "runAndReadAll") {
+        const method = value as (...args: unknown[]) => Promise<unknown>;
+        return (...args: unknown[]): Promise<unknown> =>
+          runExclusive(() => method.apply(target, args));
+      }
+      return (value as (...args: unknown[]) => unknown).bind(target);
+    },
+  };
+  return new Proxy(conn, handler);
+}
+
+/**
  * Get a `ConnectionLike` wrapper around the server's singleton DuckDB
  * connection, for handing to the shared `runIngestion()` orchestration.
  *
@@ -382,10 +426,15 @@ export function getDbPathInfo(): string {
  * connection to `analytics.duckdb`, so the ingest route must reuse THIS
  * connection rather than opening a second one (which would deadlock on the
  * file lock). Reusing it keeps the whole ingestion pass in-process.
+ *
+ * The connection is returned wrapped by {@link serializedConnection} so every
+ * ingestion statement shares the read path's serialization queue — see that
+ * function for why the raw shared connection is unsafe here.
  */
 export async function getIngestConnection(): Promise<{
   getConnection(): DuckDBConnection;
 }> {
   const conn = await getConnection();
-  return { getConnection: () => conn };
+  const serialized = serializedConnection(conn);
+  return { getConnection: () => serialized };
 }

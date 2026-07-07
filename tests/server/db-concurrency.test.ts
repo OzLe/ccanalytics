@@ -18,7 +18,9 @@
  * baked into the suite (it would risk making CI slow — the very thing this
  * fixes). These tests are the fast, deterministic guard: they assert the
  * observable contract of serialization — concurrent callers each get their own
- * correct result, and a failed query never wedges the queue.
+ * correct result, a failed query never wedges the queue, and the ingest-write
+ * proxy (`getIngestConnection`) shares the same queue so ingestion writes never
+ * run concurrently with reads.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -119,5 +121,55 @@ describe("db helper — concurrent query serialization (F-SA regression)", () =>
       "rejected",
       "fulfilled",
     ]);
+  });
+
+  it("routes ingest-proxy writes through the same queue as reads (no ingest-vs-read race)", async () => {
+    // getIngestConnection() hands ingestion a serialized proxy: run() and
+    // runAndReadAll() funnel through the shared queue, every other member
+    // forwards to the real connection. Without it, ingestion writes execute on
+    // the raw shared connection concurrently with dashboard reads during a
+    // POST /api/ingest and hit the same "Failed to execute prepared statement"
+    // race as /tree did.
+    const ingest = await db.getIngestConnection();
+    const conn = ingest.getConnection();
+
+    // Non-wrapped members must still be reachable (forwarded to the real conn).
+    expect(typeof conn.run).toBe("function");
+    expect(typeof conn.runAndReadAll).toBe("function");
+    expect(typeof conn.prepare).toBe("function");
+
+    await db.query(`CREATE TABLE IF NOT EXISTS ing (k INTEGER)`);
+    await db.query(`DELETE FROM ing`);
+
+    // Fire ingest-proxy writes and dashboard reads together. Post-fix they all
+    // queue on the one connection and none reject; the writes land exactly once.
+    const ops: Array<Promise<unknown>> = [];
+    for (let k = 0; k < 20; k++) {
+      ops.push(conn.run(`INSERT INTO ing VALUES (${k})`));
+      ops.push(db.query(`SELECT COUNT(*)::INTEGER AS n FROM nums`));
+      if (k % 4 === 0)
+        ops.push(conn.runAndReadAll(`SELECT COUNT(*) AS n FROM ing`));
+    }
+    await Promise.all(ops);
+
+    // A transaction via the proxy (mirrors BatchInserter's BEGIN…COMMIT) with a
+    // read interleaved between its statements — must not reject.
+    await conn.run("BEGIN TRANSACTION");
+    await Promise.all([
+      conn.run(`INSERT INTO ing VALUES (100)`),
+      db.query(`SELECT COUNT(*)::INTEGER AS n FROM nums`),
+      conn.run(`INSERT INTO ing VALUES (101)`),
+    ]);
+    await conn.run("COMMIT");
+
+    const after = await db.query<{ n: number }>(
+      `SELECT COUNT(*)::INTEGER AS n FROM ing`,
+    );
+    expect(Number(after.rows[0]!.n)).toBe(22); // 20 + 2, each write applied once
+    // Reads are still correct after all the interleaving.
+    const nums = await db.query<{ n: number }>(
+      `SELECT COUNT(*)::INTEGER AS n FROM nums`,
+    );
+    expect(Number(nums.rows[0]!.n)).toBe(5);
   });
 });
