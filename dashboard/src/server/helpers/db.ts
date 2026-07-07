@@ -275,13 +275,44 @@ function normalizeParam(value: unknown): DuckDBValue {
 }
 
 /**
+ * Serializes statement execution on the single shared connection.
+ *
+ * `@duckdb/node-api` intermittently throws "Failed to execute prepared
+ * statement" when two statements run concurrently on ONE connection — e.g. the
+ * `/api/agents/tree` handler's `Promise.all` of 3 queries, or two dashboard
+ * requests in flight at once (the whole server shares this singleton conn).
+ * Every `query()` chains onto this tail so at most one statement runs at a
+ * time. The tail is kept non-rejecting so a failed query can never wedge the
+ * queue for the callers behind it.
+ */
+let queryTail: Promise<unknown> = Promise.resolve();
+
+/**
  * Execute a parameterized SQL query and return typed results.
+ *
+ * Serialized against every other `query()` call on the shared connection (see
+ * `queryTail`); concurrent callers are queued, not run in parallel.
  *
  * @param sql - SQL query with $1, $2, ... placeholders
  * @param params - Bind parameters
  * @returns Query result with typed rows
  */
 export async function query<T = Record<string, unknown>>(
+  sql: string,
+  params?: unknown[],
+): Promise<DbResult<T>> {
+  const result = queryTail.then(() => execQuery<T>(sql, params));
+  // Advance the tail with a swallowed copy so the next query still runs even
+  // if this one rejects; the real outcome is returned to this caller.
+  queryTail = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
+/** The actual statement execution, run one-at-a-time via {@link query}. */
+async function execQuery<T = Record<string, unknown>>(
   sql: string,
   params?: unknown[],
 ): Promise<DbResult<T>> {
