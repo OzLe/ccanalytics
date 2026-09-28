@@ -1,7 +1,8 @@
 # Ingestion performance: background priority and bound statements
 
 > Investigated on 2026-09-28, after the NUL-byte fix (docs/ingestion-failure-nul-byte-2026-09-28.md) was deployed.
-> Status: both causes fixed; deployment steps are in section 5.
+> Status: both causes fixed and deployed on 2026-09-28.
+> Section 6 records a separate, pre-existing storage issue found while verifying the deployment; it is not resolved.
 
 ---
 
@@ -41,6 +42,8 @@ Every phase slows by a similar factor, which is the signature of CPU and I/O thr
 
 The fix sets `ProcessType` to `Standard` in `scripts/install-launchagent.sh`, which generates the LaunchAgent.
 The server is idle between requests, so running at normal priority costs nothing when nothing is happening.
+After the fix the server's processes run at priority 20, launchd's default for agents.
+Only the background band (priority 4) is confined to efficiency cores and throttled.
 
 ## 3. Cost of binding every string
 
@@ -80,6 +83,7 @@ Statements without a NUL are byte-for-byte the ones the original code produced.
 | Full ingest of a frozen snapshot (945 files), original vs narrowed inserter | Identical in both directions except the sub-agent the original cannot ingest (1 `sub_agents` row, 115 tool calls, 1 `ingestion_state` row); 299 s vs 289 s |
 | Per-row cost, one interleaved run | tool_calls: 1.72 ms original, 2.25 ms deployed, 1.70 ms narrowed; conversation_turns: 1.94, 2.81 and 2.03 ms |
 | Background priority | 15.8 s at normal priority vs 369.6 s under `taskpolicy -b`, same workload |
+| Live ingest after deployment | 11 files, 1,348 entries in 7.4 s; before the fix, 8 files and 590 entries took 51 s |
 
 ## 5. Deploying
 
@@ -87,4 +91,36 @@ Statements without a NUL are byte-for-byte the ones the original code produced.
 2. Run `npm run build` and `npm run build:dashboard`.
 3. Stop the agent, back up `~/.ccanalytics/analytics.duckdb`, then run `./scripts/install-launchagent.sh`.
    It rewrites `~/Library/LaunchAgents/com.ccanalytics.web.plist` with `ProcessType` `Standard` and restarts the agent.
-4. Check that the server's processes run at normal priority (`ps -o pri` shows 31, not 4), then run one ingest.
+4. Check that the server's processes are out of the background band (`ps -o pri` shows 20; 4 means Background), then run one ingest.
+
+## 6. Open issue: filtered queries that miss rows
+
+Found while checking the deployment.
+It predates both fixes and is not resolved.
+
+Some filtered queries return fewer rows than the tables hold, depending on the query's shape.
+The rows are present: a full scan, or the same filter written differently, returns all of them.
+Confirmed in the live dashboard: after a restart, the sub-agent timeline for one session returned 7 of its 10 sub-agents.
+
+Measured on copies of the database, an equality filter on each key against a full scan:
+
+| Table | Keys whose rows the filter misses: 7 Jul, 28 Sep before the fixes, 28 Sep after | Rows missed now |
+|---|---|---|
+| `sub_agents` | 0, 24, 36 | 210 |
+| `conversation_turns` | 0, 26, 4 | 369 |
+| `tool_calls` | 0, 22, 4 | 152 |
+| `errors` | 0, 13, 2 | 3 |
+| `session_skills` | 25, 112, 118 | 9,848 |
+| `sessions`, `sub_agent_tool_calls` | 0, 0, 0 | 0 |
+
+A time filter on `sessions.start_time` in the same form counted 62 sessions since 21 September; 94 are present.
+The same time filters on `conversation_turns` and `sub_agents` returned every row, so turn-based cost totals were not affected in this check.
+
+Both query plans are sequential scans with the filter pushed into the scan, so the misses come from the stored table data, not from an index.
+Copying the rows into a fresh table removes every miss.
+
+Open before choosing a fix:
+
+- Which dashboard queries are affected; only the query shapes above were measured.
+- Which write path leaves the stored data inconsistent; the `ON CONFLICT DO UPDATE` upserts are the prime suspect.
+- Whether a newer DuckDB release avoids it, so that rebuilding the tables does not just reset the clock.
