@@ -8,13 +8,15 @@
  * statement text only up to the first NUL, and the whole file failed with
  * "unterminated quoted string" on every run.
  *
- *   1. Every insert round-trips hostile text exactly — NULs, quotes,
- *      backslashes, control characters, placeholder look-alikes, non-BMP
- *      unicode — through a real in-memory DuckDB, including the
- *      ON CONFLICT DO UPDATE and COALESCE upsert paths.
- *   2. Non-string values are stored exactly as before: timestamps, JSON
+ *   1. Every insert round-trips hostile text exactly through a real in-memory
+ *      DuckDB — once with NULs (bound as parameters) and once without
+ *      (inlined as quoted literals) — including the ON CONFLICT DO UPDATE and
+ *      COALESCE upsert paths.
+ *   2. Only text containing a NUL is bound; every other statement runs as
+ *      plain SQL, the faster path (docs/ingestion-performance-2026-09-28.md).
+ *   3. Non-string values are stored exactly as before: timestamps, JSON
  *      parameters, booleans and numbers.
- *   3. End to end: a sub-agent transcript whose failed tool_result carries
+ *   4. End to end: a sub-agent transcript whose failed tool_result carries
  *      `\u0000` ingests with no failed files.
  */
 
@@ -49,6 +51,9 @@ import { SchemaManager } from "../../src/db/schema.js";
  */
 const HOSTILE =
   "Exit code 1\n\u001f\u008b\b\u0000\u0000\u0000 it's a \\ \"quote\" '' $1 ? :name\t\r\n🚀 ספט׳ \u0000end";
+
+/** The same text without its NULs: it takes the inline-literal path. */
+const HOSTILE_NO_NUL = HOSTILE.replaceAll("\u0000", "");
 
 const T0 = new Date("2026-09-27T07:21:55.737Z");
 
@@ -209,57 +214,64 @@ async function row(sql: string): Promise<Record<string, unknown>> {
 }
 
 // ---------------------------------------------------------------------------
-// 1. hostile text round-trips through every insert
+// 1. hostile text round-trips through every insert, bound and inlined
 // ---------------------------------------------------------------------------
 
-describe("BatchInserter text round-trip", () => {
+describe.each([
+  ["with NULs, bound", HOSTILE, "b"],
+  ["without NULs, inlined", HOSTILE_NO_NUL, "i"],
+])("BatchInserter text round-trip, %s", (_label, text, tag) => {
   it("sessions: text columns, including on the ON CONFLICT DO UPDATE path", async () => {
-    await inserter.insert(batchWith({ sessions: [sessionRow("txt-s1", "first")] }));
-    await inserter.insert(batchWith({ sessions: [sessionRow("txt-s1", HOSTILE)] }));
+    await inserter.insert(batchWith({ sessions: [sessionRow(`txt-s1-${tag}`, "first")] }));
+    await inserter.insert(batchWith({ sessions: [sessionRow(`txt-s1-${tag}`, text)] }));
     const r = await row(
-      "SELECT cwd, git_branch, project_name, claude_version FROM sessions WHERE session_id = 'txt-s1'",
+      `SELECT cwd, git_branch, project_name, claude_version FROM sessions WHERE session_id = 'txt-s1-${tag}'`,
     );
-    expect(r.cwd).toBe(HOSTILE);
-    expect(r.git_branch).toBe(HOSTILE);
-    expect(r.project_name).toBe(HOSTILE);
+    expect(r.cwd).toBe(text);
+    expect(r.git_branch).toBe(text);
+    expect(r.project_name).toBe(text);
     expect(r.claude_version).toBe("");
   });
 
   it("conversation_turns: content_text", async () => {
-    await inserter.insert(batchWith({ conversationTurns: [turnRow("txt-t1", HOSTILE)] }));
-    const r = await row("SELECT content_text FROM conversation_turns WHERE turn_id = 'txt-t1'");
-    expect(r.content_text).toBe(HOSTILE);
+    await inserter.insert(batchWith({ conversationTurns: [turnRow(`txt-t1-${tag}`, text)] }));
+    const r = await row(
+      `SELECT content_text FROM conversation_turns WHERE turn_id = 'txt-t1-${tag}'`,
+    );
+    expect(r.content_text).toBe(text);
   });
 
   it("tool_calls: error_message, including on the ON CONFLICT DO UPDATE path", async () => {
-    await inserter.insert(batchWith({ toolCalls: [toolCallRow("txt-tc1", "first")] }));
-    await inserter.insert(batchWith({ toolCalls: [toolCallRow("txt-tc1", HOSTILE)] }));
-    const r = await row("SELECT error_message FROM tool_calls WHERE tool_call_id = 'txt-tc1'");
-    expect(r.error_message).toBe(HOSTILE);
+    await inserter.insert(batchWith({ toolCalls: [toolCallRow(`txt-tc1-${tag}`, "first")] }));
+    await inserter.insert(batchWith({ toolCalls: [toolCallRow(`txt-tc1-${tag}`, text)] }));
+    const r = await row(
+      `SELECT error_message FROM tool_calls WHERE tool_call_id = 'txt-tc1-${tag}'`,
+    );
+    expect(r.error_message).toBe(text);
   });
 
   it("errors: message", async () => {
     const e: ErrorRow = {
-      error_id: "txt-e1",
+      error_id: `txt-e1-${tag}`,
       session_id: "txt-sess",
       timestamp: T0,
       error_type: "tool_error",
-      message: HOSTILE,
+      message: text,
       is_retryable: false,
       retry_count: 0,
     };
     await inserter.insert(batchWith({ errors: [e] }));
-    const r = await row("SELECT message FROM errors WHERE error_id = 'txt-e1'");
-    expect(r.message).toBe(HOSTILE);
+    const r = await row(`SELECT message FROM errors WHERE error_id = 'txt-e1-${tag}'`);
+    expect(r.message).toBe(text);
   });
 
   it("session_skills: skill_description", async () => {
     const ss: SessionSkillRow = {
-      session_skill_id: "txt-ss1",
+      session_skill_id: `txt-ss1-${tag}`,
       session_id: "txt-sess",
       record_uuid: null,
       skill_name: "demo",
-      skill_description: HOSTILE,
+      skill_description: text,
       skill_count: 1,
       is_initial: true,
       captured_at: T0,
@@ -267,67 +279,100 @@ describe("BatchInserter text round-trip", () => {
     };
     await inserter.insert(batchWith({ sessionSkills: [ss] }));
     const r = await row(
-      "SELECT skill_description FROM session_skills WHERE session_skill_id = 'txt-ss1'",
+      `SELECT skill_description FROM session_skills WHERE session_skill_id = 'txt-ss1-${tag}'`,
     );
-    expect(r.skill_description).toBe(HOSTILE);
+    expect(r.skill_description).toBe(text);
   });
 
   it("sub_agents: text columns, including on the ON CONFLICT DO UPDATE path", async () => {
-    await inserter.insert(batchWith({ subAgents: [subAgentRow("txt-a1", HOSTILE)] }));
+    await inserter.insert(batchWith({ subAgents: [subAgentRow(`txt-a1-${tag}`, text)] }));
     let r = await row(
-      "SELECT workflow_label, git_branch FROM sub_agents WHERE agent_id = 'txt-a1'",
+      `SELECT workflow_label, git_branch FROM sub_agents WHERE agent_id = 'txt-a1-${tag}'`,
     );
-    expect(r.workflow_label).toBe(HOSTILE);
-    expect(r.git_branch).toBe(HOSTILE);
+    expect(r.workflow_label).toBe(text);
+    expect(r.git_branch).toBe(text);
 
     // git_branch is in the DO UPDATE SET list (workflow_label is insert-only).
     await inserter.insert(
-      batchWith({ subAgents: [{ ...subAgentRow("txt-a1", HOSTILE), git_branch: `${HOSTILE} v2` }] }),
+      batchWith({ subAgents: [{ ...subAgentRow(`txt-a1-${tag}`, text), git_branch: `${text} v2` }] }),
     );
-    r = await row("SELECT git_branch FROM sub_agents WHERE agent_id = 'txt-a1'");
-    expect(r.git_branch).toBe(`${HOSTILE} v2`);
+    r = await row(`SELECT git_branch FROM sub_agents WHERE agent_id = 'txt-a1-${tag}'`);
+    expect(r.git_branch).toBe(`${text} v2`);
   });
 
   it("sub_agent_tool_calls: error_message (the statement that failed in production)", async () => {
     const tc: SubAgentToolCallRow = {
-      tool_call_id: "txt-satc1",
+      tool_call_id: `txt-satc1-${tag}`,
       parent_session_id: "txt-sess",
-      agent_id: "txt-a1",
+      agent_id: `txt-a1-${tag}`,
       tool_name: "Bash",
       tool_type: "builtin",
       mcp_server: null,
       success: false,
-      error_message: HOSTILE,
+      error_message: text,
       parameters: { command: "head -c 600 cw-units.json" },
       skill_name: null,
       skill_caller_type: null,
     };
     await inserter.insert(batchWith({ subAgentToolCalls: [tc] }));
     const r = await row(
-      "SELECT success, error_message FROM sub_agent_tool_calls WHERE tool_call_id = 'txt-satc1'",
+      `SELECT success, error_message FROM sub_agent_tool_calls WHERE tool_call_id = 'txt-satc1-${tag}'`,
     );
     expect(r.success).toBe(false);
-    expect(r.error_message).toBe(HOSTILE);
+    expect(r.error_message).toBe(text);
   });
 
   it("workflow_runs: summary through the COALESCE upsert, in both orders", async () => {
     await inserter.insert(
       batchWith({
-        workflowRuns: [workflowRunRow("txt-wf1", { summary: HOSTILE, start_time: T0 })],
+        workflowRuns: [workflowRunRow(`txt-wf1-${tag}`, { summary: text, start_time: T0 })],
       }),
     );
     // A later stub (all-null fields) must not erase the manifest's values.
-    await inserter.insert(batchWith({ workflowRuns: [workflowRunRow("txt-wf1")] }));
+    await inserter.insert(batchWith({ workflowRuns: [workflowRunRow(`txt-wf1-${tag}`)] }));
     const r = await row(
-      "SELECT summary, epoch_ms(start_time) AS start_ms FROM workflow_runs WHERE run_id = 'txt-wf1'",
+      `SELECT summary, epoch_ms(start_time) AS start_ms FROM workflow_runs WHERE run_id = 'txt-wf1-${tag}'`,
     );
-    expect(r.summary).toBe(HOSTILE);
+    expect(r.summary).toBe(text);
     expect(Number(r.start_ms)).toBe(T0.getTime());
   });
 });
 
 // ---------------------------------------------------------------------------
-// 2. non-string values are stored as before
+// 2. only text containing a NUL is bound
+// ---------------------------------------------------------------------------
+
+describe("BatchInserter statement path", () => {
+  it("runs NUL-free rows as plain SQL and binds only NUL-bearing text", async () => {
+    // Record the values passed with each INSERT on a pass-through connection.
+    const bound: Array<unknown[] | undefined> = [];
+    const spy = new Proxy(connection, {
+      get(target, prop) {
+        const value = Reflect.get(target, prop) as unknown;
+        if (typeof value !== "function") return value;
+        if (prop === "run") {
+          return (sql: string, values?: unknown[]) => {
+            if (sql.startsWith("INSERT")) bound.push(values);
+            return (value as (...args: unknown[]) => unknown).call(target, sql, values);
+          };
+        }
+        return (value as (...args: unknown[]) => unknown).bind(target);
+      },
+    });
+    const spied = new BatchInserter({ getConnection: () => spy });
+
+    await spied.insert(batchWith({ toolCalls: [toolCallRow("txt-path1", "it's plain")] }));
+    await spied.insert(batchWith({ toolCalls: [toolCallRow("txt-path2", "has a \u0000 NUL")] }));
+
+    expect(bound).toHaveLength(2);
+    expect(bound[0]).toBeUndefined();
+    // error_message appears twice: in VALUES and in DO UPDATE SET.
+    expect(bound[1]).toEqual(["has a \u0000 NUL", "has a \u0000 NUL"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 3. non-string values are stored as before
 // ---------------------------------------------------------------------------
 
 describe("BatchInserter non-string values", () => {
@@ -364,7 +409,7 @@ describe("BatchInserter non-string values", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 3. end to end: the production failure
+// 4. end to end: the production failure
 // ---------------------------------------------------------------------------
 
 describe("ingestion of a sub-agent transcript with NUL bytes in a tool result", () => {

@@ -103,6 +103,11 @@ cmd_install() {
   # processes, so npm/node must be resolvable from the agent's PATH.
   local agent_path="$node_dir:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
+  # ProcessType is Standard, not Background: macOS runs Background jobs at the
+  # lowest CPU priority (efficiency cores only on Apple Silicon) with throttled
+  # I/O, which made dashboard-triggered ingests ~23x slower on a busy machine
+  # (docs/ingestion-performance-2026-09-28.md). The server idles otherwise.
+
   cat > "$PLIST_PATH" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -135,7 +140,7 @@ cmd_install() {
     <true/>
 
     <key>ProcessType</key>
-    <string>Background</string>
+    <string>Standard</string>
 
     <key>StandardOutPath</key>
     <string>$LOG_DIR/web.out.log</string>

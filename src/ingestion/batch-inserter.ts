@@ -54,20 +54,25 @@ export interface InsertionResult {
 }
 
 /**
- * Renders the values of ONE statement as SQL, binding every string.
+ * Renders the values of ONE statement as SQL literals, binding only text that
+ * contains a NUL.
  *
- * Strings — and values serialized to strings (Dates, JSON objects) — become
- * `$n` placeholders passed to `run(sql, values)`, so transcript text never
- * becomes SQL text. DuckDB reads SQL text only up to the first NUL, so an
- * inlined tool output holding U+0000 cut the statement short and failed the
- * whole file (docs/ingestion-failure-nul-byte-2026-09-28.md).
- *
- * Numbers, booleans and NULL stay inline, rendered exactly as before, so the
- * stored values (costs, token counts) are unchanged.
+ * DuckDB reads SQL text only up to the first NUL, so an inlined tool output
+ * holding U+0000 cut the statement short and failed the whole file
+ * (docs/ingestion-failure-nul-byte-2026-09-28.md). Such text becomes a `$n`
+ * placeholder passed to `run(sql, values)`. Everything else is inlined: a
+ * quoted DuckDB string has no escape other than the doubled quote, and
+ * binding every value put every statement on DuckDB's slower prepare path
+ * (+0.5 ms per statement; docs/ingestion-performance-2026-09-28.md).
  */
 class SqlParams {
   /** Bound values, in `$1..$n` order. */
   readonly values: string[] = [];
+
+  /** Values for `run(sql, values)`; undefined when nothing was bound. */
+  get bound(): string[] | undefined {
+    return this.values.length > 0 ? this.values : undefined;
+  }
 
   /** Return `v` as an inline literal, or bind it and return its placeholder. */
   sql(v: unknown): string {
@@ -80,21 +85,21 @@ class SqlParams {
     if (typeof v === "number") {
       return String(v);
     }
-    if (v instanceof Date) {
-      this.values.push(v.toISOString());
-    } else if (typeof v === "object") {
-      this.values.push(JSON.stringify(v));
-    } else {
-      this.values.push(String(v));
+    const text =
+      v instanceof Date ? v.toISOString()
+      : typeof v === "object" ? JSON.stringify(v)
+      : String(v);
+    if (!text.includes("\u0000")) {
+      return `'${text.replace(/'/g, "''")}'`;
     }
+    this.values.push(text);
     return `$${this.values.length}`;
   }
 }
 
 /**
  * Batch-inserts parsed records into the DuckDB star schema.
- * Uses transactions for atomicity and binds string values as statement
- * parameters (see {@link SqlParams}).
+ * Uses transactions for atomicity; values are rendered by {@link SqlParams}.
  */
 export class BatchInserter {
   private batchSize: number = DEFAULT_BATCH_SIZE;
@@ -147,7 +152,7 @@ export class BatchInserter {
         project_path = ${p.sql(s.project_path)},
         project_name = ${p.sql(s.project_name)},
         source_type = ${p.sql(s.source_type)}`;
-      await this.conn.run(sql, p.values);
+      await this.conn.run(sql, p.bound);
       count++;
     }
     return count;
@@ -176,7 +181,7 @@ export class BatchInserter {
         ${p.sql(t.has_tool_use)}, ${p.sql(t.has_thinking)},
         ${p.sql(t.content_text)}
       ) ON CONFLICT DO NOTHING`;
-      await this.conn.run(sql, p.values);
+      await this.conn.run(sql, p.bound);
       count++;
     }
     return count;
@@ -213,7 +218,7 @@ export class BatchInserter {
         duration_ms = COALESCE(${p.sql(tc.duration_ms)}, tool_calls.duration_ms),
         skill_name = COALESCE(${p.sql(tc.skill_name)}, tool_calls.skill_name),
         skill_caller_type = COALESCE(${p.sql(tc.skill_caller_type)}, tool_calls.skill_caller_type)`;
-      await this.conn.run(sql, p.values);
+      await this.conn.run(sql, p.bound);
       count++;
     }
     return count;
@@ -242,7 +247,7 @@ export class BatchInserter {
         ${p.sql(ss.skill_name)}, ${p.sql(ss.skill_description)}, ${p.sql(ss.skill_count)},
         ${p.sql(ss.is_initial)}, ${p.sql(ss.captured_at)}, ${p.sql(ss.source)}
       ) ON CONFLICT(session_skill_id) DO NOTHING`;
-      await this.conn.run(sql, p.values);
+      await this.conn.run(sql, p.bound);
       count++;
     }
     return count;
@@ -300,7 +305,7 @@ export class BatchInserter {
         success = ${p.sql(s.success)},
         project_path = ${p.sql(s.project_path)},
         source_file = ${p.sql(s.source_file)}`;
-      await this.conn.run(sql, p.values);
+      await this.conn.run(sql, p.bound);
       count++;
     }
     return count;
@@ -329,7 +334,7 @@ export class BatchInserter {
         error_message = ${p.sql(tc.error_message)},
         skill_name = COALESCE(${p.sql(tc.skill_name)}, sub_agent_tool_calls.skill_name),
         skill_caller_type = COALESCE(${p.sql(tc.skill_caller_type)}, sub_agent_tool_calls.skill_caller_type)`;
-      await this.conn.run(sql, p.values);
+      await this.conn.run(sql, p.bound);
       count++;
     }
     return count;
@@ -370,7 +375,7 @@ export class BatchInserter {
         end_time = COALESCE(${p.sql(w.end_time)}, workflow_runs.end_time),
         duration_seconds = COALESCE(${p.sql(w.duration_seconds)}, workflow_runs.duration_seconds),
         source_file = COALESCE(${p.sql(w.source_file)}, workflow_runs.source_file)`;
-      await this.conn.run(sql, p.values);
+      await this.conn.run(sql, p.bound);
       count++;
     }
     return count;
@@ -393,7 +398,7 @@ export class BatchInserter {
         ${p.sql(e.error_type)}, ${p.sql(e.message)}, ${p.sql(e.is_retryable)},
         ${p.sql(e.retry_count)}
       ) ON CONFLICT(error_id) DO NOTHING`;
-      await this.conn.run(sql, p.values);
+      await this.conn.run(sql, p.bound);
       count++;
     }
     return count;
