@@ -85,6 +85,11 @@ describe("ChokidarManager recursive sub-agent watch (integration)", () => {
       pollInterval: 30,
       usePolling: true, // deterministic in CI where native FS events are flaky
     });
+    // "ready" can fire before fs.watchFile has taken its first stat of the
+    // subagents/ directory. A file created in that gap is part of the baseline
+    // and never reported; under a loaded test run the gap reached the write
+    // (Q-004). Give the poller a few intervals to take its baseline.
+    await new Promise((r) => setTimeout(r, 500));
 
     const agentFile = path.join(subagents, "agent-abc.jsonl");
     writeFileSync(agentFile, '{"type":"assistant","sessionId":"sessX"}\n');
