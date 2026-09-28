@@ -2,8 +2,9 @@
  * @module tests/db/cost-backfill
  *
  * The statements `npm run backfill:costs` runs: each stored cost must equal
- * what `calculateCost()` gives for the same tokens and model, for turns and
- * for sub-agents, and the sessions must sum their turns.
+ * what `calculateCost()` gives for the same tokens, model and cache-write
+ * split — unrecorded splits counting as 1-hour writes for turns and 5-minute
+ * writes for sub-agents — and the sessions must sum their turns.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -20,17 +21,26 @@ interface TokenRow {
   input: number;
   output: number;
   cacheWrite: number;
+  /** Of cacheWrite, the 1-hour writes; null when unrecorded. */
+  oneHour: number | null;
   cacheRead: number;
 }
 
-const TURNS: TokenRow[] = [
-  { model: "claude-opus-5-5", input: 12, output: 40_000, cacheWrite: 90_000, cacheRead: 2_500_000 },
-  { model: "claude-fable-5-1", input: 3, output: 25_000, cacheWrite: 70_000, cacheRead: 1_900_000 },
-  { model: "claude-opus-5", input: 7, output: 30_000, cacheWrite: 50_000, cacheRead: 800_000 },
-  { model: "claude-haiku-4-5-20251001", input: 900, output: 1_200, cacheWrite: 4_000, cacheRead: 60_000 },
-  { model: "claude-opus-6", input: 1, output: 10, cacheWrite: 100, cacheRead: 1_000 },
-  { model: null, input: 0, output: 0, cacheWrite: 0, cacheRead: 0 },
+const ROWS: TokenRow[] = [
+  { model: "claude-opus-5-5", input: 12, output: 40_000, cacheWrite: 90_000, oneHour: 90_000, cacheRead: 2_500_000 },
+  { model: "claude-fable-5-1", input: 3, output: 25_000, cacheWrite: 70_000, oneHour: null, cacheRead: 1_900_000 },
+  { model: "claude-opus-5", input: 7, output: 30_000, cacheWrite: 50_000, oneHour: 20_000, cacheRead: 800_000 },
+  { model: "claude-haiku-4-5-20251001", input: 900, output: 1_200, cacheWrite: 4_000, oneHour: 0, cacheRead: 60_000 },
+  { model: "claude-opus-6", input: 1, output: 10, cacheWrite: 100, oneHour: null, cacheRead: 1_000 },
+  { model: null, input: 0, output: 0, cacheWrite: 0, oneHour: null, cacheRead: 0 },
 ];
+
+const sqlValue = (v: string | number | null) =>
+  v === null ? "NULL" : typeof v === "string" ? `'${v}'` : String(v);
+
+/** What ingest stores: the recorded split, or the table's unrecorded default. */
+const expectedCost = (t: TokenRow, unrecordedOneHour: (t: TokenRow) => number) =>
+  calculateCost(t.model, t.input, t.output, t.cacheWrite, t.cacheRead, t.oneHour ?? unrecordedOneHour(t));
 
 let db: TestDB;
 
@@ -44,18 +54,18 @@ beforeEach(async () => {
   const c = db.connection;
   await c.run(`INSERT INTO sessions (session_id, start_time, total_cost_usd) VALUES
     ('s1', '2026-09-01 10:00:00', 999), ('s2', '2026-09-02 10:00:00', 999), ('empty', '2026-09-03 10:00:00', 5)`);
-  for (const [i, t] of TURNS.entries()) {
+  for (const [i, t] of ROWS.entries()) {
+    const tokens = [t.input, t.output, t.cacheWrite, t.oneHour, t.cacheRead].map(sqlValue).join(", ");
     await c.run(
       `INSERT INTO conversation_turns (turn_id, session_id, role, timestamp, input_tokens,
-         output_tokens, cache_creation_tokens, cache_read_tokens, cost_usd, model)
+         output_tokens, cache_creation_tokens, cache_creation_1h_tokens, cache_read_tokens, cost_usd, model)
        VALUES ('t${i}', '${i % 2 === 0 ? "s1" : "s2"}', 'assistant', '2026-09-01 10:00:00',
-         ${t.input}, ${t.output}, ${t.cacheWrite}, ${t.cacheRead}, 123, ${t.model ? `'${t.model}'` : "NULL"})`,
+         ${tokens}, 123, ${sqlValue(t.model)})`,
     );
     await c.run(
       `INSERT INTO sub_agents (parent_session_id, agent_id, model, input_tokens, output_tokens,
-         cache_creation_tokens, cache_read_tokens, cost_usd)
-       VALUES ('s1', 'a${i}', ${t.model ? `'${t.model}'` : "NULL"},
-         ${t.input}, ${t.output}, ${t.cacheWrite}, ${t.cacheRead}, 456)`,
+         cache_creation_tokens, cache_creation_1h_tokens, cache_read_tokens, cost_usd)
+       VALUES ('s1', 'a${i}', ${sqlValue(t.model)}, ${tokens}, 456)`,
     );
   }
 });
@@ -65,25 +75,19 @@ afterEach(async () => {
 });
 
 describe("cost backfill statements", () => {
-  it("recomputes every turn's cost as calculateCost() does", async () => {
+  it("recomputes every turn's cost; unrecorded writes count as 1-hour writes", async () => {
     await db.connection.run(turnCostUpdateSql());
-    for (const [i, t] of TURNS.entries()) {
+    for (const [i, t] of ROWS.entries()) {
       const stored = await scalar(`SELECT cost_usd FROM conversation_turns WHERE turn_id = 't${i}'`);
-      expect(stored, String(t.model)).toBeCloseTo(
-        calculateCost(t.model, t.input, t.output, t.cacheWrite, t.cacheRead),
-        9,
-      );
+      expect(stored, String(t.model)).toBeCloseTo(expectedCost(t, (r) => r.cacheWrite), 9);
     }
   });
 
-  it("recomputes the sub-agents of models whose stored costs are stale", async () => {
+  it("recomputes stale sub-agents; unrecorded writes count as 5-minute writes", async () => {
     await db.connection.run(subAgentCostUpdateSql());
-    for (const [i, t] of TURNS.entries()) {
+    for (const [i, t] of ROWS.entries()) {
       const stored = await scalar(`SELECT cost_usd FROM sub_agents WHERE agent_id = 'a${i}'`);
-      expect(stored, String(t.model)).toBeCloseTo(
-        calculateCost(t.model, t.input, t.output, t.cacheWrite, t.cacheRead),
-        9,
-      );
+      expect(stored, String(t.model)).toBeCloseTo(expectedCost(t, () => 0), 9);
     }
   });
 

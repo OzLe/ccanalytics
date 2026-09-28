@@ -143,9 +143,9 @@ describe("schema migration 5 (Skill Analysis / F2D)", () => {
 
     const applied = await mgr.migrate(connection);
 
-    // Migrations 5, 6 AND 7 are pending on a v4 DB (CURRENT_VERSION is 7).
-    expect(applied).toBe(3);
-    expect(await maxVersion(connection)).toBe(7);
+    // Migrations 5, 6, 7 AND 8 are pending on a v4 DB (CURRENT_VERSION is 8).
+    expect(applied).toBe(4);
+    expect(await maxVersion(connection)).toBe(8);
 
     connection.closeSync();
   });
@@ -217,13 +217,13 @@ describe("schema migration 5 (Skill Analysis / F2D)", () => {
     const { connection } = await createV4Db();
     const mgr = new SchemaManager();
 
-    await mgr.migrate(connection); // v4 -> current (v7)
-    expect(await maxVersion(connection)).toBe(7);
+    await mgr.migrate(connection); // v4 -> current (v8)
+    expect(await maxVersion(connection)).toBe(8);
 
     // Second call: nothing pending, returns 0, no error, version unchanged.
     const appliedAgain = await mgr.migrate(connection);
     expect(appliedAgain).toBe(0);
-    expect(await maxVersion(connection)).toBe(7);
+    expect(await maxVersion(connection)).toBe(8);
 
     // And applyMigration5's statements are themselves idempotent — running
     // migrate() a third time still does not throw or duplicate the v5 row.

@@ -41,7 +41,7 @@ import type {
 } from "../../types/index.js";
 import type { InsertionBatch } from "../batch-inserter.js";
 import type { DiscoveredFile } from "../file-discovery.js";
-import { calculateCost } from "../../utils/pricing.js";
+import { normalizeUsage, usageCost, type RawUsage } from "./usage.js";
 import { expandHome } from "../../utils/paths.js";
 import { deriveErrorRows } from "./error-derivation.js";
 import { buildSessionSkillRows } from "./skill-rows.js";
@@ -300,16 +300,9 @@ export class ClaudeDesktopAdapter implements ISourceAdapter {
         });
       } else if (type === "assistant") {
         const message = raw.message as Record<string, unknown> | undefined;
-        const msgUsage = message?.usage as Record<string, number> | undefined;
-        const topUsage = raw.usage as Record<string, number> | undefined;
-        const u = msgUsage ?? topUsage;
-
-        const usage: NormalizedTokenUsage = {
-          input_tokens: u?.input_tokens ?? 0,
-          output_tokens: u?.output_tokens ?? 0,
-          cache_creation_input_tokens: u?.cache_creation_input_tokens ?? 0,
-          cache_read_input_tokens: u?.cache_read_input_tokens ?? 0,
-        };
+        const msgUsage = message?.usage as RawUsage | undefined;
+        const topUsage = raw.usage as RawUsage | undefined;
+        const usage: NormalizedTokenUsage = normalizeUsage(msgUsage ?? topUsage);
 
         const model = (raw.model as string) ?? (message?.model as string) ?? undefined;
 
@@ -403,6 +396,7 @@ export class ClaudeDesktopAdapter implements ISourceAdapter {
         input_tokens: 0,
         output_tokens: 0,
         cache_creation_tokens: 0,
+        cache_creation_1h_tokens: null,
         cache_read_tokens: 0,
         cost_usd: 0,
         model: null,
@@ -445,13 +439,7 @@ export class ClaudeDesktopAdapter implements ISourceAdapter {
 
       const usage = msg.usage;
       const model = msg.model ?? null;
-      const costUsd = calculateCost(
-        model,
-        usage.input_tokens,
-        usage.output_tokens,
-        usage.cache_creation_input_tokens,
-        usage.cache_read_input_tokens,
-      );
+      const costUsd = usageCost(model, usage, "1h");
 
       turns.push({
         turn_id: turnId,
@@ -461,6 +449,7 @@ export class ClaudeDesktopAdapter implements ISourceAdapter {
         input_tokens: usage.input_tokens,
         output_tokens: usage.output_tokens,
         cache_creation_tokens: usage.cache_creation_input_tokens,
+        cache_creation_1h_tokens: usage.cache_creation_1h_input_tokens,
         cache_read_tokens: usage.cache_read_input_tokens,
         cost_usd: costUsd,
         model,
@@ -579,13 +568,7 @@ export class ClaudeDesktopAdapter implements ISourceAdapter {
         outputTokens += u.output_tokens;
         cacheCreationTokens += u.cache_creation_input_tokens;
         cacheReadTokens += u.cache_read_input_tokens;
-        totalCost += calculateCost(
-          mdl,
-          u.input_tokens,
-          u.output_tokens,
-          u.cache_creation_input_tokens,
-          u.cache_read_input_tokens,
-        );
+        totalCost += usageCost(mdl, u, "1h");
 
         const content = m.content as ContentBlock[];
         for (const block of content) {

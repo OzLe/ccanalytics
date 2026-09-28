@@ -73,6 +73,11 @@ export interface NormalizedTokenUsage {
   output_tokens: number;
   cache_creation_input_tokens: number;
   cache_read_input_tokens: number;
+  /**
+   * Of `cache_creation_input_tokens`, the writes to the 1-hour cache; null
+   * when the transcript does not record the split (see adapters/usage).
+   */
+  cache_creation_1h_input_tokens: number | null;
 }
 
 /** Common shape for a parsed user message. */

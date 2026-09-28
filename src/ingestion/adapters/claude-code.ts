@@ -32,7 +32,7 @@ import type { DiscoveredFile } from "../file-discovery.js";
 import { FileDiscovery } from "../file-discovery.js";
 import { JSONLParser } from "../jsonl-parser.js";
 import { Deduplicator } from "../deduplicator.js";
-import { calculateCost } from "../../utils/pricing.js";
+import { normalizeUsage, usageCost, type RawUsage } from "./usage.js";
 import { deriveErrorRows } from "./error-derivation.js";
 import { buildSessionSkillRows } from "./skill-rows.js";
 import { parseSkillListing } from "../skill-listing-parser.js";
@@ -207,6 +207,7 @@ export class ClaudeCodeAdapter implements ISourceAdapter {
         input_tokens: 0,
         output_tokens: 0,
         cache_creation_tokens: 0,
+        cache_creation_1h_tokens: null,
         cache_read_tokens: 0,
         cost_usd: 0,
         model: null,
@@ -249,13 +250,7 @@ export class ClaudeCodeAdapter implements ISourceAdapter {
 
       const usage = msg.usage;
       const model = msg.model ?? null;
-      const costUsd = calculateCost(
-        model,
-        usage.input_tokens,
-        usage.output_tokens,
-        usage.cache_creation_input_tokens,
-        usage.cache_read_input_tokens,
-      );
+      const costUsd = usageCost(model, usage, "1h");
 
       turns.push({
         turn_id: turnId,
@@ -265,6 +260,7 @@ export class ClaudeCodeAdapter implements ISourceAdapter {
         input_tokens: usage.input_tokens,
         output_tokens: usage.output_tokens,
         cache_creation_tokens: usage.cache_creation_input_tokens,
+        cache_creation_1h_tokens: usage.cache_creation_1h_input_tokens,
         cache_read_tokens: usage.cache_read_input_tokens,
         cost_usd: costUsd,
         model,
@@ -383,13 +379,7 @@ export class ClaudeCodeAdapter implements ISourceAdapter {
         outputTokens += u.output_tokens;
         cacheCreationTokens += u.cache_creation_input_tokens;
         cacheReadTokens += u.cache_read_input_tokens;
-        totalCost += calculateCost(
-          mdl,
-          u.input_tokens,
-          u.output_tokens,
-          u.cache_creation_input_tokens,
-          u.cache_read_input_tokens,
-        );
+        totalCost += usageCost(mdl, u, "1h");
 
         const content = m.content as ContentBlock[];
         for (const block of content) {
@@ -523,16 +513,10 @@ function extractContentText(contentBlocks: string | ContentBlock[]): string | nu
  * Checks message.usage first, falls back to top-level usage.
  */
 function getUsage(msg: {
-  usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number };
-  message?: { usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } };
+  usage?: RawUsage;
+  message?: { usage?: RawUsage };
 }): NormalizedTokenUsage {
-  const u = msg.message?.usage ?? msg.usage;
-  return {
-    input_tokens: u?.input_tokens ?? 0,
-    output_tokens: u?.output_tokens ?? 0,
-    cache_creation_input_tokens: u?.cache_creation_input_tokens ?? 0,
-    cache_read_input_tokens: u?.cache_read_input_tokens ?? 0,
-  };
+  return normalizeUsage(msg.message?.usage ?? msg.usage);
 }
 
 // ---------------------------------------------------------------------------
@@ -560,6 +544,8 @@ function emptyBatch(overrides: Partial<InsertionBatch>): InsertionBatch {
  *
  * Cost is summed per-turn via the SAME `calculateCost()` SSOT as the main path;
  * it is exact even for a mixed-model agent because it sums before aggregation.
+ * Cache writes without a recorded split count as 5-minute writes, which every
+ * recorded sub-agent write is (adapters/usage).
  * Parent attribution keys on the record's OWN `sessionId` (reliable), never the
  * containing dir name.
  */
@@ -606,6 +592,8 @@ function buildSubAgentBatch(
   let inputTokens = 0;
   let outputTokens = 0;
   let cacheCreation = 0;
+  // Null until some turn records the 5-minute / 1-hour split.
+  let cacheCreation1h: number | null = null;
   let cacheRead = 0;
   let costUsd = 0;
   let gitBranch: string | null = null;
@@ -619,14 +607,11 @@ function buildSubAgentBatch(
     inputTokens += usage.input_tokens;
     outputTokens += usage.output_tokens;
     cacheCreation += usage.cache_creation_input_tokens;
+    if (usage.cache_creation_1h_input_tokens !== null) {
+      cacheCreation1h = (cacheCreation1h ?? 0) + usage.cache_creation_1h_input_tokens;
+    }
     cacheRead += usage.cache_read_input_tokens;
-    costUsd += calculateCost(
-      model,
-      usage.input_tokens,
-      usage.output_tokens,
-      usage.cache_creation_input_tokens,
-      usage.cache_read_input_tokens,
-    );
+    costUsd += usageCost(model, usage, "5m");
     timestamps.push(new Date(msg.timestamp));
     if (model) modelCounts.set(model, (modelCounts.get(model) ?? 0) + 1);
     if (!gitBranch && msg.metadata.gitBranch) gitBranch = msg.metadata.gitBranch;
@@ -709,6 +694,7 @@ function buildSubAgentBatch(
     input_tokens: inputTokens,
     output_tokens: outputTokens,
     cache_creation_tokens: cacheCreation,
+    cache_creation_1h_tokens: cacheCreation1h,
     cache_read_tokens: cacheRead,
     cost_usd: costUsd,
     num_turns: assistantMessages.length + userMessages.length,

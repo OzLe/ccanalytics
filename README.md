@@ -266,6 +266,20 @@ npm test             # Run tests
 npm run lint         # Type-check
 ```
 
+### Database maintenance
+
+The scripts open `~/.ccanalytics/analytics.duckdb` (or `DB_PATH`, or a path argument) read-write, so stop the dashboard's LaunchAgent and take a backup first.
+
+```bash
+npm run check:pricing       # models without a pricing entry (costed at Sonnet rates)
+npm run check:indexes       # every index against a full scan
+npm run backfill:cache-ttl  # record 1-hour cache writes for rows ingested before migration 8
+npm run backfill:costs      # recompute stored costs after a rate change
+```
+
+After changing rates in `src/utils/pricing.ts`, run `backfill:costs`.
+The running dashboard also lists unpriced models in a banner.
+
 ## Versioning
 
 The version string in the dashboard sidebar and Settings page is **never
