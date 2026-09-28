@@ -2,6 +2,7 @@
 
 Date: 2026-09-28.
 Status: approved 2026-09-28 with the recommended option for each of D1 to D4 (section 7).
+Steps 1 to 3 were merged as #33, #34 and #35 and deployed on 2026-09-28 (Appendix E); step 4 waits for DuckDB 2.0.1.
 Scope: the three follow-ups left open by the fix for PER-44, the filtered-query-misses bug (`docs/filtered-query-misses-2026-09-28.md`, section 7).
 
 ## 1. Summary
@@ -212,14 +213,14 @@ The extended backfill reports the exact all-time change.
 
 ## Appendix D: implementation record (2026-09-28)
 
-Steps 1 to 3 are implemented as stacked branches, each on top of the previous one; none is merged or deployed yet.
+Steps 1 to 3 were built as stacked branches, each on top of the previous one, and squash-merged in that order (Appendix E).
 
-| Branch | Commit | Content |
-|---|---|---|
-| `feature/safe-db-open` | `e27fcec` | Recovery fix (section 4) and `ccanalytics db recover` |
-| `feature/safe-db-open` | `646c89b` | Fix for the flaky watcher test (Q-004) |
-| `feature/pricing-exact-ids` | `bad0d48` | PR A (section 3) |
-| `feature/cache-ttl-split` | `4236525` | PR B (section 3) and migration 8 |
+| Branch | Commit | Content | Merged as |
+|---|---|---|---|
+| `feature/safe-db-open` | `e27fcec` | Recovery fix (section 4) and `ccanalytics db recover` | #33, `df1c353` |
+| `feature/safe-db-open` | `646c89b` | Fix for the flaky watcher test (Q-004) | #33, `df1c353` |
+| `feature/pricing-exact-ids` | `bad0d48` | PR A (section 3) | #34, `665097e` |
+| `feature/cache-ttl-split` | `4236525` | PR B (section 3) and migration 8 | #35, `6f23409` |
 
 Deviations from the plan:
 - Migration 8 adds one column, `cache_creation_1h_tokens`, not two: the 5-minute share is the rest of `cache_creation_tokens`, so a second column could only go out of sync.
@@ -242,3 +243,23 @@ Deploy runbook, after merging the three branches in order:
 2. `npm ci` in the root and in `dashboard/`, then `npm run build` and `npm run build:dashboard`.
 3. `npm run backfill:cache-ttl`, then `npm run backfill:costs`, then `npm run check:pricing`.
 4. Start the LaunchAgent and check `/api/health` and `/api/cost/by-model`.
+
+## Appendix E: merge and live deploy (2026-09-28)
+
+Merged one pull request at a time, each rebased onto the previous squash commit, after CI passed on Node 20 and 22 and the dashboard build:
+#33 (`df1c353`), #34 (`665097e`), #35 (`6f23409`).
+Each rebased branch had the same tree as the commit that was tested and rehearsed.
+
+A second rehearsal ran with the merged code on a byte-identical copy of the live database, which had not changed since the PER-44 deploy at 14:08.
+It gave the same numbers as the first, to the cent, and a second API server on that copy summed to $23,828.89 with every model's breakdown equal to its total.
+
+Live deploy, 18:31 to 18:38 local, following the Appendix D runbook:
+- Backup: `~/.ccanalytics/backups/analytics-pre-pricing-ttl-20260928-183115.duckdb`, byte-identical to the live file; there was no WAL.
+- `backfill:cache-ttl` applied migration 8 and filled 13,803 turns and 357 sub-agents, as in the rehearsal.
+- `backfill:costs` printed per-model lines identical to the rehearsal: turns $21,114.21 to $23,828.89, sessions $20,408.46 to the same $23,828.89 with 0 divergent sessions, sub-agents $5,980.50 to $6,427.29.
+- `check:pricing` found all 13 models in use priced.
+- After the restart, `/api/health` listed no unpriced models, `/api/cost/by-model` summed to $23,828.89 with every breakdown equal to its total, no WAL was left, and no new `[pricing]` warning reached `web.err.log`.
+
+An incremental ingest through `POST /api/ingest` then read the 4.5 hours of sessions since the last ingest: 16 files, 3,598 entries, no failures, no WAL left.
+All 662 new main-thread turns recorded the split, every cache write as a 1-hour write (4,533,533 tokens), and the 3 new sub-agents recorded only 5-minute writes.
+The all-time turn cost is now $23,966.23.
