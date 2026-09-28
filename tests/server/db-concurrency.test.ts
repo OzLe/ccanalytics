@@ -172,4 +172,18 @@ describe("db helper — concurrent query serialization (F-SA regression)", () =>
     );
     expect(Number(nums.rows[0]!.n)).toBe(5);
   });
+
+  it("forwards bound parameters through the ingest proxy", async () => {
+    // BatchInserter binds string values via run(sql, values) — see
+    // docs/ingestion-failure-nul-byte-2026-09-28.md. The proxy must pass the
+    // values through untouched (NULs included) while still queueing the call.
+    const conn = (await db.getIngestConnection()).getConnection();
+    await db.query(`CREATE TABLE IF NOT EXISTS bound (s VARCHAR)`);
+    const text = "a\u0000b 'c' $1";
+
+    await conn.run(`INSERT INTO bound VALUES ($1)`, [text]);
+
+    const reader = await conn.runAndReadAll(`SELECT s FROM bound WHERE s = $1`, [text]);
+    expect(reader.getRowObjectsJS()).toEqual([{ s: text }]);
+  });
 });
