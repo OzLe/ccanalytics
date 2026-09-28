@@ -1,11 +1,21 @@
 /**
  * @module tests/db/connection
  *
- * Tests for ConnectionManager, including auto-recovery from corrupt databases.
+ * Tests for ConnectionManager, including that a failed open never modifies
+ * the database or its WAL.
  */
 
 import { describe, it, expect, afterEach } from "vitest";
 import { ConnectionManager } from "../../src/db/connection.js";
+import {
+  corruptWal,
+  holdOpen,
+  makeDbWithWal,
+  release,
+  snapshotDir,
+  writeGarbageDb,
+} from "../helpers/damaged-db.js";
+import type { ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
@@ -26,8 +36,13 @@ function cleanup(dbPath: string): void {
 
 describe("ConnectionManager", () => {
   const paths: string[] = [];
+  let holder: ChildProcess | null = null;
 
   afterEach(async () => {
+    if (holder) {
+      await release(holder);
+      holder = null;
+    }
     for (const p of paths) {
       cleanup(p);
     }
@@ -52,53 +67,53 @@ describe("ConnectionManager", () => {
     await cm.close();
   });
 
-  it("should auto-recover from a corrupt database file", async () => {
+  it("refuses a file that is not a DuckDB database and leaves it and its WAL untouched", async () => {
     const dbPath = tmpDbPath();
     paths.push(dbPath);
-
-    // Write garbage to simulate a corrupt database file
-    fs.writeFileSync(dbPath, Buffer.alloc(4096, 0xde));
+    writeGarbageDb(dbPath);
+    fs.writeFileSync(`${dbPath}.wal`, Buffer.alloc(1024, 0xab));
+    const before = snapshotDir(path.dirname(dbPath));
 
     const cm = new ConnectionManager();
-    await cm.open(dbPath);
+    await expect(cm.open(dbPath)).rejects.toMatchObject({
+      name: "DatabaseOpenError",
+      reason: "unreadable",
+      walPresent: true,
+    });
 
-    // Should have recovered: corrupt file deleted, fresh DB created
-    expect(cm.isOpen()).toBe(true);
-
-    // Verify the new database is functional (DDL + DML succeed without error)
-    const conn = cm.getConnection();
-    await conn.run("CREATE TABLE recovery_test (id INTEGER)");
-    await conn.run("INSERT INTO recovery_test VALUES (42)");
-
-    await cm.close();
+    expect(cm.isOpen()).toBe(false);
+    expect(snapshotDir(path.dirname(dbPath))).toEqual(before);
   });
 
-  it("should clean up WAL file during corrupt database recovery", async () => {
+  it("refuses to replay a damaged WAL and leaves both files untouched", async () => {
     const dbPath = tmpDbPath();
     paths.push(dbPath);
-    const walPath = `${dbPath}.wal`;
-
-    // Write garbage DB and a stale WAL
-    fs.writeFileSync(dbPath, Buffer.alloc(4096, 0xde));
-    fs.writeFileSync(walPath, Buffer.alloc(1024, 0xab));
+    makeDbWithWal(dbPath);
+    corruptWal(dbPath);
+    const before = snapshotDir(path.dirname(dbPath));
 
     const cm = new ConnectionManager();
-    await cm.open(dbPath);
+    await expect(cm.open(dbPath)).rejects.toMatchObject({
+      name: "DatabaseOpenError",
+      reason: "wal-replay",
+    });
 
-    expect(cm.isOpen()).toBe(true);
-    expect(fs.existsSync(walPath)).toBe(false);
-
-    await cm.close();
+    expect(snapshotDir(path.dirname(dbPath))).toEqual(before);
   });
 
-  it("should throw ConnectionError for in-memory failures", async () => {
-    // :memory: databases can't be recovered by deleting a file,
-    // so errors should propagate directly. We test this indirectly
-    // by verifying :memory: works (no crash path to exercise).
+  it("reports a database another process holds open as locked", async () => {
+    const dbPath = tmpDbPath();
+    paths.push(dbPath);
+    const first = new ConnectionManager();
+    await first.open(dbPath);
+    await first.close();
+    holder = await holdOpen(dbPath);
+
     const cm = new ConnectionManager();
-    await cm.open(":memory:");
-    expect(cm.isOpen()).toBe(true);
-    await cm.close();
+    await expect(cm.open(dbPath)).rejects.toMatchObject({
+      name: "DatabaseOpenError",
+      reason: "locked",
+    });
   });
 
   it("should close cleanly and allow re-open", async () => {
