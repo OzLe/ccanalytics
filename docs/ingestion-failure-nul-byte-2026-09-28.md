@@ -11,7 +11,7 @@ One sub-agent transcript fails every ingestion run because a tool result inside 
 The batch inserter writes every value into the SQL text as an inline string literal.
 DuckDB treats the NUL as the end of the statement, so the literal never closes and the statement is rejected with a parser error.
 The failure is contained to that one file, but it repeats on every run and that sub-agent's data is missing from the database.
-The fix binds string values as statement parameters instead of inlining them, so text from a transcript never becomes SQL text.
+The fix binds text that contains a NUL as a statement parameter; everything else is inlined exactly as before.
 
 ## 2. The file
 
@@ -73,22 +73,23 @@ The JSONL itself is valid, and the parser reports 0 parse errors for it.
 
 Implemented on branch `feature/ingest-nul-bytes`.
 
-- **Bind strings instead of inlining them.**
+- **Bind text that contains a NUL.**
   `sqlVal()` is replaced by a per-statement `SqlParams` collector in `src/ingestion/batch-inserter.ts`.
-  Strings, Dates and JSON objects become `$n` placeholders passed to `run(sql, values)`, so transcript text never becomes SQL text.
-  Numbers, booleans and NULL stay inline, rendered exactly as before, so stored costs and token counts cannot shift and no backfill is needed.
+  Text containing a NUL becomes a `$n` placeholder passed to `run(sql, values)`.
+  Every other value is inlined exactly as before, so stored costs and token counts cannot shift and no backfill is needed.
   All 8 INSERT statements use it.
+  The first version bound every string, Date and JSON value; that made each statement about 0.5 ms slower, so it was narrowed (docs/ingestion-performance-2026-09-28.md).
 - **Name failed files.**
   `POST /api/ingest` logs each failed file and its error to the server log (`~/.ccanalytics/logs/web.err.log` under the LaunchAgent).
   The dashboard toast lists up to three failed file names with the first line of each error.
 - **Tests.**
-  `tests/ingestion/batch-inserter-text.test.ts` round-trips NULs, quotes, backslashes, control characters, `$1` and `?` look-alikes and non-BMP text through all 8 inserts, including the ON CONFLICT DO UPDATE and COALESCE upsert paths.
-  It also checks that timestamps, numbers, booleans and JSON are stored as before, and ingests a sub-agent transcript with `\u0000` in a failed tool result end to end.
+  `tests/ingestion/batch-inserter-text.test.ts` round-trips NULs, quotes, backslashes, control characters, `$1` and `?` look-alikes and non-BMP text through all 8 inserts, both bound (with NULs) and inlined (without), including the ON CONFLICT DO UPDATE and COALESCE upsert paths.
+  It also checks that only NUL-bearing text is bound, that timestamps, numbers, booleans and JSON are stored as before, and ingests a sub-agent transcript with `\u0000` in a failed tool result end to end.
   `tests/server/db-concurrency.test.ts` gains a check that the dashboard's serialized connection proxy forwards bound values.
 
 Considered and rejected:
 
-- Stripping NULs in `sqlVal()`: a one-line change, but it silently alters stored text and keeps the escaping approach.
+- Stripping NULs in `sqlVal()`: a one-line change, but it silently alters stored text.
 - Binding numbers too: the driver binds JS numbers as DOUBLE, so stored values could differ in the last bit from today's literals, with no benefit for this bug.
 
 ## 6. Verification
@@ -104,6 +105,7 @@ Considered and rejected:
 | Incremental ingest on a fresh copy of the live database | 25 files processed, 0 failed; the sub-agent is present with 115 tool calls and $7.72 API-equivalent cost; its file is tracked to its full 2,516,414 bytes |
 
 The snapshot holds no workflow runs, so the `workflow_runs` upsert path is covered by the unit tests only.
+These results are for the first version; the narrowed version was verified again (docs/ingestion-performance-2026-09-28.md, section 4).
 
 ## 7. Deploying
 
