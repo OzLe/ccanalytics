@@ -1087,4 +1087,8 @@ export interface HealthStatus {
     reason?: "locked" | "wal-replay" | "version" | "unreadable";
     hint?: string;
   };
+  /** Present when the database opened: models costed at fallback rates. */
+  pricing?: {
+    unpricedModels: { model: string; turns: number; subAgents: number }[];
+  };
 }
