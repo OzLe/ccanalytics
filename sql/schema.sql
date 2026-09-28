@@ -89,28 +89,12 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 -- Indexes
 -- =============================================================================
 
--- sessions indexes
-CREATE INDEX IF NOT EXISTS idx_sessions_start_time      ON sessions (start_time);
-CREATE INDEX IF NOT EXISTS idx_sessions_project_path    ON sessions (project_path);
-CREATE INDEX IF NOT EXISTS idx_sessions_project_time    ON sessions (project_path, start_time);
-
--- conversation_turns indexes
-CREATE INDEX IF NOT EXISTS idx_turns_session_id         ON conversation_turns (session_id);
-CREATE INDEX IF NOT EXISTS idx_turns_timestamp          ON conversation_turns (timestamp);
-CREATE INDEX IF NOT EXISTS idx_turns_request_id         ON conversation_turns (request_id);
-CREATE INDEX IF NOT EXISTS idx_turns_session_time       ON conversation_turns (session_id, timestamp);
-
--- tool_calls indexes
-CREATE INDEX IF NOT EXISTS idx_tools_session_id         ON tool_calls (session_id);
-CREATE INDEX IF NOT EXISTS idx_tools_tool_name          ON tool_calls (tool_name);
-CREATE INDEX IF NOT EXISTS idx_tools_session_tool       ON tool_calls (session_id, tool_name);
-CREATE INDEX IF NOT EXISTS idx_tools_turn_id            ON tool_calls (turn_id);
-
--- errors indexes
-CREATE INDEX IF NOT EXISTS idx_errors_session_id        ON errors (session_id);
-CREATE INDEX IF NOT EXISTS idx_errors_timestamp         ON errors (timestamp);
-CREATE INDEX IF NOT EXISTS idx_errors_type              ON errors (error_type);
-CREATE INDEX IF NOT EXISTS idx_errors_session_time      ON errors (session_id, timestamp);
+-- No secondary indexes, by design: migration 7 dropped every CREATE INDEX this
+-- file used to declare. DuckDB 1.4.4 lost rows from those ART indexes when it
+-- replayed the WAL, so filtered queries silently returned too few rows, and a
+-- columnar scan answers every dashboard query in about a millisecond without
+-- them. Only the PRIMARY KEY / UNIQUE indexes remain; ON CONFLICT needs them.
+-- See docs/filtered-query-misses-2026-09-28.md.
 
 -- Record schema version
 INSERT INTO schema_migrations (version, description)
@@ -119,10 +103,11 @@ ON CONFLICT (version) DO NOTHING;
 
 -- =============================================================================
 -- Migration 5 — Skill Analysis (F2D)
--- Additive only: CREATE TABLE / CREATE INDEX / ALTER ADD COLUMN, all
--- IF NOT EXISTS. Mirrors applyMigration5() in src/db/schema.ts (S-01..S-08);
--- the v_skill_usage view (S-07) lives in sql/views.sql so it is re-created
--- with the other views. Re-running this whole file is a no-op.
+-- Additive only: CREATE TABLE / ALTER ADD COLUMN, all IF NOT EXISTS (its
+-- S-02/S-03/S-06 indexes were dropped by migration 7). Mirrors
+-- applyMigration5() in src/db/schema.ts (S-01..S-08); the v_skill_usage view
+-- (S-07) lives in sql/views.sql so it is re-created with the other views.
+-- Re-running this whole file is a no-op.
 -- =============================================================================
 
 -- S-01: loaded-skills table — one row per (session_id, record_uuid, skill_name).
@@ -138,16 +123,9 @@ CREATE TABLE IF NOT EXISTS session_skills (
     source                VARCHAR     DEFAULT 'skill_listing'
 );
 
--- S-02 / S-03: session_skills indexes
-CREATE INDEX IF NOT EXISTS idx_session_skills_session    ON session_skills (session_id);
-CREATE INDEX IF NOT EXISTS idx_session_skills_skill_name ON session_skills (skill_name);
-
 -- S-04 / S-05: invoked-skill columns on tool_calls (NULL for non-Skill rows)
 ALTER TABLE tool_calls ADD COLUMN IF NOT EXISTS skill_name        VARCHAR;
 ALTER TABLE tool_calls ADD COLUMN IF NOT EXISTS skill_caller_type VARCHAR;
-
--- S-06: index for skill-name lookups on tool_calls
-CREATE INDEX IF NOT EXISTS idx_tools_skill_name          ON tool_calls (skill_name);
 
 -- S-08: record schema version 5
 INSERT INTO schema_migrations (version, description)
@@ -156,11 +134,11 @@ ON CONFLICT (version) DO NOTHING;
 
 -- =============================================================================
 -- Migration 6 — Sub-Agent & Workflow Attribution (F-SA)
--- Additive only: CREATE TABLE / CREATE INDEX, all IF NOT EXISTS. Mirrors
--- applyMigration6() in src/db/schema.ts (SA-01..SA-04); the v_subagent_usage /
--- v_workflow_summary / v_session_orchestration views live in sql/views.sql so
--- they are re-created with the other views. Re-running this whole file is a
--- no-op.
+-- Additive only: CREATE TABLE, all IF NOT EXISTS (its indexes were dropped by
+-- migration 7). Mirrors applyMigration6() in src/db/schema.ts (SA-01..SA-04);
+-- the v_subagent_usage / v_workflow_summary / v_session_orchestration views
+-- live in sql/views.sql so they are re-created with the other views.
+-- Re-running this whole file is a no-op.
 --
 -- WHY SEPARATE TABLES (not is_sidechain columns on conversation_turns /
 -- tool_calls): every existing cost/token/cache view and its ~49 inline route
@@ -205,9 +183,6 @@ CREATE TABLE IF NOT EXISTS sub_agents (
     source_file           VARCHAR,
     PRIMARY KEY (parent_session_id, agent_id)
 );
-CREATE INDEX IF NOT EXISTS idx_sub_agents_session  ON sub_agents (parent_session_id);
-CREATE INDEX IF NOT EXISTS idx_sub_agents_workflow ON sub_agents (workflow_run_id);
-CREATE INDEX IF NOT EXISTS idx_sub_agents_type     ON sub_agents (subagent_type);
 
 -- SA-02: sub-agent tool calls — SEPARATE from tool_calls (no turn_id FK; never
 -- JOINed to conversation_turns; never touched by main-session tool views). PK
@@ -225,8 +200,6 @@ CREATE TABLE IF NOT EXISTS sub_agent_tool_calls (
     skill_name            VARCHAR,
     skill_caller_type     VARCHAR
 );
-CREATE INDEX IF NOT EXISTS idx_sub_tools_agent ON sub_agent_tool_calls (parent_session_id, agent_id);
-CREATE INDEX IF NOT EXISTS idx_sub_tools_name  ON sub_agent_tool_calls (tool_name);
 
 -- SA-03: one row per workflow RUN (wf_<runId>). Sourced from the
 -- <session>/workflows/wf_<runId>.json manifest (a NEW file -> incremental-safe),
@@ -248,9 +221,45 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
     duration_seconds          INTEGER,
     source_file               VARCHAR                -- manifest path; NULL for stub rows
 );
-CREATE INDEX IF NOT EXISTS idx_workflow_runs_session ON workflow_runs (parent_session_id);
 
 -- SA-04: record schema version 6
 INSERT INTO schema_migrations (version, description)
 VALUES (6, 'Sub-Agent & Workflow Attribution: sub_agents + sub_agent_tool_calls + workflow_runs tables + v_subagent_usage/v_workflow_summary/v_session_orchestration views')
+ON CONFLICT (version) DO NOTHING;
+
+-- =============================================================================
+-- Migration 7 — drop every secondary (non-unique) index
+-- Mirrors applyMigration7() in src/db/schema.ts. DROP INDEX IF EXISTS, so
+-- re-running this whole file is still a no-op. Why: see the Indexes section
+-- above and docs/filtered-query-misses-2026-09-28.md.
+-- =============================================================================
+
+DROP INDEX IF EXISTS idx_sessions_start_time;
+DROP INDEX IF EXISTS idx_sessions_project_path;
+DROP INDEX IF EXISTS idx_sessions_project_time;
+DROP INDEX IF EXISTS idx_turns_session_id;
+DROP INDEX IF EXISTS idx_turns_timestamp;
+DROP INDEX IF EXISTS idx_turns_request_id;
+DROP INDEX IF EXISTS idx_turns_session_time;
+DROP INDEX IF EXISTS idx_tools_session_id;
+DROP INDEX IF EXISTS idx_tools_tool_name;
+DROP INDEX IF EXISTS idx_tools_session_tool;
+DROP INDEX IF EXISTS idx_tools_turn_id;
+DROP INDEX IF EXISTS idx_tools_skill_name;
+DROP INDEX IF EXISTS idx_errors_session_id;
+DROP INDEX IF EXISTS idx_errors_timestamp;
+DROP INDEX IF EXISTS idx_errors_type;
+DROP INDEX IF EXISTS idx_errors_session_time;
+DROP INDEX IF EXISTS idx_session_skills_session;
+DROP INDEX IF EXISTS idx_session_skills_skill_name;
+DROP INDEX IF EXISTS idx_sub_agents_session;
+DROP INDEX IF EXISTS idx_sub_agents_workflow;
+DROP INDEX IF EXISTS idx_sub_agents_type;
+DROP INDEX IF EXISTS idx_sub_tools_agent;
+DROP INDEX IF EXISTS idx_sub_tools_name;
+DROP INDEX IF EXISTS idx_workflow_runs_session;
+
+-- record schema version 7
+INSERT INTO schema_migrations (version, description)
+VALUES (7, 'Drop all secondary indexes (DuckDB 1.4.4 lost rows from them on WAL replay)')
 ON CONFLICT (version) DO NOTHING;

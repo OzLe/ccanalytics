@@ -13,7 +13,38 @@ import { fileURLToPath } from "node:url";
 import { MigrationError } from "../errors.js";
 
 /** Current schema version matching sql/schema.sql */
-const CURRENT_VERSION = 6;
+const CURRENT_VERSION = 7;
+
+/**
+ * Every secondary (non-unique) index earlier schema versions created, all
+ * dropped by migration 7. Mirrors the DROP INDEX list in sql/schema.sql.
+ */
+const DROPPED_SECONDARY_INDEXES = [
+  "idx_sessions_start_time",
+  "idx_sessions_project_path",
+  "idx_sessions_project_time",
+  "idx_turns_session_id",
+  "idx_turns_timestamp",
+  "idx_turns_request_id",
+  "idx_turns_session_time",
+  "idx_tools_session_id",
+  "idx_tools_tool_name",
+  "idx_tools_session_tool",
+  "idx_tools_turn_id",
+  "idx_tools_skill_name",
+  "idx_errors_session_id",
+  "idx_errors_timestamp",
+  "idx_errors_type",
+  "idx_errors_session_time",
+  "idx_session_skills_session",
+  "idx_session_skills_skill_name",
+  "idx_sub_agents_session",
+  "idx_sub_agents_workflow",
+  "idx_sub_agents_type",
+  "idx_sub_tools_agent",
+  "idx_sub_tools_name",
+  "idx_workflow_runs_session",
+] as const;
 
 /**
  * Split a SQL file into individual statements.
@@ -164,6 +195,11 @@ export class SchemaManager {
 
     if (currentVersion < 6) {
       await this.applyMigration6(connection);
+      applied++;
+    }
+
+    if (currentVersion < 7) {
+      await this.applyMigration7(connection);
       applied++;
     }
 
@@ -517,6 +553,34 @@ export class SchemaManager {
       );
     } catch (err) {
       throw new MigrationError(6, err as Error);
+    }
+  }
+
+  /**
+   * Migration v7: drop every secondary (non-unique) index.
+   *
+   * DuckDB 1.4.4 lost rows from these ART indexes when it replayed the WAL on
+   * open, so an index scan (DuckDB picks one at run time for a selective
+   * filter) silently returned too few rows — e.g. 6 of a session's 10
+   * sub-agents. The table data and the PRIMARY KEY / UNIQUE indexes were
+   * intact. A columnar scan answers every dashboard query in about a
+   * millisecond without these indexes, so they are gone rather than rebuilt;
+   * PRIMARY KEY / UNIQUE stay because ON CONFLICT needs them.
+   * docs/filtered-query-misses-2026-09-28.md has the evidence.
+   *
+   * DROP INDEX IF EXISTS makes this idempotent; no table data changes.
+   */
+  private async applyMigration7(connection: unknown): Promise<void> {
+    const conn = connection as { run(sql: string): Promise<unknown> };
+    try {
+      for (const index of DROPPED_SECONDARY_INDEXES) {
+        await conn.run(`DROP INDEX IF EXISTS ${index}`);
+      }
+      await conn.run(
+        `INSERT INTO schema_migrations (version, description) VALUES (7, 'Drop all secondary indexes (DuckDB 1.4.4 lost rows from them on WAL replay)') ON CONFLICT (version) DO NOTHING`,
+      );
+    } catch (err) {
+      throw new MigrationError(7, err as Error);
     }
   }
 

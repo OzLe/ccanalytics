@@ -8,7 +8,7 @@
  * session_skills, the tool_calls skill columns, or v_skill_usage), then runs
  * SchemaManager.migrate() and asserts:
  *   - all 8 migration-5 objects now exist
- *   - SELECT MAX(version) FROM schema_migrations === 5
+ *   - SELECT MAX(version) FROM schema_migrations reaches the current version
  *   - migrate() is a no-op on an already-migrated DB (idempotent, no error)
  *   - every migration-5 statement is additive — pre-existing rows survive
  *     and the new tool_calls columns read NULL on old rows
@@ -143,9 +143,9 @@ describe("schema migration 5 (Skill Analysis / F2D)", () => {
 
     const applied = await mgr.migrate(connection);
 
-    // Migrations 5 AND 6 are pending on a v4 DB (CURRENT_VERSION is 6).
-    expect(applied).toBe(2);
-    expect(await maxVersion(connection)).toBe(6);
+    // Migrations 5, 6 AND 7 are pending on a v4 DB (CURRENT_VERSION is 7).
+    expect(applied).toBe(3);
+    expect(await maxVersion(connection)).toBe(7);
 
     connection.closeSync();
   });
@@ -156,14 +156,14 @@ describe("schema migration 5 (Skill Analysis / F2D)", () => {
 
     // S-01: table session_skills
     expect(await objectExists(connection, "session_skills")).toBe(true);
-    // S-02 / S-03: session_skills indexes
-    expect(await indexExists(connection, "idx_session_skills_session")).toBe(true);
-    expect(await indexExists(connection, "idx_session_skills_skill_name")).toBe(true);
+    // S-02 / S-03: session_skills indexes — created here, dropped by migration 7
+    expect(await indexExists(connection, "idx_session_skills_session")).toBe(false);
+    expect(await indexExists(connection, "idx_session_skills_skill_name")).toBe(false);
     // S-04 / S-05: tool_calls skill columns
     expect(await columnExists(connection, "tool_calls", "skill_name")).toBe(true);
     expect(await columnExists(connection, "tool_calls", "skill_caller_type")).toBe(true);
-    // S-06: idx_tools_skill_name
-    expect(await indexExists(connection, "idx_tools_skill_name")).toBe(true);
+    // S-06: idx_tools_skill_name — created here, dropped by migration 7
+    expect(await indexExists(connection, "idx_tools_skill_name")).toBe(false);
     // S-07: view v_skill_usage
     expect(await objectExists(connection, "v_skill_usage")).toBe(true);
     // S-08: schema_migrations row for version 5
@@ -217,13 +217,13 @@ describe("schema migration 5 (Skill Analysis / F2D)", () => {
     const { connection } = await createV4Db();
     const mgr = new SchemaManager();
 
-    await mgr.migrate(connection); // v4 -> current (v6)
-    expect(await maxVersion(connection)).toBe(6);
+    await mgr.migrate(connection); // v4 -> current (v7)
+    expect(await maxVersion(connection)).toBe(7);
 
     // Second call: nothing pending, returns 0, no error, version unchanged.
     const appliedAgain = await mgr.migrate(connection);
     expect(appliedAgain).toBe(0);
-    expect(await maxVersion(connection)).toBe(6);
+    expect(await maxVersion(connection)).toBe(7);
 
     // And applyMigration5's statements are themselves idempotent — running
     // migrate() a third time still does not throw or duplicate the v5 row.

@@ -2,7 +2,8 @@
 
 > Investigated on 2026-09-28, after the NUL-byte fix (docs/ingestion-failure-nul-byte-2026-09-28.md) was deployed.
 > Status: both causes fixed and deployed on 2026-09-28.
-> Section 6 records a separate, pre-existing storage issue found while verifying the deployment; it is not resolved.
+> Section 6 records a separate, pre-existing storage issue found while verifying the deployment.
+> It was fixed the same day; see docs/filtered-query-misses-2026-09-28.md.
 
 ---
 
@@ -95,8 +96,12 @@ Statements without a NUL are byte-for-byte the ones the original code produced.
 
 ## 6. Open issue: filtered queries that miss rows
 
+> Resolved on 2026-09-28 in docs/filtered-query-misses-2026-09-28.md.
+> Correction: the misses came from the secondary indexes, not from the stored table data.
+> DuckDB switches to an index scan at run time, so the plans below showed a sequential scan either way, and a fresh copy has no indexes.
+
 Found while checking the deployment.
-It predates both fixes and is not resolved.
+It predates both fixes.
 
 Some filtered queries return fewer rows than the tables hold, depending on the query's shape.
 The rows are present: a full scan, or the same filter written differently, returns all of them.
