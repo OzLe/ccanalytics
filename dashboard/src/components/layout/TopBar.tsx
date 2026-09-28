@@ -49,6 +49,16 @@ function extractErrorMessage(err: unknown): string {
   }
 }
 
+/** How many failed files the ingest toast names before summarizing the rest. */
+const MAX_FAILED_FILES_SHOWN = 3;
+
+/** One toast line per failed file: its name and the first line of the error. */
+function describeFailedFile(f: { path: string; error: string }): string {
+  const error = f.error.split("\n")[0] ?? "";
+  const short = error.length > 80 ? `${error.slice(0, 80)}…` : error;
+  return `${f.path.split("/").pop()}: ${short}`;
+}
+
 function getPageInfo(pathname: string): { title: string; subtitle: string } {
   /* Handle session detail */
   if (pathname.startsWith("/sessions/")) {
@@ -182,6 +192,13 @@ export default function TopBar({ onMenuClick }: TopBarProps) {
       if (r.parseErrors > 0) extras.push(`${r.parseErrors} parse errors`);
       if (r.filesFailed > 0) extras.push(`${r.filesFailed} files failed`);
       if (extras.length > 0) lines.push(extras.join(" · "));
+      // Name the failed files: the count alone is not actionable.
+      for (const f of r.failedFiles.slice(0, MAX_FAILED_FILES_SHOWN)) {
+        lines.push(describeFailedFile(f));
+      }
+      if (r.failedFiles.length > MAX_FAILED_FILES_SHOWN) {
+        lines.push(`+${r.failedFiles.length - MAX_FAILED_FILES_SHOWN} more in the server log`);
+      }
       lines.push(`Done in ${(r.durationMs / 1000).toFixed(1)}s`);
       return {
         variant: failed ? "error" : "success",

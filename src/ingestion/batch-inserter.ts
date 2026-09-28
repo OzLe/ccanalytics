@@ -54,33 +54,47 @@ export interface InsertionResult {
 }
 
 /**
- * Convert a JS value to an inline SQL literal.
+ * Renders the values of ONE statement as SQL, binding every string.
+ *
+ * Strings — and values serialized to strings (Dates, JSON objects) — become
+ * `$n` placeholders passed to `run(sql, values)`, so transcript text never
+ * becomes SQL text. DuckDB reads SQL text only up to the first NUL, so an
+ * inlined tool output holding U+0000 cut the statement short and failed the
+ * whole file (docs/ingestion-failure-nul-byte-2026-09-28.md).
+ *
+ * Numbers, booleans and NULL stay inline, rendered exactly as before, so the
+ * stored values (costs, token counts) are unchanged.
  */
-function sqlVal(v: unknown): string {
-  if (v === null || v === undefined) {
-    return "NULL";
+class SqlParams {
+  /** Bound values, in `$1..$n` order. */
+  readonly values: string[] = [];
+
+  /** Return `v` as an inline literal, or bind it and return its placeholder. */
+  sql(v: unknown): string {
+    if (v === null || v === undefined) {
+      return "NULL";
+    }
+    if (typeof v === "boolean") {
+      return v ? "TRUE" : "FALSE";
+    }
+    if (typeof v === "number") {
+      return String(v);
+    }
+    if (v instanceof Date) {
+      this.values.push(v.toISOString());
+    } else if (typeof v === "object") {
+      this.values.push(JSON.stringify(v));
+    } else {
+      this.values.push(String(v));
+    }
+    return `$${this.values.length}`;
   }
-  if (typeof v === "string") {
-    return `'${v.replace(/'/g, "''")}'`;
-  }
-  if (typeof v === "boolean") {
-    return v ? "TRUE" : "FALSE";
-  }
-  if (typeof v === "number") {
-    return String(v);
-  }
-  if (v instanceof Date) {
-    return `'${v.toISOString()}'`;
-  }
-  if (typeof v === "object") {
-    return `'${JSON.stringify(v).replace(/'/g, "''")}'`;
-  }
-  return `'${String(v).replace(/'/g, "''")}'`;
 }
 
 /**
  * Batch-inserts parsed records into the DuckDB star schema.
- * Uses transactions for atomicity and prepared statements for performance.
+ * Uses transactions for atomicity and binds string values as statement
+ * parameters (see {@link SqlParams}).
  */
 export class BatchInserter {
   private batchSize: number = DEFAULT_BATCH_SIZE;
@@ -103,36 +117,37 @@ export class BatchInserter {
   async insertSessions(sessions: SessionRow[]): Promise<number> {
     let count = 0;
     for (const s of sessions) {
+      const p = new SqlParams();
       const sql = `INSERT INTO sessions (
         session_id, start_time, end_time, duration_seconds, model,
         input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
         total_cost_usd, num_turns, num_tool_calls, cwd, source_file,
         git_branch, claude_version, project_path, project_name, source_type
       ) VALUES (
-        ${sqlVal(s.session_id)}, ${sqlVal(s.start_time)}, ${sqlVal(s.end_time)}, ${sqlVal(s.duration_seconds)}, ${sqlVal(s.model)},
-        ${sqlVal(s.input_tokens)}, ${sqlVal(s.output_tokens)}, ${sqlVal(s.cache_creation_tokens)}, ${sqlVal(s.cache_read_tokens)},
-        ${sqlVal(s.total_cost_usd)}, ${sqlVal(s.num_turns)}, ${sqlVal(s.num_tool_calls)}, ${sqlVal(s.cwd)}, ${sqlVal(s.source_file)},
-        ${sqlVal(s.git_branch)}, ${sqlVal(s.claude_version)}, ${sqlVal(s.project_path)}, ${sqlVal(s.project_name)}, ${sqlVal(s.source_type)}
+        ${p.sql(s.session_id)}, ${p.sql(s.start_time)}, ${p.sql(s.end_time)}, ${p.sql(s.duration_seconds)}, ${p.sql(s.model)},
+        ${p.sql(s.input_tokens)}, ${p.sql(s.output_tokens)}, ${p.sql(s.cache_creation_tokens)}, ${p.sql(s.cache_read_tokens)},
+        ${p.sql(s.total_cost_usd)}, ${p.sql(s.num_turns)}, ${p.sql(s.num_tool_calls)}, ${p.sql(s.cwd)}, ${p.sql(s.source_file)},
+        ${p.sql(s.git_branch)}, ${p.sql(s.claude_version)}, ${p.sql(s.project_path)}, ${p.sql(s.project_name)}, ${p.sql(s.source_type)}
       ) ON CONFLICT(session_id) DO UPDATE SET
-        start_time = ${sqlVal(s.start_time)},
-        end_time = ${sqlVal(s.end_time)},
-        duration_seconds = ${sqlVal(s.duration_seconds)},
-        model = ${sqlVal(s.model)},
-        input_tokens = ${sqlVal(s.input_tokens)},
-        output_tokens = ${sqlVal(s.output_tokens)},
-        cache_creation_tokens = ${sqlVal(s.cache_creation_tokens)},
-        cache_read_tokens = ${sqlVal(s.cache_read_tokens)},
-        total_cost_usd = ${sqlVal(s.total_cost_usd)},
-        num_turns = ${sqlVal(s.num_turns)},
-        num_tool_calls = ${sqlVal(s.num_tool_calls)},
-        cwd = ${sqlVal(s.cwd)},
-        source_file = ${sqlVal(s.source_file)},
-        git_branch = ${sqlVal(s.git_branch)},
-        claude_version = ${sqlVal(s.claude_version)},
-        project_path = ${sqlVal(s.project_path)},
-        project_name = ${sqlVal(s.project_name)},
-        source_type = ${sqlVal(s.source_type)}`;
-      await this.conn.run(sql);
+        start_time = ${p.sql(s.start_time)},
+        end_time = ${p.sql(s.end_time)},
+        duration_seconds = ${p.sql(s.duration_seconds)},
+        model = ${p.sql(s.model)},
+        input_tokens = ${p.sql(s.input_tokens)},
+        output_tokens = ${p.sql(s.output_tokens)},
+        cache_creation_tokens = ${p.sql(s.cache_creation_tokens)},
+        cache_read_tokens = ${p.sql(s.cache_read_tokens)},
+        total_cost_usd = ${p.sql(s.total_cost_usd)},
+        num_turns = ${p.sql(s.num_turns)},
+        num_tool_calls = ${p.sql(s.num_tool_calls)},
+        cwd = ${p.sql(s.cwd)},
+        source_file = ${p.sql(s.source_file)},
+        git_branch = ${p.sql(s.git_branch)},
+        claude_version = ${p.sql(s.claude_version)},
+        project_path = ${p.sql(s.project_path)},
+        project_name = ${p.sql(s.project_name)},
+        source_type = ${p.sql(s.source_type)}`;
+      await this.conn.run(sql, p.values);
       count++;
     }
     return count;
@@ -147,20 +162,21 @@ export class BatchInserter {
   async insertTurns(turns: ConversationTurnRow[]): Promise<number> {
     let count = 0;
     for (const t of turns) {
+      const p = new SqlParams();
       const sql = `INSERT INTO conversation_turns (
         turn_id, session_id, role, timestamp, input_tokens, output_tokens,
         cache_creation_tokens, cache_read_tokens, cost_usd, model,
         stop_reason, request_id, parent_uuid, has_tool_use, has_thinking,
         content_text
       ) VALUES (
-        ${sqlVal(t.turn_id)}, ${sqlVal(t.session_id)}, ${sqlVal(t.role)}, ${sqlVal(t.timestamp)},
-        ${sqlVal(t.input_tokens)}, ${sqlVal(t.output_tokens)}, ${sqlVal(t.cache_creation_tokens)},
-        ${sqlVal(t.cache_read_tokens)}, ${sqlVal(t.cost_usd)}, ${sqlVal(t.model)},
-        ${sqlVal(t.stop_reason)}, ${sqlVal(t.request_id)}, ${sqlVal(t.parent_uuid)},
-        ${sqlVal(t.has_tool_use)}, ${sqlVal(t.has_thinking)},
-        ${sqlVal(t.content_text)}
+        ${p.sql(t.turn_id)}, ${p.sql(t.session_id)}, ${p.sql(t.role)}, ${p.sql(t.timestamp)},
+        ${p.sql(t.input_tokens)}, ${p.sql(t.output_tokens)}, ${p.sql(t.cache_creation_tokens)},
+        ${p.sql(t.cache_read_tokens)}, ${p.sql(t.cost_usd)}, ${p.sql(t.model)},
+        ${p.sql(t.stop_reason)}, ${p.sql(t.request_id)}, ${p.sql(t.parent_uuid)},
+        ${p.sql(t.has_tool_use)}, ${p.sql(t.has_thinking)},
+        ${p.sql(t.content_text)}
       ) ON CONFLICT DO NOTHING`;
-      await this.conn.run(sql);
+      await this.conn.run(sql, p.values);
       count++;
     }
     return count;
@@ -180,23 +196,24 @@ export class BatchInserter {
       // a Skill row first ingested before migration 5 gets its columns
       // backfilled on re-ingest. COALESCE keeps any already-set value when a
       // later re-ingest happens to pass NULL.
+      const p = new SqlParams();
       const sql = `INSERT INTO tool_calls (
         tool_call_id, session_id, turn_id, tool_name, tool_type,
         mcp_server, duration_ms, success, error_message, parameters,
         skill_name, skill_caller_type
       ) VALUES (
-        ${sqlVal(tc.tool_call_id)}, ${sqlVal(tc.session_id)}, ${sqlVal(tc.turn_id)},
-        ${sqlVal(tc.tool_name)}, ${sqlVal(tc.tool_type)}, ${sqlVal(tc.mcp_server)},
-        ${sqlVal(tc.duration_ms)}, ${sqlVal(tc.success)}, ${sqlVal(tc.error_message)},
-        ${sqlVal(tc.parameters)},
-        ${sqlVal(tc.skill_name)}, ${sqlVal(tc.skill_caller_type)}
+        ${p.sql(tc.tool_call_id)}, ${p.sql(tc.session_id)}, ${p.sql(tc.turn_id)},
+        ${p.sql(tc.tool_name)}, ${p.sql(tc.tool_type)}, ${p.sql(tc.mcp_server)},
+        ${p.sql(tc.duration_ms)}, ${p.sql(tc.success)}, ${p.sql(tc.error_message)},
+        ${p.sql(tc.parameters)},
+        ${p.sql(tc.skill_name)}, ${p.sql(tc.skill_caller_type)}
       ) ON CONFLICT(tool_call_id) DO UPDATE SET
-        success = ${sqlVal(tc.success)},
-        error_message = ${sqlVal(tc.error_message)},
-        duration_ms = COALESCE(${sqlVal(tc.duration_ms)}, tool_calls.duration_ms),
-        skill_name = COALESCE(${sqlVal(tc.skill_name)}, tool_calls.skill_name),
-        skill_caller_type = COALESCE(${sqlVal(tc.skill_caller_type)}, tool_calls.skill_caller_type)`;
-      await this.conn.run(sql);
+        success = ${p.sql(tc.success)},
+        error_message = ${p.sql(tc.error_message)},
+        duration_ms = COALESCE(${p.sql(tc.duration_ms)}, tool_calls.duration_ms),
+        skill_name = COALESCE(${p.sql(tc.skill_name)}, tool_calls.skill_name),
+        skill_caller_type = COALESCE(${p.sql(tc.skill_caller_type)}, tool_calls.skill_caller_type)`;
+      await this.conn.run(sql, p.values);
       count++;
     }
     return count;
@@ -216,15 +233,16 @@ export class BatchInserter {
   ): Promise<number> {
     let count = 0;
     for (const ss of sessionSkills) {
+      const p = new SqlParams();
       const sql = `INSERT INTO session_skills (
         session_skill_id, session_id, record_uuid, skill_name,
         skill_description, skill_count, is_initial, captured_at, source
       ) VALUES (
-        ${sqlVal(ss.session_skill_id)}, ${sqlVal(ss.session_id)}, ${sqlVal(ss.record_uuid)},
-        ${sqlVal(ss.skill_name)}, ${sqlVal(ss.skill_description)}, ${sqlVal(ss.skill_count)},
-        ${sqlVal(ss.is_initial)}, ${sqlVal(ss.captured_at)}, ${sqlVal(ss.source)}
+        ${p.sql(ss.session_skill_id)}, ${p.sql(ss.session_id)}, ${p.sql(ss.record_uuid)},
+        ${p.sql(ss.skill_name)}, ${p.sql(ss.skill_description)}, ${p.sql(ss.skill_count)},
+        ${p.sql(ss.is_initial)}, ${p.sql(ss.captured_at)}, ${p.sql(ss.source)}
       ) ON CONFLICT(session_skill_id) DO NOTHING`;
-      await this.conn.run(sql);
+      await this.conn.run(sql, p.values);
       count++;
     }
     return count;
@@ -241,6 +259,7 @@ export class BatchInserter {
   private async insertSubAgents(rows: SubAgentRow[]): Promise<number> {
     let count = 0;
     for (const s of rows) {
+      const p = new SqlParams();
       const sql = `INSERT INTO sub_agents (
         parent_session_id, agent_id, session_dir, agent_class, subagent_type,
         workflow_run_id, spawn_tool_use_id, spawn_depth, is_fork, workflow_label,
@@ -249,39 +268,39 @@ export class BatchInserter {
         cache_read_tokens, cost_usd, num_turns, num_tool_calls, success,
         project_path, source_file
       ) VALUES (
-        ${sqlVal(s.parent_session_id)}, ${sqlVal(s.agent_id)}, ${sqlVal(s.session_dir)},
-        ${sqlVal(s.agent_class)}, ${sqlVal(s.subagent_type)}, ${sqlVal(s.workflow_run_id)},
-        ${sqlVal(s.spawn_tool_use_id)}, ${sqlVal(s.spawn_depth)}, ${sqlVal(s.is_fork)},
-        ${sqlVal(s.workflow_label)}, ${sqlVal(s.workflow_phase)}, ${sqlVal(s.entrypoint)},
-        ${sqlVal(s.model)}, ${sqlVal(s.git_branch)}, ${sqlVal(s.start_time)}, ${sqlVal(s.end_time)},
-        ${sqlVal(s.duration_seconds)}, ${sqlVal(s.input_tokens)}, ${sqlVal(s.output_tokens)},
-        ${sqlVal(s.cache_creation_tokens)}, ${sqlVal(s.cache_read_tokens)}, ${sqlVal(s.cost_usd)},
-        ${sqlVal(s.num_turns)}, ${sqlVal(s.num_tool_calls)}, ${sqlVal(s.success)},
-        ${sqlVal(s.project_path)}, ${sqlVal(s.source_file)}
+        ${p.sql(s.parent_session_id)}, ${p.sql(s.agent_id)}, ${p.sql(s.session_dir)},
+        ${p.sql(s.agent_class)}, ${p.sql(s.subagent_type)}, ${p.sql(s.workflow_run_id)},
+        ${p.sql(s.spawn_tool_use_id)}, ${p.sql(s.spawn_depth)}, ${p.sql(s.is_fork)},
+        ${p.sql(s.workflow_label)}, ${p.sql(s.workflow_phase)}, ${p.sql(s.entrypoint)},
+        ${p.sql(s.model)}, ${p.sql(s.git_branch)}, ${p.sql(s.start_time)}, ${p.sql(s.end_time)},
+        ${p.sql(s.duration_seconds)}, ${p.sql(s.input_tokens)}, ${p.sql(s.output_tokens)},
+        ${p.sql(s.cache_creation_tokens)}, ${p.sql(s.cache_read_tokens)}, ${p.sql(s.cost_usd)},
+        ${p.sql(s.num_turns)}, ${p.sql(s.num_tool_calls)}, ${p.sql(s.success)},
+        ${p.sql(s.project_path)}, ${p.sql(s.source_file)}
       ) ON CONFLICT(parent_session_id, agent_id) DO UPDATE SET
-        session_dir = ${sqlVal(s.session_dir)},
-        agent_class = ${sqlVal(s.agent_class)},
-        subagent_type = ${sqlVal(s.subagent_type)},
-        workflow_run_id = ${sqlVal(s.workflow_run_id)},
-        spawn_tool_use_id = COALESCE(${sqlVal(s.spawn_tool_use_id)}, sub_agents.spawn_tool_use_id),
-        spawn_depth = COALESCE(${sqlVal(s.spawn_depth)}, sub_agents.spawn_depth),
-        is_fork = COALESCE(${sqlVal(s.is_fork)}, sub_agents.is_fork),
-        model = ${sqlVal(s.model)},
-        git_branch = ${sqlVal(s.git_branch)},
-        start_time = ${sqlVal(s.start_time)},
-        end_time = ${sqlVal(s.end_time)},
-        duration_seconds = ${sqlVal(s.duration_seconds)},
-        input_tokens = ${sqlVal(s.input_tokens)},
-        output_tokens = ${sqlVal(s.output_tokens)},
-        cache_creation_tokens = ${sqlVal(s.cache_creation_tokens)},
-        cache_read_tokens = ${sqlVal(s.cache_read_tokens)},
-        cost_usd = ${sqlVal(s.cost_usd)},
-        num_turns = ${sqlVal(s.num_turns)},
-        num_tool_calls = ${sqlVal(s.num_tool_calls)},
-        success = ${sqlVal(s.success)},
-        project_path = ${sqlVal(s.project_path)},
-        source_file = ${sqlVal(s.source_file)}`;
-      await this.conn.run(sql);
+        session_dir = ${p.sql(s.session_dir)},
+        agent_class = ${p.sql(s.agent_class)},
+        subagent_type = ${p.sql(s.subagent_type)},
+        workflow_run_id = ${p.sql(s.workflow_run_id)},
+        spawn_tool_use_id = COALESCE(${p.sql(s.spawn_tool_use_id)}, sub_agents.spawn_tool_use_id),
+        spawn_depth = COALESCE(${p.sql(s.spawn_depth)}, sub_agents.spawn_depth),
+        is_fork = COALESCE(${p.sql(s.is_fork)}, sub_agents.is_fork),
+        model = ${p.sql(s.model)},
+        git_branch = ${p.sql(s.git_branch)},
+        start_time = ${p.sql(s.start_time)},
+        end_time = ${p.sql(s.end_time)},
+        duration_seconds = ${p.sql(s.duration_seconds)},
+        input_tokens = ${p.sql(s.input_tokens)},
+        output_tokens = ${p.sql(s.output_tokens)},
+        cache_creation_tokens = ${p.sql(s.cache_creation_tokens)},
+        cache_read_tokens = ${p.sql(s.cache_read_tokens)},
+        cost_usd = ${p.sql(s.cost_usd)},
+        num_turns = ${p.sql(s.num_turns)},
+        num_tool_calls = ${p.sql(s.num_tool_calls)},
+        success = ${p.sql(s.success)},
+        project_path = ${p.sql(s.project_path)},
+        source_file = ${p.sql(s.source_file)}`;
+      await this.conn.run(sql, p.values);
       count++;
     }
     return count;
@@ -296,20 +315,21 @@ export class BatchInserter {
   ): Promise<number> {
     let count = 0;
     for (const tc of rows) {
+      const p = new SqlParams();
       const sql = `INSERT INTO sub_agent_tool_calls (
         tool_call_id, parent_session_id, agent_id, tool_name, tool_type,
         mcp_server, success, error_message, parameters, skill_name, skill_caller_type
       ) VALUES (
-        ${sqlVal(tc.tool_call_id)}, ${sqlVal(tc.parent_session_id)}, ${sqlVal(tc.agent_id)},
-        ${sqlVal(tc.tool_name)}, ${sqlVal(tc.tool_type)}, ${sqlVal(tc.mcp_server)},
-        ${sqlVal(tc.success)}, ${sqlVal(tc.error_message)}, ${sqlVal(tc.parameters)},
-        ${sqlVal(tc.skill_name)}, ${sqlVal(tc.skill_caller_type)}
+        ${p.sql(tc.tool_call_id)}, ${p.sql(tc.parent_session_id)}, ${p.sql(tc.agent_id)},
+        ${p.sql(tc.tool_name)}, ${p.sql(tc.tool_type)}, ${p.sql(tc.mcp_server)},
+        ${p.sql(tc.success)}, ${p.sql(tc.error_message)}, ${p.sql(tc.parameters)},
+        ${p.sql(tc.skill_name)}, ${p.sql(tc.skill_caller_type)}
       ) ON CONFLICT(tool_call_id) DO UPDATE SET
-        success = ${sqlVal(tc.success)},
-        error_message = ${sqlVal(tc.error_message)},
-        skill_name = COALESCE(${sqlVal(tc.skill_name)}, sub_agent_tool_calls.skill_name),
-        skill_caller_type = COALESCE(${sqlVal(tc.skill_caller_type)}, sub_agent_tool_calls.skill_caller_type)`;
-      await this.conn.run(sql);
+        success = ${p.sql(tc.success)},
+        error_message = ${p.sql(tc.error_message)},
+        skill_name = COALESCE(${p.sql(tc.skill_name)}, sub_agent_tool_calls.skill_name),
+        skill_caller_type = COALESCE(${p.sql(tc.skill_caller_type)}, sub_agent_tool_calls.skill_caller_type)`;
+      await this.conn.run(sql, p.values);
       count++;
     }
     return count;
@@ -324,32 +344,33 @@ export class BatchInserter {
   private async insertWorkflowRuns(rows: WorkflowRunRow[]): Promise<number> {
     let count = 0;
     for (const w of rows) {
+      const p = new SqlParams();
       const sql = `INSERT INTO workflow_runs (
         run_id, parent_session_id, task_id, workflow_name, summary, status,
         default_model, num_phases, manifest_agent_count, manifest_total_tokens,
         manifest_total_tool_calls, start_time, end_time, duration_seconds, source_file
       ) VALUES (
-        ${sqlVal(w.run_id)}, ${sqlVal(w.parent_session_id)}, ${sqlVal(w.task_id)},
-        ${sqlVal(w.workflow_name)}, ${sqlVal(w.summary)}, ${sqlVal(w.status)},
-        ${sqlVal(w.default_model)}, ${sqlVal(w.num_phases)}, ${sqlVal(w.manifest_agent_count)},
-        ${sqlVal(w.manifest_total_tokens)}, ${sqlVal(w.manifest_total_tool_calls)},
-        ${sqlVal(w.start_time)}, ${sqlVal(w.end_time)}, ${sqlVal(w.duration_seconds)}, ${sqlVal(w.source_file)}
+        ${p.sql(w.run_id)}, ${p.sql(w.parent_session_id)}, ${p.sql(w.task_id)},
+        ${p.sql(w.workflow_name)}, ${p.sql(w.summary)}, ${p.sql(w.status)},
+        ${p.sql(w.default_model)}, ${p.sql(w.num_phases)}, ${p.sql(w.manifest_agent_count)},
+        ${p.sql(w.manifest_total_tokens)}, ${p.sql(w.manifest_total_tool_calls)},
+        ${p.sql(w.start_time)}, ${p.sql(w.end_time)}, ${p.sql(w.duration_seconds)}, ${p.sql(w.source_file)}
       ) ON CONFLICT(run_id) DO UPDATE SET
-        parent_session_id = COALESCE(${sqlVal(w.parent_session_id)}, workflow_runs.parent_session_id),
-        task_id = COALESCE(${sqlVal(w.task_id)}, workflow_runs.task_id),
-        workflow_name = COALESCE(${sqlVal(w.workflow_name)}, workflow_runs.workflow_name),
-        summary = COALESCE(${sqlVal(w.summary)}, workflow_runs.summary),
-        status = COALESCE(${sqlVal(w.status)}, workflow_runs.status),
-        default_model = COALESCE(${sqlVal(w.default_model)}, workflow_runs.default_model),
-        num_phases = COALESCE(${sqlVal(w.num_phases)}, workflow_runs.num_phases),
-        manifest_agent_count = COALESCE(${sqlVal(w.manifest_agent_count)}, workflow_runs.manifest_agent_count),
-        manifest_total_tokens = COALESCE(${sqlVal(w.manifest_total_tokens)}, workflow_runs.manifest_total_tokens),
-        manifest_total_tool_calls = COALESCE(${sqlVal(w.manifest_total_tool_calls)}, workflow_runs.manifest_total_tool_calls),
-        start_time = COALESCE(${sqlVal(w.start_time)}, workflow_runs.start_time),
-        end_time = COALESCE(${sqlVal(w.end_time)}, workflow_runs.end_time),
-        duration_seconds = COALESCE(${sqlVal(w.duration_seconds)}, workflow_runs.duration_seconds),
-        source_file = COALESCE(${sqlVal(w.source_file)}, workflow_runs.source_file)`;
-      await this.conn.run(sql);
+        parent_session_id = COALESCE(${p.sql(w.parent_session_id)}, workflow_runs.parent_session_id),
+        task_id = COALESCE(${p.sql(w.task_id)}, workflow_runs.task_id),
+        workflow_name = COALESCE(${p.sql(w.workflow_name)}, workflow_runs.workflow_name),
+        summary = COALESCE(${p.sql(w.summary)}, workflow_runs.summary),
+        status = COALESCE(${p.sql(w.status)}, workflow_runs.status),
+        default_model = COALESCE(${p.sql(w.default_model)}, workflow_runs.default_model),
+        num_phases = COALESCE(${p.sql(w.num_phases)}, workflow_runs.num_phases),
+        manifest_agent_count = COALESCE(${p.sql(w.manifest_agent_count)}, workflow_runs.manifest_agent_count),
+        manifest_total_tokens = COALESCE(${p.sql(w.manifest_total_tokens)}, workflow_runs.manifest_total_tokens),
+        manifest_total_tool_calls = COALESCE(${p.sql(w.manifest_total_tool_calls)}, workflow_runs.manifest_total_tool_calls),
+        start_time = COALESCE(${p.sql(w.start_time)}, workflow_runs.start_time),
+        end_time = COALESCE(${p.sql(w.end_time)}, workflow_runs.end_time),
+        duration_seconds = COALESCE(${p.sql(w.duration_seconds)}, workflow_runs.duration_seconds),
+        source_file = COALESCE(${p.sql(w.source_file)}, workflow_runs.source_file)`;
+      await this.conn.run(sql, p.values);
       count++;
     }
     return count;
@@ -363,15 +384,16 @@ export class BatchInserter {
   private async insertErrors(errors: ErrorRow[]): Promise<number> {
     let count = 0;
     for (const e of errors) {
+      const p = new SqlParams();
       const sql = `INSERT INTO errors (
         error_id, session_id, timestamp, error_type, message,
         is_retryable, retry_count
       ) VALUES (
-        ${sqlVal(e.error_id)}, ${sqlVal(e.session_id)}, ${sqlVal(e.timestamp)},
-        ${sqlVal(e.error_type)}, ${sqlVal(e.message)}, ${sqlVal(e.is_retryable)},
-        ${sqlVal(e.retry_count)}
+        ${p.sql(e.error_id)}, ${p.sql(e.session_id)}, ${p.sql(e.timestamp)},
+        ${p.sql(e.error_type)}, ${p.sql(e.message)}, ${p.sql(e.is_retryable)},
+        ${p.sql(e.retry_count)}
       ) ON CONFLICT(error_id) DO NOTHING`;
-      await this.conn.run(sql);
+      await this.conn.run(sql, p.values);
       count++;
     }
     return count;

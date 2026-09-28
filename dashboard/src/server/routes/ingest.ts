@@ -101,6 +101,11 @@ router.post("/", async (_req, res, next) => {
     const runIngestion = await loadRunIngestion();
     const db = await getIngestConnection();
     const { result } = await runIngestion({ db, source: "all" });
+    // Per-file failures otherwise travel only in this response; log them so a
+    // failed file can be diagnosed from the server log afterwards.
+    for (const f of result.failedFiles) {
+      console.warn(`[ingest] failed: ${f.path}: ${JSON.stringify(f.error)}`);
+    }
     res.json(envelope(result, "all"));
   } catch (err) {
     next(err);
