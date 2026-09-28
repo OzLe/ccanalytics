@@ -1,7 +1,7 @@
 # Plan: DuckDB 2.0 upgrade and housekeeping
 
 Date: 2026-09-28.
-Status: for the owner's review; decisions D5 and D6 are open (section 6).
+Status: the owner chose the recommended option for D5 and D6 on 2026-09-28 (section 6); D6 is done.
 Scope: step 4 of `docs/pricing-recovery-duckdb-plan-2026-09-28.md`, the DuckDB upgrade, plus leftovers from that work: the untracked Rust migration evaluation, stale PR #28 and a correction to the earlier plan.
 
 ## 1. Summary
@@ -92,7 +92,7 @@ Convert only with a release build: the dev build stamps converted files with a d
 | When `@duckdb/node-api` 2.0.x ships | Run the test suite on it in a scratch checkout, then the rehearsal on a copy (Appendix B) |
 | 2026-11-16, 2.0.1 | Stage A on the live database, with the usual stop, backup and verify routine |
 | 2026-11-17 | 1.4 support ends |
-| Two weeks after Stage A | Stage B, if D5 says yes |
+| Two weeks after Stage A | Stage B, approved in D5 |
 
 Fallback: if G4 is not met by 2026-11-17, stay on 1.4.5 until it is.
 A few weeks on an unsupported engine is low risk for a local tool now that open failures never delete data.
@@ -102,14 +102,17 @@ A few weeks on an unsupported engine is low risk for a local tool now that open 
 - The Rust migration evaluation (`docs/rust-migration-evaluation.md`, written 2026-09-03) lands in the same pull request as this plan, with a dated note on what changed since.
   Its five owner decisions stay open, and no port is planned.
   A port that starts after Stage A should target the DuckDB 2.0 Rust crate, since 2.0 will be writing the file by then.
-- PR #28, a standalone bump to version 0.1.14, is obsolete: main is at 0.1.17, and the post-merge hook makes such bumps by design.
-- The local branch `feature/rust-migration-evaluation` has no commits of its own and can go once the evaluation is on main.
+- PR #28, a standalone bump to version 0.1.14, was obsolete: main is at 0.1.17, and the post-merge hook makes such bumps by design.
+  It was closed and its branch deleted on 2026-09-28 (D6).
+- The local branch `feature/rust-migration-evaluation` had no commits of its own and was deleted on 2026-09-28 (D6).
 - The staged 0.1.19 version bump on main is the post-merge hook's normal resting state; nothing to do.
 - The transcript backups confirm decision D1 of the earlier plan with recorded data.
   From February to September 2026, 98.6% to 100% of main-thread cache writes were 1-hour writes each month, and at least 99.9% of sub-agent writes were 5-minute writes.
   Backfilling the recorded split from the backups would move the stored cost by a few dollars, so it is not worth doing.
 
 ## 6. Decisions for you
+
+The owner chose option (a) for both on 2026-09-28, and D6 was carried out the same day.
 
 - **D5. Stage B, converting the file to the 2.0 format.**
   (a) Recommended: yes, two weeks after Stage A, on a release build, after a rehearsal on a copy.
@@ -123,12 +126,12 @@ A few weeks on an unsupported engine is low risk for a local tool now that open 
 | Step | Work | Depends on |
 |---|---|---|
 | 1 | This pull request: this plan, the Rust evaluation and the test scripts | Review |
-| 2 | Close PR #28 and delete the stale branches | D6 |
+| 2 | Close PR #28 and delete the stale branches | Done 2026-09-28 |
 | 3 | Prep pull request: tie-breakers and `scripts/compare-api.ts` | None |
 | 4 | Rerun the test on 2.0.0 | 2.0.0 release |
 | 5 | Rehearsal with the Node.js package | G4, step 3 |
 | 6 | Stage A on the live database | 2.0.1, step 5 |
-| 7 | Stage B | D5, two weeks of Stage A |
+| 7 | Stage B | Two weeks of Stage A |
 
 ---
 
