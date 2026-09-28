@@ -155,15 +155,17 @@ async function initConnection() {
     }
   }
 
-  // Rebuild indexes to fix potential ART index corruption from ON CONFLICT ops.
-  // If index rebuild triggers a FATAL error (corrupts the DuckDB instance),
-  // close everything and reopen without indexes rather than leaving a dead connection.
+  // Apply pending schema migrations before the first query: migration 7 drops
+  // the secondary indexes DuckDB 1.4.4 corrupted on WAL replay. A failure is
+  // logged, not fatal — the next ingest runs the same migrations.
   try {
-    await rebuildIndexes(connection);
+    await applyPendingMigrations(connection);
   } catch (err) {
     const msg = (err as Error).message ?? "";
+    console.warn(`[db] Schema migration failed: ${msg}`);
+    // A FATAL error invalidates the DuckDB instance; reopen rather than keep a
+    // dead connection.
     if (msg.includes("FATAL") || msg.includes("invalidated")) {
-      console.warn("[db] Index rebuild caused FATAL error — reopening without indexes");
       try { connection.closeSync(); } catch { /* ignore */ }
       connection = null;
       connection = await openDb(dbPath);
@@ -173,41 +175,51 @@ async function initConnection() {
   // Ensure analytical views are up-to-date on first connection.
   await initViews(connection);
 
+  // Fold the startup writes, and any WAL replayed on open, into the database
+  // file so the next start has little or nothing to replay.
+  await checkpoint(connection);
+
   return connection;
 }
 
+/** The parts of the parent package's `SchemaManager` this module uses. */
+interface SchemaManagerLike {
+  getVersion(connection: unknown): Promise<number>;
+  migrate(connection: unknown): Promise<number>;
+}
+
 /**
- * Rebuild ART indexes on conversation_turns, tool_calls, and errors to fix
- * corruption caused by DuckDB's ON CONFLICT operations during ingestion.
- * Without this, WHERE session_id = $1 returns wrong results.
+ * Apply the parent package's pending schema migrations, so a dashboard started
+ * on an older database gets them before its first query rather than at the
+ * next ingest (docs/filtered-query-misses-2026-09-28.md).
+ *
+ * Only a database that already carries the ccanalytics schema is migrated; an
+ * empty one is left for the first ingest to initialize, as before. The module
+ * path is resolved at runtime for the same reason as the ingest route's
+ * `loadRunIngestion()`: it keeps the parent project out of this typecheck.
  */
-async function rebuildIndexes(
-  conn: Awaited<ReturnType<InstanceType<typeof DuckDBInstance>["connect"]>>,
-): Promise<void> {
-  const indexes = [
-    // conversation_turns indexes
-    { name: "idx_turns_session_id", table: "conversation_turns", cols: "(session_id)" },
-    { name: "idx_turns_session_time", table: "conversation_turns", cols: "(session_id, timestamp)" },
-    { name: "idx_turns_request_id", table: "conversation_turns", cols: "(request_id)" },
-    // tool_calls indexes
-    { name: "idx_tools_session_id", table: "tool_calls", cols: "(session_id)" },
-    { name: "idx_tools_session_tool", table: "tool_calls", cols: "(session_id, tool_name)" },
-    { name: "idx_tools_turn_id", table: "tool_calls", cols: "(turn_id)" },
-    // errors indexes
-    { name: "idx_errors_session_id", table: "errors", cols: "(session_id)" },
-    { name: "idx_errors_session_time", table: "errors", cols: "(session_id, timestamp)" },
-  ];
-
-  for (const idx of indexes) {
-    try {
-      await conn.run(`DROP INDEX IF EXISTS ${idx.name}`);
-      await conn.run(`CREATE INDEX ${idx.name} ON ${idx.table} ${idx.cols}`);
-    } catch (err) {
-      console.warn(`Warning: Failed to rebuild index ${idx.name}: ${(err as Error).message}`);
-    }
+async function applyPendingMigrations(conn: DuckDBConnection): Promise<void> {
+  const modulePath = path.resolve(__dirname, "../../../../src/db/schema.ts");
+  const { SchemaManager } = (await import(modulePath)) as {
+    SchemaManager: new () => SchemaManagerLike;
+  };
+  const schema = new SchemaManager();
+  if ((await schema.getVersion(conn)) === 0) {
+    return;
   }
+  const applied = await schema.migrate(conn);
+  if (applied > 0) {
+    console.log(`[db] Applied ${applied} schema migration(s).`);
+  }
+}
 
-  console.log("Indexes rebuilt.");
+/** Run CHECKPOINT; a failure is logged, not thrown — the data stays in the WAL. */
+async function checkpoint(conn: DuckDBConnection): Promise<void> {
+  try {
+    await conn.run("CHECKPOINT");
+  } catch (err) {
+    console.warn(`[db] CHECKPOINT failed: ${(err as Error).message}`);
+  }
 }
 
 /**

@@ -138,6 +138,20 @@ export async function runIngestion(
       since: options.since,
     });
 
+    // Fold this run's writes into the database file. Neither entry point
+    // closes the DuckDB instance on exit, so the next open would otherwise
+    // replay them from the WAL — where DuckDB 1.4.4 lost index entries
+    // (docs/filtered-query-misses-2026-09-28.md). Best-effort: if the
+    // checkpoint fails, the data is still safe in the WAL.
+    if (result.filesProcessed > 0) {
+      try {
+        const conn = db.getConnection() as { run(sql: string): Promise<unknown> };
+        await conn.run("CHECKPOINT");
+      } catch (err) {
+        log?.debug(`CHECKPOINT failed: ${(err as Error).message}`);
+      }
+    }
+
     return { result, config };
   } finally {
     // Only close the connection if WE opened it. A caller-supplied connection

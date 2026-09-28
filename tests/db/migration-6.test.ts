@@ -9,7 +9,7 @@
  * but WITHOUT sub_agents / sub_agent_tool_calls / workflow_runs or the three
  * new views), then runs SchemaManager.migrate() and asserts:
  *   - all migration-6 objects now exist
- *   - SELECT MAX(version) FROM schema_migrations === 6
+ *   - SELECT MAX(version) FROM schema_migrations reaches the current version
  *   - migrate() is a no-op on an already-migrated DB (idempotent, no error)
  *   - the COMPOSITE (parent_session_id, agent_id) PK is honoured: two agents
  *     that share an agent_id under different sessions are distinct rows, and a
@@ -120,7 +120,7 @@ async function scalar(conn: DuckDBConnection, sql: string): Promise<number> {
 }
 
 describe("schema migration 6 (Sub-Agent & Workflow Attribution / F-SA)", () => {
-  it("migrate() on a v5 DB applies migration 6 and bumps version to 6", async () => {
+  it("migrate() on a v5 DB applies migrations 6 and 7 and bumps version to 7", async () => {
     const { connection } = await createV5Db();
     const mgr = new SchemaManager();
 
@@ -128,14 +128,14 @@ describe("schema migration 6 (Sub-Agent & Workflow Attribution / F-SA)", () => {
 
     const applied = await mgr.migrate(connection);
 
-    // Only migration 6 is pending on a v5 DB.
-    expect(applied).toBe(1);
-    expect(await maxVersion(connection)).toBe(6);
+    // Migrations 6 and 7 are pending on a v5 DB (CURRENT_VERSION is 7).
+    expect(applied).toBe(2);
+    expect(await maxVersion(connection)).toBe(7);
 
     connection.closeSync();
   });
 
-  it("creates all migration-6 schema objects (3 tables, indexes, 3 views)", async () => {
+  it("creates all migration-6 schema objects (3 tables, 3 views; indexes dropped by migration 7)", async () => {
     const { connection } = await createV5Db();
     await new SchemaManager().migrate(connection);
 
@@ -143,13 +143,13 @@ describe("schema migration 6 (Sub-Agent & Workflow Attribution / F-SA)", () => {
     expect(await objectExists(connection, "sub_agents")).toBe(true);
     expect(await objectExists(connection, "sub_agent_tool_calls")).toBe(true);
     expect(await objectExists(connection, "workflow_runs")).toBe(true);
-    // indexes
-    expect(await indexExists(connection, "idx_sub_agents_session")).toBe(true);
-    expect(await indexExists(connection, "idx_sub_agents_workflow")).toBe(true);
-    expect(await indexExists(connection, "idx_sub_agents_type")).toBe(true);
-    expect(await indexExists(connection, "idx_sub_tools_agent")).toBe(true);
-    expect(await indexExists(connection, "idx_sub_tools_name")).toBe(true);
-    expect(await indexExists(connection, "idx_workflow_runs_session")).toBe(true);
+    // indexes — created here, dropped by migration 7
+    expect(await indexExists(connection, "idx_sub_agents_session")).toBe(false);
+    expect(await indexExists(connection, "idx_sub_agents_workflow")).toBe(false);
+    expect(await indexExists(connection, "idx_sub_agents_type")).toBe(false);
+    expect(await indexExists(connection, "idx_sub_tools_agent")).toBe(false);
+    expect(await indexExists(connection, "idx_sub_tools_name")).toBe(false);
+    expect(await indexExists(connection, "idx_workflow_runs_session")).toBe(false);
     // views
     expect(await objectExists(connection, "v_subagent_usage")).toBe(true);
     expect(await objectExists(connection, "v_workflow_summary")).toBe(true);
@@ -169,12 +169,12 @@ describe("schema migration 6 (Sub-Agent & Workflow Attribution / F-SA)", () => {
     const { connection } = await createV5Db();
     const mgr = new SchemaManager();
 
-    await mgr.migrate(connection); // v5 -> v6
-    expect(await maxVersion(connection)).toBe(6);
+    await mgr.migrate(connection); // v5 -> v7
+    expect(await maxVersion(connection)).toBe(7);
 
     const appliedAgain = await mgr.migrate(connection);
     expect(appliedAgain).toBe(0);
-    expect(await maxVersion(connection)).toBe(6);
+    expect(await maxVersion(connection)).toBe(7);
 
     // applyMigration6's statements are idempotent — a third run neither throws
     // nor duplicates the v6 row.
