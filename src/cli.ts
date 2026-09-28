@@ -20,6 +20,7 @@ import { registerExportCommand } from "./commands/export.js";
 import { registerWebCommand } from "./commands/web.js";
 import { registerInitCommand } from "./commands/init.js";
 import { registerRecommendCommand } from "./commands/recommend.js";
+import { registerDbCommand } from "./commands/db.js";
 import { FULL_VERSION } from "./version.js";
 
 /**
@@ -56,6 +57,7 @@ export function createProgram(): Command {
   registerWebCommand(program);
   registerInitCommand(program);
   registerRecommendCommand(program);
+  registerDbCommand(program);
 
   return program;
 }

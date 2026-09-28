@@ -6,20 +6,9 @@
  * All other modules access the database through this class.
  */
 
-import { unlinkSync, existsSync } from "node:fs";
 import type { DuckDBInstance, DuckDBConnection } from "@duckdb/node-api";
 import { DatabaseError, ConnectionError } from "../errors.js";
-
-/** Error messages that indicate an unrecoverable corrupt database file. */
-const CORRUPTION_PATTERNS = [
-  "Failed to load metadata pointer",
-  "Corrupt database",
-  "INTERNAL Error",
-  "IO Error: Could not read",
-  "not a valid DuckDB database file",
-  "Deserialization Error",
-  "invalid file header",
-];
+import { describeOpenFailure } from "./open-failure.js";
 
 /**
  * Minimal connection-provider interface.
@@ -45,10 +34,15 @@ export class ConnectionManager implements ConnectionLike {
 
   /**
    * Open a DuckDB instance and connection.
-   * Creates the database file and parent directories if they do not exist.
+   * Creates the database file if it does not exist.
+   *
+   * A failure never modifies the files: the database is the only copy of
+   * history older than the transcripts' 30 days, so repair is left to the
+   * explicit `ccanalytics db recover` (see db/open-failure).
    *
    * @param dbPath - Path to the DuckDB database file, or ":memory:" for in-memory
-   * @throws ConnectionError if the connection cannot be established
+   * @throws DatabaseOpenError if DuckDB cannot open the database
+   * @throws ConnectionError if the ICU / time-zone liveness check fails
    */
   async open(dbPath: string): Promise<void> {
     try {
@@ -58,77 +52,18 @@ export class ConnectionManager implements ConnectionLike {
       this.dbPath = dbPath;
       await this.applySessionDefaults();
     } catch (err) {
-      if (dbPath === ":memory:") {
-        throw new ConnectionError(
-          `Failed to connect to DuckDB at ${dbPath}`,
-          err as Error,
-        );
+      try {
+        this.connection?.closeSync();
+        this.instance?.closeSync();
+      } catch {
+        // already unusable
       }
-
-      const msg = (err as Error).message ?? "";
-      const walPath = `${dbPath}.wal`;
-
-      // --- Corrupt WAL recovery ---
-      if (msg.includes("replaying WAL") && existsSync(walPath)) {
-        console.warn(
-          `[db] Corrupt WAL detected — removing ${walPath} and retrying`,
-        );
-        unlinkSync(walPath);
-        try {
-          const { DuckDBInstance: DuckDB } = await import("@duckdb/node-api");
-          this.instance = await DuckDB.create(dbPath);
-          this.connection = await this.instance.connect();
-          this.dbPath = dbPath;
-          await this.applySessionDefaults();
-          return;
-        } catch (retryErr) {
-          // WAL removal wasn't enough — fall through to corruption recovery
-          const retryMsg = (retryErr as Error).message ?? "";
-          if (!this.looksCorrupt(retryMsg)) {
-            throw new ConnectionError(
-              `Failed to connect to DuckDB at ${dbPath} after WAL recovery`,
-              retryErr as Error,
-            );
-          }
-        }
-      }
-
-      // --- Corrupt database file recovery ---
-      if (this.looksCorrupt(msg) && existsSync(dbPath)) {
-        console.warn(
-          `[db] Corrupt database detected — removing ${dbPath} and recreating`,
-        );
-        unlinkSync(dbPath);
-        if (existsSync(walPath)) {
-          unlinkSync(walPath);
-        }
-        try {
-          const { DuckDBInstance: DuckDB } = await import("@duckdb/node-api");
-          this.instance = await DuckDB.create(dbPath);
-          this.connection = await this.instance.connect();
-          this.dbPath = dbPath;
-          await this.applySessionDefaults();
-          return;
-        } catch (retryErr) {
-          throw new ConnectionError(
-            `Failed to connect to DuckDB at ${dbPath} after removing corrupt database`,
-            retryErr as Error,
-          );
-        }
-      }
-
-      throw new ConnectionError(
-        `Failed to connect to DuckDB at ${dbPath}`,
-        err as Error,
-      );
+      this.connection = null;
+      this.instance = null;
+      this.dbPath = null;
+      if (err instanceof ConnectionError) throw err;
+      throw describeOpenFailure(dbPath, err as Error);
     }
-  }
-
-  /**
-   * Check whether an error message indicates database file corruption.
-   */
-  private looksCorrupt(msg: string): boolean {
-    return CORRUPTION_PATTERNS.some((p) => msg.includes(p));
   }
 
   /**
@@ -210,8 +145,9 @@ export class ConnectionManager implements ConnectionLike {
         this.connection.closeSync();
         this.connection = null;
       }
-      // DuckDBInstance does not have an explicit close in all versions;
-      // setting to null allows garbage collection
+      // Release the file lock now, not at garbage collection, so the next
+      // process (or `db recover`'s retry) can open the database.
+      this.instance?.closeSync();
       this.instance = null;
       this.dbPath = null;
     } catch (err) {

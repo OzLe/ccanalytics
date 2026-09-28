@@ -1071,3 +1071,20 @@ export interface AgentCostAttributionRow {
   orchestrationCostPct: number;
   subAgentsSpawned: number;
 }
+
+/**
+ * GET /api/health — 200 when the database opens, 503 (same shape) when it
+ * does not. `reason` and `hint` come from the server's DatabaseOpenError.
+ */
+export interface HealthStatus {
+  status: "ok" | "degraded";
+  timestamp: string;
+  database: {
+    connected: boolean;
+    path: string;
+    latencyMs?: number;
+    error?: string;
+    reason?: "locked" | "wal-replay" | "version" | "unreadable";
+    hint?: string;
+  };
+}

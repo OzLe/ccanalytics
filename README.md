@@ -147,6 +147,18 @@ Shows database size, table row counts, last ingestion time, and config.
 ccanalytics status
 ```
 
+### `db recover` — Database that will not open
+
+ccanalytics never deletes or recreates the database when DuckDB cannot open it: the database is the only copy of history older than Claude Code's 30-day transcript retention.
+The CLI and the dashboard report the reason and the next step instead.
+`db recover` is the explicit repair: it copies the database and its write-ahead log into `~/.ccanalytics/backups/` first, then sets a log that fails to replay aside (`.wal.quarantined-<timestamp>`), or lists the backups to restore from when the database file itself is damaged.
+Stop the dashboard before running it.
+
+```bash
+launchctl bootout gui/$(id -u)/com.ccanalytics.web   # if the LaunchAgent runs
+ccanalytics db recover
+```
+
 ### Global options
 
 ```

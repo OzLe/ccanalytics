@@ -179,6 +179,41 @@ export class ConnectionError extends DatabaseError {
   }
 }
 
+/** Why DuckDB could not open the database file (see `db/open-failure`). */
+export type DatabaseOpenReason = "locked" | "wal-replay" | "version" | "unreadable";
+
+/**
+ * DuckDB could not open the database. The files are never modified on this
+ * path; the error carries the reason and the next step for the user.
+ */
+export class DatabaseOpenError extends ConnectionError {
+  public readonly dbPath: string;
+  public readonly walPath: string;
+  public readonly walPresent: boolean;
+  public readonly reason: DatabaseOpenReason;
+  public readonly hint: string;
+  constructor(
+    details: {
+      dbPath: string;
+      walPresent: boolean;
+      reason: DatabaseOpenReason;
+      hint: string;
+    },
+    cause: Error,
+  ) {
+    super(
+      `Could not open the database ${details.dbPath}: ${cause.message.split("\n")[0]}`,
+      cause,
+    );
+    this.name = "DatabaseOpenError";
+    this.dbPath = details.dbPath;
+    this.walPath = `${details.dbPath}.wal`;
+    this.walPresent = details.walPresent;
+    this.reason = details.reason;
+    this.hint = details.hint;
+  }
+}
+
 export class DatabaseLockedError extends DatabaseError {
   constructor(cause?: Error) {
     super("Database is locked by another process", cause);
@@ -230,6 +265,8 @@ export function formatError(
   } else if (error instanceof DatabaseLockedError) {
     output +=
       "\n  Hint: Close other ccanalytics instances or use `lsof <dbPath>`";
+  } else if (error instanceof DatabaseOpenError && error.hint) {
+    output += `\n  Hint: ${error.hint}`;
   } else if (error instanceof QueryError) {
     output += "\n  Hint: Use --verbose to see the full SQL query";
   } else if (error instanceof IngestionError) {

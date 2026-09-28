@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils";
 import { RotateCcw, PanelLeft } from "lucide-react";
 import Sidebar from "./Sidebar";
 import TopBar from "./TopBar";
+import HealthBanner from "./HealthBanner";
 import CommandPalette from "../ui/CommandPalette";
 import type { CommandAction } from "../ui/CommandPalette";
 
@@ -72,6 +73,7 @@ export default function Layout() {
             "animate-fade-in"
           )}
         >
+          <HealthBanner />
           <Outlet />
         </main>
       </div>

@@ -43,19 +43,38 @@ function getDbPath(): string {
   return path.join(os.homedir(), ".ccanalytics", "analytics.duckdb");
 }
 
-/** Error messages that indicate an unrecoverable corrupt database file. */
-const CORRUPTION_PATTERNS = [
-  "Failed to load metadata pointer",
-  "Corrupt database",
-  "INTERNAL Error",
-  "IO Error: Could not read",
-  "not a valid DuckDB database file",
-  "Deserialization Error",
-  "invalid file header",
-];
+/** The parts of the parent package's `db/open-failure` module this helper uses. */
+interface OpenFailureModule {
+  describeOpenFailure(dbPath: string, err: Error): Error;
+}
 
-function looksCorrupt(msg: string): boolean {
-  return CORRUPTION_PATTERNS.some((p) => msg.includes(p));
+/**
+ * Turn a DuckDB open error into the parent package's `DatabaseOpenError`,
+ * which carries the reason and the next step (`reason`, `hint`), for the
+ * health route. Loaded at runtime like {@link applyPendingMigrations}; falls
+ * back to the raw error if the module cannot be loaded.
+ *
+ * Opening never modifies the files: the database is the only copy of history
+ * older than the transcripts' 30 days, so repair is left to the explicit
+ * `ccanalytics db recover`.
+ */
+async function describeOpenFailure(p: string, err: Error): Promise<Error> {
+  try {
+    const modulePath = path.resolve(__dirname, "../../../../src/db/open-failure.ts");
+    const { describeOpenFailure: describe } = (await import(modulePath)) as OpenFailureModule;
+    return describe(p, err);
+  } catch {
+    return err;
+  }
+}
+
+/** Open the database, turning a failure into a descriptive error. */
+async function openDbOrDescribe(p: string): Promise<DuckDBConnection> {
+  try {
+    return await openDb(p);
+  } catch (err) {
+    throw await describeOpenFailure(p, err as Error);
+  }
 }
 
 /** Try to create a DuckDB instance and connect. */
@@ -98,7 +117,7 @@ async function applySessionDefaults(conn: DuckDBConnection): Promise<void> {
  * Get or create the DuckDB connection.
  * The connection is lazily initialized and reused across requests.
  * Uses a promise mutex so concurrent callers wait for the first initialization.
- * Includes auto-recovery for corrupt WAL files and database files.
+ * A failed open leaves the files untouched and is retried on the next call.
  */
 async function getConnection() {
   if (connection) {
@@ -118,42 +137,7 @@ async function getConnection() {
 
 async function initConnection() {
   dbPath = getDbPath();
-  const walPath = `${dbPath}.wal`;
-
-  try {
-    connection = await openDb(dbPath);
-  } catch (err) {
-    const msg = (err as Error).message ?? "";
-
-    // --- Stage 1: Corrupt WAL recovery ---
-    if (msg.includes("replaying WAL") && fs.existsSync(walPath)) {
-      console.warn(`[db] Corrupt WAL detected — removing ${walPath} and retrying`);
-      fs.unlinkSync(walPath);
-      try {
-        connection = await openDb(dbPath);
-      } catch (retryErr) {
-        const retryMsg = (retryErr as Error).message ?? "";
-        if (!looksCorrupt(retryMsg)) {
-          throw retryErr;
-        }
-        // WAL removal wasn't enough — fall through to Stage 2
-      }
-    }
-
-    // --- Stage 2: Corrupt database file recovery ---
-    if (!connection && looksCorrupt(msg) && fs.existsSync(dbPath)) {
-      console.warn(`[db] Corrupt database detected — removing ${dbPath} and recreating`);
-      fs.unlinkSync(dbPath);
-      if (fs.existsSync(walPath)) {
-        fs.unlinkSync(walPath);
-      }
-      connection = await openDb(dbPath);
-    }
-
-    if (!connection) {
-      throw err;
-    }
-  }
+  connection = await openDbOrDescribe(dbPath);
 
   // Apply pending schema migrations before the first query: migration 7 drops
   // the secondary indexes DuckDB 1.4.4 corrupted on WAL replay. A failure is
@@ -168,7 +152,7 @@ async function initConnection() {
     if (msg.includes("FATAL") || msg.includes("invalidated")) {
       try { connection.closeSync(); } catch { /* ignore */ }
       connection = null;
-      connection = await openDb(dbPath);
+      connection = await openDbOrDescribe(dbPath);
     }
   }
 

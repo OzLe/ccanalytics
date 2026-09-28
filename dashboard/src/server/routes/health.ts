@@ -31,6 +31,8 @@ router.get("/", async (_req, res) => {
       },
     });
   } catch (err) {
+    // A DatabaseOpenError (src/db/open-failure) also says why and what to do.
+    const { reason, hint } = err as { reason?: string; hint?: string };
     res.status(503).json({
       status: "degraded",
       timestamp: new Date().toISOString(),
@@ -38,6 +40,8 @@ router.get("/", async (_req, res) => {
         connected: false,
         path: getDbPathInfo(),
         error: err instanceof Error ? err.message : "Unknown error",
+        ...(reason ? { reason } : {}),
+        ...(hint ? { hint } : {}),
       },
     });
   }
