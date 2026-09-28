@@ -209,3 +209,36 @@ The extended backfill reports the exact all-time change.
 8. Compare dashboard query medians with Appendix C of the PER-44 write-up, and flag any query that got more than twice as slow.
 9. Confirm that the ICU time-zone probe in `applySessionDefaults()` passes.
 10. Bump both `package.json` pins together (`tests/db/duckdb-version.test.ts` enforces it), rebuild, deploy with the live-database routine, and verify.
+
+## Appendix D: implementation record (2026-09-28)
+
+Steps 1 to 3 are implemented as stacked branches, each on top of the previous one; none is merged or deployed yet.
+
+| Branch | Commit | Content |
+|---|---|---|
+| `feature/safe-db-open` | `e27fcec` | Recovery fix (section 4) and `ccanalytics db recover` |
+| `feature/safe-db-open` | `646c89b` | Fix for the flaky watcher test (Q-004) |
+| `feature/pricing-exact-ids` | `bad0d48` | PR A (section 3) |
+| `feature/cache-ttl-split` | `4236525` | PR B (section 3) and migration 8 |
+
+Deviations from the plan:
+- Migration 8 adds one column, `cache_creation_1h_tokens`, not two: the 5-minute share is the rest of `cache_creation_tokens`, so a second column could only go out of sync.
+- The sub-agent backfill recomputes only the models whose rates changed.
+  10 older sub-agents mixed models; their stored per-turn cost is more accurate than a recompute from totals, which would have been about $13 off.
+- The backfill also reconciles `sessions.total_cost_usd`, which had drifted $706 below the sum of its turns.
+- The flaky watcher test (Q-004) lost the event entirely: chokidar reports ready before `fs.watchFile` takes its first stat, so a file created in that gap is never reported.
+  The test now waits for the poller's baseline.
+
+Rehearsal on a copy of the live database, in deploy order:
+1. `npm run backfill:cache-ttl` applied migration 8 and filled 13,803 turns and 357 sub-agents; 2 sub-agents were skipped because their transcripts grew after ingest.
+2. `npm run backfill:costs` moved the turns from $21,114.21 to $23,828.89 (Appendix A predicted $23,828.87), the sessions to the same total, and the sub-agents from $5,980.50 to $6,427.29.
+3. `npm run check:pricing` found no unpriced model, and every model's breakdown on `/api/cost/by-model` summed to its stored total.
+
+Evidence for gate G1: a file written by DuckDB 1.5.5 with `storage_compatibility_version = 'latest'` fails to open on 1.4.5 with "Trying to read a database file with version number 68, but we can only read versions between 64 and 67".
+The recovery fix classifies that error as a version mismatch, and `db recover` leaves such a file alone.
+
+Deploy runbook, after merging the three branches in order:
+1. Stop the `com.ccanalytics.web` LaunchAgent and back up the database into `~/.ccanalytics/backups/`.
+2. `npm ci` in the root and in `dashboard/`, then `npm run build` and `npm run build:dashboard`.
+3. `npm run backfill:cache-ttl`, then `npm run backfill:costs`, then `npm run check:pricing`.
+4. Start the LaunchAgent and check `/api/health` and `/api/cost/by-model`.
