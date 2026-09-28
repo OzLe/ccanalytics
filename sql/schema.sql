@@ -43,7 +43,8 @@ CREATE TABLE IF NOT EXISTS conversation_turns (
     parent_uuid           VARCHAR,
     has_tool_use          BOOLEAN     DEFAULT FALSE,
     has_thinking          BOOLEAN     DEFAULT FALSE,
-    content_text          TEXT
+    content_text          TEXT,
+    cache_creation_1h_tokens BIGINT             -- migration 8: of cache_creation_tokens, the 1-hour writes; NULL = not recorded
 );
 
 CREATE TABLE IF NOT EXISTS tool_calls (
@@ -181,6 +182,7 @@ CREATE TABLE IF NOT EXISTS sub_agents (
     success               BOOLEAN,                 -- best-effort from last assistant stop_reason
     project_path          VARCHAR,
     source_file           VARCHAR,
+    cache_creation_1h_tokens BIGINT,            -- migration 8: of cache_creation_tokens, the 1-hour writes; NULL = not recorded
     PRIMARY KEY (parent_session_id, agent_id)
 );
 
@@ -262,4 +264,20 @@ DROP INDEX IF EXISTS idx_workflow_runs_session;
 -- record schema version 7
 INSERT INTO schema_migrations (version, description)
 VALUES (7, 'Drop all secondary indexes (DuckDB 1.4.4 lost rows from them on WAL replay)')
+ON CONFLICT (version) DO NOTHING;
+
+-- =============================================================================
+-- Migration 8 — record 1-hour prompt-cache writes
+-- Mirrors applyMigration8() in src/db/schema.ts. ALTER ... ADD COLUMN IF NOT
+-- EXISTS, so re-running this whole file is still a no-op. Why: a 1-hour cache
+-- write costs 2x input and a 5-minute write 1.25x, and Claude Code caches the
+-- main conversation for 1 hour (docs/pricing-recovery-duckdb-plan-2026-09-28.md).
+-- =============================================================================
+
+ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS cache_creation_1h_tokens BIGINT;
+ALTER TABLE sub_agents ADD COLUMN IF NOT EXISTS cache_creation_1h_tokens BIGINT;
+
+-- record schema version 8
+INSERT INTO schema_migrations (version, description)
+VALUES (8, 'Record 1-hour prompt-cache writes (cache_creation_1h_tokens)')
 ON CONFLICT (version) DO NOTHING;

@@ -567,6 +567,8 @@ export interface ConversationTurnRow {
   input_tokens: number;
   output_tokens: number;
   cache_creation_tokens: number;
+  /** Of `cache_creation_tokens`, the 1-hour cache writes; null when unrecorded. */
+  cache_creation_1h_tokens: number | null;
   cache_read_tokens: number;
   cost_usd: number;
   model: string | null;
@@ -679,6 +681,8 @@ export interface SubAgentRow {
   input_tokens: number;
   output_tokens: number;
   cache_creation_tokens: number;
+  /** Of `cache_creation_tokens`, the 1-hour cache writes; null when unrecorded. */
+  cache_creation_1h_tokens: number | null;
   cache_read_tokens: number;
   cost_usd: number;
   num_turns: number;

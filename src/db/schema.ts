@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { MigrationError } from "../errors.js";
 
 /** Current schema version matching sql/schema.sql */
-const CURRENT_VERSION = 7;
+const CURRENT_VERSION = 8;
 
 /**
  * Every secondary (non-unique) index earlier schema versions created, all
@@ -200,6 +200,11 @@ export class SchemaManager {
 
     if (currentVersion < 7) {
       await this.applyMigration7(connection);
+      applied++;
+    }
+
+    if (currentVersion < 8) {
+      await this.applyMigration8(connection);
       applied++;
     }
 
@@ -581,6 +586,34 @@ export class SchemaManager {
       );
     } catch (err) {
       throw new MigrationError(7, err as Error);
+    }
+  }
+
+  /**
+   * Migration v8: record 1-hour prompt-cache writes.
+   *
+   * `cache_creation_1h_tokens` holds, of `cache_creation_tokens`, the writes
+   * to the 1-hour cache (2x input) rather than the 5-minute cache (1.25x);
+   * NULL means the transcript did not record the split, and cost falls back
+   * to utils/pricing's UnrecordedCacheTtl. Existing rows stay NULL until
+   * `npm run backfill:cache-ttl` fills them from the transcripts on disk.
+   *
+   * ADD COLUMN IF NOT EXISTS makes this idempotent; no data changes.
+   */
+  private async applyMigration8(connection: unknown): Promise<void> {
+    const conn = connection as { run(sql: string): Promise<unknown> };
+    try {
+      await conn.run(
+        `ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS cache_creation_1h_tokens BIGINT`,
+      );
+      await conn.run(
+        `ALTER TABLE sub_agents ADD COLUMN IF NOT EXISTS cache_creation_1h_tokens BIGINT`,
+      );
+      await conn.run(
+        `INSERT INTO schema_migrations (version, description) VALUES (8, 'Record 1-hour prompt-cache writes (cache_creation_1h_tokens)') ON CONFLICT (version) DO NOTHING`,
+      );
+    } catch (err) {
+      throw new MigrationError(8, err as Error);
     }
   }
 

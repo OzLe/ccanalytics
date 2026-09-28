@@ -17,7 +17,7 @@ import {
 // expressions below are GENERATED from the same PRICING table that
 // src/utils/pricing.ts uses for ingest-time cost calculation. They are no
 // longer hand-maintained, so the SQL rates can never drift from pricing.ts.
-import { buildRateCaseSql } from "../../../../src/utils/pricing.js";
+import { buildCacheWriteCostSql, buildRateCaseSql } from "../../../../src/utils/pricing.js";
 // ACT-001 / SEM2-293: hour-of-day / local-date / DATE_TRUNC math projects the
 // stored UTC-wall-clock timestamp through the user's IANA zone. $3 is the
 // timezone bind everywhere; filter clauses therefore start at $4.
@@ -36,14 +36,20 @@ const router = Router();
  */
 const INPUT_RATE_CASE = buildRateCaseSql("inputPerM");
 const OUTPUT_RATE_CASE = buildRateCaseSql("outputPerM");
-const CACHE_CREATION_RATE_CASE = buildRateCaseSql("cacheCreationPerM");
 const CACHE_READ_RATE_CASE = buildRateCaseSql("cacheReadPerM");
 
-/** Same four CASE expressions, qualified to the `ct` table alias. */
+/** The same CASE expressions, qualified to the `ct` table alias. */
 const INPUT_RATE_CASE_CT = buildRateCaseSql("inputPerM", "ct.model");
 const OUTPUT_RATE_CASE_CT = buildRateCaseSql("outputPerM", "ct.model");
-const CACHE_CREATION_RATE_CASE_CT = buildRateCaseSql("cacheCreationPerM", "ct.model");
 const CACHE_READ_RATE_CASE_CT = buildRateCaseSql("cacheReadPerM", "ct.model");
+
+/**
+ * Cache-write cost of one turn in USD: 5-minute and 1-hour writes at their own
+ * rates; a turn without a recorded split counts as 1-hour writes (the main
+ * conversation's cache, decision D1).
+ */
+const CACHE_WRITE_COST = buildCacheWriteCostSql("1h");
+const CACHE_WRITE_COST_CT = buildCacheWriteCostSql("1h", "ct.");
 
 /**
  * GET /api/cost/total
@@ -70,7 +76,7 @@ router.get("/total", async (req, res, next) => {
         COALESCE(SUM(cache_read_tokens), 0) AS total_cache_read_tokens,
         COALESCE(SUM(input_tokens * ${INPUT_RATE_CASE} / 1000000.0), 0) AS input_cost_usd,
         COALESCE(SUM(output_tokens * ${OUTPUT_RATE_CASE} / 1000000.0), 0) AS output_cost_usd,
-        COALESCE(SUM(cache_creation_tokens * ${CACHE_CREATION_RATE_CASE} / 1000000.0), 0) AS cache_write_cost_usd,
+        COALESCE(SUM(${CACHE_WRITE_COST}), 0) AS cache_write_cost_usd,
         COALESCE(SUM(cache_read_tokens * ${CACHE_READ_RATE_CASE} / 1000000.0), 0) AS cache_read_cost_usd
       FROM conversation_turns
       WHERE ${costRowPredicateSql("")}
@@ -213,7 +219,7 @@ router.get("/by-model", async (req, res, next) => {
         COALESCE(SUM(ct.cache_read_tokens), 0) AS total_cache_read_tokens,
         COALESCE(SUM(ct.input_tokens * ${INPUT_RATE_CASE_CT} / 1000000.0), 0) AS input_cost_usd,
         COALESCE(SUM(ct.output_tokens * ${OUTPUT_RATE_CASE_CT} / 1000000.0), 0) AS output_cost_usd,
-        COALESCE(SUM(ct.cache_creation_tokens * ${CACHE_CREATION_RATE_CASE_CT} / 1000000.0), 0) AS cache_write_cost_usd,
+        COALESCE(SUM(${CACHE_WRITE_COST_CT}), 0) AS cache_write_cost_usd,
         COALESCE(SUM(ct.cache_read_tokens * ${CACHE_READ_RATE_CASE_CT} / 1000000.0), 0) AS cache_read_cost_usd
       FROM conversation_turns ct
       WHERE ${costRowPredicateSql("ct")}
@@ -281,7 +287,7 @@ router.get("/by-project", async (req, res, next) => {
         COALESCE(SUM(ct.cache_read_tokens), 0) AS total_cache_read_tokens,
         COALESCE(SUM(ct.input_tokens * ${INPUT_RATE_CASE_CT} / 1000000.0), 0) AS input_cost_usd,
         COALESCE(SUM(ct.output_tokens * ${OUTPUT_RATE_CASE_CT} / 1000000.0), 0) AS output_cost_usd,
-        COALESCE(SUM(ct.cache_creation_tokens * ${CACHE_CREATION_RATE_CASE_CT} / 1000000.0), 0) AS cache_write_cost_usd,
+        COALESCE(SUM(${CACHE_WRITE_COST_CT}), 0) AS cache_write_cost_usd,
         COALESCE(SUM(ct.cache_read_tokens * ${CACHE_READ_RATE_CASE_CT} / 1000000.0), 0) AS cache_read_cost_usd
       FROM sessions s
       JOIN conversation_turns ct ON ct.session_id = s.session_id AND ${costRowPredicateSql("ct")}

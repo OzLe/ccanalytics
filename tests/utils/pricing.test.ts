@@ -17,20 +17,24 @@ import {
   getDefaultPricing,
   buildRateCaseSql,
   buildCacheSavingsRateCaseSql,
+  buildCacheWriteCostSql,
+  cacheWriteCost,
   normalizeModelId,
   reportUnknownModels,
   unpricedModels,
   type ModelPricing,
 } from "../../src/utils/pricing.js";
 
-const rateKeys = ["inputPerM", "outputPerM", "cacheCreationPerM", "cacheReadPerM"] as const;
+const rateKeys = ["inputPerM", "outputPerM", "cacheCreationPerM", "cacheWrite1hPerM", "cacheReadPerM"] as const;
 
+/** Rates in the pricing page's column order: input, 5m write, 1h write, read, output. */
 const rates = (
   inputPerM: number,
-  outputPerM: number,
   cacheCreationPerM: number,
+  cacheWrite1hPerM: number,
   cacheReadPerM: number,
-): ModelPricing => ({ inputPerM, outputPerM, cacheCreationPerM, cacheReadPerM });
+  outputPerM: number,
+): ModelPricing => ({ inputPerM, outputPerM, cacheCreationPerM, cacheWrite1hPerM, cacheReadPerM });
 
 describe("calculateCost", () => {
   it("should calculate cost for claude-sonnet-4-5", () => {
@@ -62,25 +66,31 @@ describe("calculateCost", () => {
 
 describe("live rates (Anthropic pricing page, 2026-09-28)", () => {
   it.each([
-    ["claude-fable-5-1", rates(10, 50, 12.5, 0.25)],
-    ["claude-mythos-5-1", rates(10, 50, 12.5, 0.25)],
-    ["claude-fable-5", rates(10, 50, 12.5, 1)],
-    ["claude-mythos-5", rates(10, 50, 12.5, 1)],
-    ["claude-opus-5-5", rates(4, 20, 5, 0.2)],
-    ["claude-opus-5", rates(5, 25, 6.25, 0.5)],
-    ["claude-sonnet-5", rates(2, 10, 2.5, 0.2)],
-    ["claude-opus-4-8", rates(5, 25, 6.25, 0.5)],
-    ["claude-opus-4-7", rates(5, 25, 6.25, 0.5)],
-    ["claude-opus-4-6", rates(5, 25, 6.25, 0.5)],
-    ["claude-opus-4-5", rates(5, 25, 6.25, 0.5)],
-    ["claude-opus-4-1", rates(15, 75, 18.75, 1.5)],
-    ["claude-opus-4", rates(15, 75, 18.75, 1.5)],
-    ["claude-sonnet-4-6", rates(3, 15, 3.75, 0.3)],
-    ["claude-sonnet-4-5", rates(3, 15, 3.75, 0.3)],
-    ["claude-sonnet-4", rates(3, 15, 3.75, 0.3)],
-    ["claude-haiku-4-5", rates(1, 5, 1.25, 0.1)],
+    ["claude-fable-5-1", rates(10, 12.5, 20, 0.25, 50)],
+    ["claude-mythos-5-1", rates(10, 12.5, 20, 0.25, 50)],
+    ["claude-fable-5", rates(10, 12.5, 20, 1, 50)],
+    ["claude-mythos-5", rates(10, 12.5, 20, 1, 50)],
+    ["claude-opus-5-5", rates(4, 5, 8, 0.2, 20)],
+    ["claude-opus-5", rates(5, 6.25, 10, 0.5, 25)],
+    ["claude-sonnet-5", rates(2, 2.5, 4, 0.2, 10)],
+    ["claude-opus-4-8", rates(5, 6.25, 10, 0.5, 25)],
+    ["claude-opus-4-7", rates(5, 6.25, 10, 0.5, 25)],
+    ["claude-opus-4-6", rates(5, 6.25, 10, 0.5, 25)],
+    ["claude-opus-4-5", rates(5, 6.25, 10, 0.5, 25)],
+    ["claude-opus-4-1", rates(15, 18.75, 30, 1.5, 75)],
+    ["claude-opus-4", rates(15, 18.75, 30, 1.5, 75)],
+    ["claude-sonnet-4-6", rates(3, 3.75, 6, 0.3, 15)],
+    ["claude-sonnet-4-5", rates(3, 3.75, 6, 0.3, 15)],
+    ["claude-sonnet-4", rates(3, 3.75, 6, 0.3, 15)],
+    ["claude-haiku-4-5", rates(1, 1.25, 2, 0.1, 5)],
   ])("prices %s", (model, expected) => {
     expect(getPricing(model)).toEqual(expected);
+  });
+
+  it("writes to the 1-hour cache at 2x input for every model", () => {
+    for (const [id, p] of getPricingEntries()) {
+      expect(p.cacheWrite1hPerM, id).toBeCloseTo(p.inputPerM * 2, 9);
+    }
   });
 
   it("writes to cache at 1.25x input for every Claude 4 and 5 model", () => {
@@ -88,6 +98,20 @@ describe("live rates (Anthropic pricing page, 2026-09-28)", () => {
     for (const [id, p] of getPricingEntries().filter(([id]) => !id.startsWith("claude-3-"))) {
       expect(p.cacheCreationPerM, id).toBeCloseTo(p.inputPerM * 1.25, 9);
     }
+  });
+});
+
+describe("1-hour cache writes", () => {
+  it("prices the 1-hour share of the cache writes at the 1-hour rate", () => {
+    // Opus 5.5: 5-minute writes $5, 1-hour writes $8 per MTok
+    expect(calculateCost("claude-opus-5-5", 0, 0, 1_000_000, 0, 250_000)).toBeCloseTo(0.75 * 5 + 0.25 * 8, 9);
+    expect(calculateCost("claude-opus-5-5", 0, 0, 1_000_000, 0)).toBeCloseTo(5, 9);
+  });
+
+  it("cacheWriteCost splits a total the same way", () => {
+    const p = getPricing("claude-fable-5-1");
+    expect(cacheWriteCost(p, 1_000_000, 1_000_000)).toBeCloseTo(20, 9);
+    expect(cacheWriteCost(p, 1_000_000, 0)).toBeCloseTo(12.5, 9);
   });
 });
 
@@ -178,6 +202,27 @@ describe("generated SQL CASE — evaluated in DuckDB", () => {
     }
     expect(result.get("claude-opus-5-5")).toBeCloseTo(3.8, 9);
     expect(result.get("claude-fable-5-1")).toBeCloseTo(9.75, 9);
+  });
+
+  it("prices a row's cache writes by its split, or by the unrecorded default", async () => {
+    await conn.run(
+      `CREATE TABLE w (model VARCHAR, cache_creation_tokens BIGINT, cache_creation_1h_tokens BIGINT)`,
+    );
+    await conn.run(`INSERT INTO w VALUES
+      ('claude-opus-5-5', 1000000, 250000), ('claude-opus-5-5', 1000000, NULL), (NULL, 1000000, NULL)`);
+    for (const unrecordedAs of ["1h", "5m"] as const) {
+      const reader = await conn.runAndReadAll(
+        `SELECT model, cache_creation_1h_tokens AS h, (${buildCacheWriteCostSql(unrecordedAs)})::DOUBLE AS cost FROM w`,
+      );
+      for (const r of reader.getRowObjectsJS() as { model: string | null; h: bigint | null; cost: number }[]) {
+        const oneHour = r.h === null ? (unrecordedAs === "1h" ? 1_000_000 : 0) : Number(r.h);
+        expect(r.cost, `${r.model} ${r.h} ${unrecordedAs}`).toBeCloseTo(
+          cacheWriteCost(getPricing(r.model), 1_000_000, oneHour),
+          9,
+        );
+      }
+    }
+    await conn.run("DROP TABLE w");
   });
 
   it("supports an aliased model column for joined queries", async () => {

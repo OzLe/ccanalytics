@@ -76,7 +76,7 @@ async function createV6Db(): Promise<DuckDBConnection> {
   const instance = await DuckDBInstance.create(":memory:");
   const connection = await instance.connect();
   await new SchemaManager().initialize(connection);
-  await connection.run("DELETE FROM schema_migrations WHERE version = 7");
+  await connection.run("DELETE FROM schema_migrations WHERE version >= 7");
   for (const index of V6_INDEXES) {
     await connection.run(`CREATE INDEX ${index}`);
   }
@@ -97,15 +97,15 @@ async function createV6Db(): Promise<DuckDBConnection> {
 }
 
 describe("schema migration 7 (drop secondary indexes)", () => {
-  it("migrate() on a v6 DB drops every secondary index and records version 7", async () => {
+  it("migrate() on a v6 DB drops every secondary index, then applies migration 8", async () => {
     const connection = await createV6Db();
     expect(await maxVersion(connection)).toBe(6);
     expect(await secondaryIndexCount(connection)).toBe(V6_INDEXES.length);
 
     const applied = await new SchemaManager().migrate(connection);
 
-    expect(applied).toBe(1);
-    expect(await maxVersion(connection)).toBe(7);
+    expect(applied).toBe(2); // migrations 7 and 8
+    expect(await maxVersion(connection)).toBe(8);
     expect(await secondaryIndexCount(connection)).toBe(0);
     connection.closeSync();
   });
@@ -149,7 +149,7 @@ describe("schema migration 7 (drop secondary indexes)", () => {
     await new SchemaManager().initialize(connection);
 
     expect(await secondaryIndexCount(connection)).toBe(0);
-    expect(await maxVersion(connection)).toBe(7);
+    expect(await maxVersion(connection)).toBe(8);
     connection.closeSync();
   });
 
@@ -175,7 +175,7 @@ describe("schema migration 7 (drop secondary indexes)", () => {
     await new SchemaManager().migrate(connection);
 
     expect(await secondaryIndexCount(connection)).toBe(0);
-    expect(await maxVersion(connection)).toBe(7);
+    expect(await maxVersion(connection)).toBe(8);
     connection.closeSync();
   });
 });

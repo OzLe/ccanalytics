@@ -93,12 +93,14 @@ describe("CostAnalyzer", () => {
       expect(opus!.totalCostUSD).toBeCloseTo(0.25, 10);
       expect(sonnet!.totalCostUSD).toBeCloseTo(0.13, 10);
       // The per-category breakdown is still rate-derived from tokens
-      // (Opus-4 rates: 2000*15 + 800*75 + 100*18.75 + 500*1.5, all /1M).
+      // (Opus-4 rates: 2000*15 + 800*75 + 100*30 + 500*1.5, all /1M; the seed
+      // records no cache-write split, so the writes count as 1-hour writes).
       expect(opus!.inputCostUSD).toBeCloseTo(0.03, 10);
+      expect(opus!.cacheWriteCostUSD).toBeCloseTo(0.003, 10);
       expect(
         opus!.inputCostUSD + opus!.outputCostUSD +
           opus!.cacheWriteCostUSD + opus!.cacheReadCostUSD,
-      ).toBeCloseTo(0.092625, 10);
+      ).toBeCloseTo(0.09375, 10);
     });
   });
 

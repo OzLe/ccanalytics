@@ -159,10 +159,12 @@ describe("ClaudeDesktopAdapter", () => {
 
       const session = batch.sessions[0];
       // Session cost is now computed from token counts using model-aware rates (not result:success value).
-      // asst-d001: 200*3/1M + 50*15/1M + 10*3.75/1M + 100*0.3/1M = 0.0014175
-      // asst-d002: 300*3/1M + 80*15/1M + 5*3.75/1M + 150*0.3/1M = 0.00216375
-      // Total: 0.00358125
-      expect(session.total_cost_usd).toBeCloseTo(0.00358125, 8);
+      // The fixture records no 5-minute / 1-hour split, so its cache writes
+      // count as 1-hour writes at 2x input ($6/MTok on the Sonnet default).
+      // asst-d001: 200*3/1M + 50*15/1M + 10*6/1M + 100*0.3/1M = 0.00144
+      // asst-d002: 300*3/1M + 80*15/1M + 5*6/1M + 150*0.3/1M = 0.002175
+      // Total: 0.003615
+      expect(session.total_cost_usd).toBeCloseTo(0.003615, 8);
     });
 
     it("extracts tool calls from assistant content blocks", async () => {

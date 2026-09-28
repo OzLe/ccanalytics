@@ -8,24 +8,32 @@
  * touch cost columns; row counts cannot change.
  */
 
-import { buildRateCaseSql } from "../utils/pricing.js";
+import {
+  buildCacheWriteCostSql,
+  buildRateCaseSql,
+  type UnrecordedCacheTtl,
+} from "../utils/pricing.js";
 
 /**
  * Cost of one row from its token columns. `conversation_turns` and
- * `sub_agents` share the column names.
+ * `sub_agents` share the column names; cache writes without a recorded split
+ * count as `unrecordedAs`.
  */
-function costFromTokensSql(): string {
+function costFromTokensSql(unrecordedAs: UnrecordedCacheTtl): string {
   return [
-    `input_tokens          * (${buildRateCaseSql("inputPerM")})         / 1000000.0`,
-    `output_tokens         * (${buildRateCaseSql("outputPerM")})        / 1000000.0`,
-    `cache_creation_tokens * (${buildRateCaseSql("cacheCreationPerM")}) / 1000000.0`,
-    `cache_read_tokens     * (${buildRateCaseSql("cacheReadPerM")})     / 1000000.0`,
+    `input_tokens      * (${buildRateCaseSql("inputPerM")})     / 1000000.0`,
+    `output_tokens     * (${buildRateCaseSql("outputPerM")})    / 1000000.0`,
+    buildCacheWriteCostSql(unrecordedAs),
+    `cache_read_tokens * (${buildRateCaseSql("cacheReadPerM")}) / 1000000.0`,
   ].join("\n    + ");
 }
 
-/** Recompute every turn's `cost_usd` from its tokens and model. */
+/**
+ * Recompute every turn's `cost_usd` from its tokens and model. Turns are the
+ * main conversation, so unrecorded cache writes count as 1-hour writes (D1).
+ */
 export function turnCostUpdateSql(): string {
-  return `UPDATE conversation_turns\nSET cost_usd =\n      ${costFromTokensSql()}`;
+  return `UPDATE conversation_turns\nSET cost_usd =\n      ${costFromTokensSql("1h")}`;
 }
 
 /**
@@ -52,10 +60,11 @@ SET total_cost_usd = COALESCE(
  * for those the stored per-turn cost is the better number. A rate change moves
  * the cost of every agent of that model, while mixing moves a few; so only
  * models where most agents' stored cost disagrees with the current rates are
- * recomputed. A second run changes nothing.
+ * recomputed. A second run changes nothing. Unrecorded cache writes count as
+ * 5-minute writes, which every recorded sub-agent write is.
  */
 export function subAgentCostUpdateSql(): string {
-  const cost = costFromTokensSql();
+  const cost = costFromTokensSql("5m");
   return `UPDATE sub_agents
 SET cost_usd =
       ${cost}

@@ -7,6 +7,7 @@
 import { describe, it, expect } from "vitest";
 import { ClaudeCodeAdapter } from "../../../src/ingestion/adapters/claude-code.js";
 import type { DiscoveredFile } from "../../../src/ingestion/file-discovery.js";
+import { calculateCost } from "../../../src/utils/pricing.js";
 import * as path from "node:path";
 
 const FIXTURES_DIR = path.resolve(process.cwd(), "tests/fixtures");
@@ -256,5 +257,36 @@ describe("ClaudeCodeAdapter", () => {
       expect(parsed.loadedSkills).toEqual([]);
       expect(batch.sessionSkills).toEqual([]);
     });
+  });
+});
+
+describe("ClaudeCodeAdapter — 1-hour cache writes", () => {
+  const adapter = new ClaudeCodeAdapter(path.resolve(process.cwd()));
+
+  it("stores the recorded split and prices unrecorded writes as 1-hour writes", async () => {
+    const file = makeFile("cache-ttl-session.jsonl", "sess-ttl-001");
+    const parsed = await adapter.parseFile(file, 0);
+    const deduped = adapter.deduplicate(parsed.assistantMessages);
+    const batch = adapter.buildInsertionBatch(file, deduped.unique, parsed.userMessages);
+
+    const turns = new Map(batch.conversationTurns.map((t) => [t.request_id, t]));
+    const recorded = turns.get("req_ttl_001")!;
+    expect(recorded.cache_creation_1h_tokens).toBe(30_000);
+    expect(recorded.cost_usd).toBeCloseTo(
+      calculateCost("claude-opus-5-5", 2, 1_000, 40_000, 500_000, 30_000),
+      12,
+    );
+
+    const unrecorded = turns.get("req_ttl_002")!;
+    expect(unrecorded.cache_creation_1h_tokens).toBeNull();
+    expect(unrecorded.cost_usd).toBeCloseTo(
+      calculateCost("claude-opus-5-5", 3, 2_000, 8_000, 540_000, 8_000),
+      12,
+    );
+
+    expect(batch.sessions[0]!.total_cost_usd).toBeCloseTo(recorded.cost_usd + unrecorded.cost_usd, 12);
+    for (const t of batch.conversationTurns.filter((t) => t.role === "user")) {
+      expect(t.cache_creation_1h_tokens).toBeNull();
+    }
   });
 });

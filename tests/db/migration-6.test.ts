@@ -120,7 +120,7 @@ async function scalar(conn: DuckDBConnection, sql: string): Promise<number> {
 }
 
 describe("schema migration 6 (Sub-Agent & Workflow Attribution / F-SA)", () => {
-  it("migrate() on a v5 DB applies migrations 6 and 7 and bumps version to 7", async () => {
+  it("migrate() on a v5 DB applies migrations 6, 7 and 8 and bumps version to 8", async () => {
     const { connection } = await createV5Db();
     const mgr = new SchemaManager();
 
@@ -128,9 +128,9 @@ describe("schema migration 6 (Sub-Agent & Workflow Attribution / F-SA)", () => {
 
     const applied = await mgr.migrate(connection);
 
-    // Migrations 6 and 7 are pending on a v5 DB (CURRENT_VERSION is 7).
-    expect(applied).toBe(2);
-    expect(await maxVersion(connection)).toBe(7);
+    // Migrations 6, 7 and 8 are pending on a v5 DB (CURRENT_VERSION is 8).
+    expect(applied).toBe(3);
+    expect(await maxVersion(connection)).toBe(8);
 
     connection.closeSync();
   });
@@ -169,12 +169,12 @@ describe("schema migration 6 (Sub-Agent & Workflow Attribution / F-SA)", () => {
     const { connection } = await createV5Db();
     const mgr = new SchemaManager();
 
-    await mgr.migrate(connection); // v5 -> v7
-    expect(await maxVersion(connection)).toBe(7);
+    await mgr.migrate(connection); // v5 -> v8
+    expect(await maxVersion(connection)).toBe(8);
 
     const appliedAgain = await mgr.migrate(connection);
     expect(appliedAgain).toBe(0);
-    expect(await maxVersion(connection)).toBe(7);
+    expect(await maxVersion(connection)).toBe(8);
 
     // applyMigration6's statements are idempotent — a third run neither throws
     // nor duplicates the v6 row.

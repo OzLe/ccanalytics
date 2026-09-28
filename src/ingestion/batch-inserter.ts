@@ -170,12 +170,13 @@ export class BatchInserter {
       const p = new SqlParams();
       const sql = `INSERT INTO conversation_turns (
         turn_id, session_id, role, timestamp, input_tokens, output_tokens,
-        cache_creation_tokens, cache_read_tokens, cost_usd, model,
+        cache_creation_tokens, cache_creation_1h_tokens, cache_read_tokens, cost_usd, model,
         stop_reason, request_id, parent_uuid, has_tool_use, has_thinking,
         content_text
       ) VALUES (
         ${p.sql(t.turn_id)}, ${p.sql(t.session_id)}, ${p.sql(t.role)}, ${p.sql(t.timestamp)},
         ${p.sql(t.input_tokens)}, ${p.sql(t.output_tokens)}, ${p.sql(t.cache_creation_tokens)},
+        ${p.sql(t.cache_creation_1h_tokens)},
         ${p.sql(t.cache_read_tokens)}, ${p.sql(t.cost_usd)}, ${p.sql(t.model)},
         ${p.sql(t.stop_reason)}, ${p.sql(t.request_id)}, ${p.sql(t.parent_uuid)},
         ${p.sql(t.has_tool_use)}, ${p.sql(t.has_thinking)},
@@ -270,8 +271,8 @@ export class BatchInserter {
         workflow_run_id, spawn_tool_use_id, spawn_depth, is_fork, workflow_label,
         workflow_phase, entrypoint, model, git_branch, start_time, end_time,
         duration_seconds, input_tokens, output_tokens, cache_creation_tokens,
-        cache_read_tokens, cost_usd, num_turns, num_tool_calls, success,
-        project_path, source_file
+        cache_creation_1h_tokens, cache_read_tokens, cost_usd, num_turns, num_tool_calls,
+        success, project_path, source_file
       ) VALUES (
         ${p.sql(s.parent_session_id)}, ${p.sql(s.agent_id)}, ${p.sql(s.session_dir)},
         ${p.sql(s.agent_class)}, ${p.sql(s.subagent_type)}, ${p.sql(s.workflow_run_id)},
@@ -279,7 +280,8 @@ export class BatchInserter {
         ${p.sql(s.workflow_label)}, ${p.sql(s.workflow_phase)}, ${p.sql(s.entrypoint)},
         ${p.sql(s.model)}, ${p.sql(s.git_branch)}, ${p.sql(s.start_time)}, ${p.sql(s.end_time)},
         ${p.sql(s.duration_seconds)}, ${p.sql(s.input_tokens)}, ${p.sql(s.output_tokens)},
-        ${p.sql(s.cache_creation_tokens)}, ${p.sql(s.cache_read_tokens)}, ${p.sql(s.cost_usd)},
+        ${p.sql(s.cache_creation_tokens)}, ${p.sql(s.cache_creation_1h_tokens)},
+        ${p.sql(s.cache_read_tokens)}, ${p.sql(s.cost_usd)},
         ${p.sql(s.num_turns)}, ${p.sql(s.num_tool_calls)}, ${p.sql(s.success)},
         ${p.sql(s.project_path)}, ${p.sql(s.source_file)}
       ) ON CONFLICT(parent_session_id, agent_id) DO UPDATE SET
@@ -298,6 +300,7 @@ export class BatchInserter {
         input_tokens = ${p.sql(s.input_tokens)},
         output_tokens = ${p.sql(s.output_tokens)},
         cache_creation_tokens = ${p.sql(s.cache_creation_tokens)},
+        cache_creation_1h_tokens = ${p.sql(s.cache_creation_1h_tokens)},
         cache_read_tokens = ${p.sql(s.cache_read_tokens)},
         cost_usd = ${p.sql(s.cost_usd)},
         num_turns = ${p.sql(s.num_turns)},

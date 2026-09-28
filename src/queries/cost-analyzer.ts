@@ -17,7 +17,7 @@ import type {
 } from "../types/index.js";
 import type { QueryExecutor } from "../db/executor.js";
 import { buildTurnFilters, buildSessionFilters } from "./filter-builder.js";
-import { getPricing } from "../utils/pricing.js";
+import { cacheWriteCost, getPricing } from "../utils/pricing.js";
 import { resolveTimezone, wrapTimestampForTz } from "../utils/timezone.js";
 import { costRowPredicateSql } from "../utils/sqlPredicates.js";
 
@@ -122,6 +122,7 @@ export class CostAnalyzer {
         COALESCE(SUM(ct.input_tokens), 0) AS total_input_tokens,
         COALESCE(SUM(ct.output_tokens), 0) AS total_output_tokens,
         COALESCE(SUM(ct.cache_creation_tokens), 0) AS total_cache_write_tokens,
+        COALESCE(SUM(COALESCE(ct.cache_creation_1h_tokens, ct.cache_creation_tokens)), 0) AS total_cache_write_1h_tokens,
         COALESCE(SUM(ct.cache_read_tokens), 0) AS total_cache_read_tokens
       FROM conversation_turns ct
       WHERE ${costRowPredicateSql("ct")}
@@ -137,6 +138,7 @@ export class CostAnalyzer {
       total_input_tokens: number;
       total_output_tokens: number;
       total_cache_write_tokens: number;
+      total_cache_write_1h_tokens: number;
       total_cache_read_tokens: number;
     }>(sql, [range.start, range.end, ...f.params]);
 
@@ -150,7 +152,7 @@ export class CostAnalyzer {
       const p = getPricing(row.model);
       const inputCostUSD = (totalInputTokens * p.inputPerM) / 1_000_000;
       const outputCostUSD = (totalOutputTokens * p.outputPerM) / 1_000_000;
-      const cacheWriteCostUSD = (totalCacheWriteTokens * p.cacheCreationPerM) / 1_000_000;
+      const cacheWriteCostUSD = cacheWriteCost(p, totalCacheWriteTokens, Number(row.total_cache_write_1h_tokens));
       const cacheReadCostUSD = (totalCacheReadTokens * p.cacheReadPerM) / 1_000_000;
       // Canonical total: stored cost_usd column (COST-003).
       const totalCostUSD = Number(row.total_cost_usd);
@@ -192,6 +194,7 @@ export class CostAnalyzer {
         COALESCE(SUM(ct.input_tokens), 0) AS total_input_tokens,
         COALESCE(SUM(ct.output_tokens), 0) AS total_output_tokens,
         COALESCE(SUM(ct.cache_creation_tokens), 0) AS total_cache_write_tokens,
+        COALESCE(SUM(COALESCE(ct.cache_creation_1h_tokens, ct.cache_creation_tokens)), 0) AS total_cache_write_1h_tokens,
         COALESCE(SUM(ct.cache_read_tokens), 0) AS total_cache_read_tokens
       FROM sessions s
       JOIN conversation_turns ct ON ct.session_id = s.session_id AND ${costRowPredicateSql("ct")}
@@ -208,6 +211,7 @@ export class CostAnalyzer {
       total_input_tokens: number;
       total_output_tokens: number;
       total_cache_write_tokens: number;
+      total_cache_write_1h_tokens: number;
       total_cache_read_tokens: number;
     }>(sql, [range.start, range.end, ...f.params]);
 
@@ -255,7 +259,7 @@ export class CostAnalyzer {
       agg.storedCostUSD += Number(row.stored_cost_usd);
       agg.inputCostUSD += (inTok * p.inputPerM) / 1_000_000;
       agg.outputCostUSD += (outTok * p.outputPerM) / 1_000_000;
-      agg.cacheWriteCostUSD += (cwTok * p.cacheCreationPerM) / 1_000_000;
+      agg.cacheWriteCostUSD += cacheWriteCost(p, cwTok, Number(row.total_cache_write_1h_tokens));
       agg.cacheReadCostUSD += (crTok * p.cacheReadPerM) / 1_000_000;
       agg.totalInputTokens += inTok;
       agg.totalOutputTokens += outTok;
@@ -393,6 +397,7 @@ export class CostAnalyzer {
         COALESCE(SUM(input_tokens), 0) AS total_input_tokens,
         COALESCE(SUM(output_tokens), 0) AS total_output_tokens,
         COALESCE(SUM(cache_creation_tokens), 0) AS total_cache_write_tokens,
+        COALESCE(SUM(COALESCE(cache_creation_1h_tokens, cache_creation_tokens)), 0) AS total_cache_write_1h_tokens,
         COALESCE(SUM(cache_read_tokens), 0) AS total_cache_read_tokens
       FROM conversation_turns
       WHERE ${costRowPredicateSql("")}
@@ -406,6 +411,7 @@ export class CostAnalyzer {
       total_input_tokens: number;
       total_output_tokens: number;
       total_cache_write_tokens: number;
+      total_cache_write_1h_tokens: number;
       total_cache_read_tokens: number;
     }>(sql, [range.start, range.end, ...f.params]);
 
@@ -448,7 +454,7 @@ export class CostAnalyzer {
       const p = getPricing(row.model);
       inputCostUSD += (inTok * p.inputPerM) / 1_000_000;
       outputCostUSD += (outTok * p.outputPerM) / 1_000_000;
-      cacheWriteCostUSD += (cwTok * p.cacheCreationPerM) / 1_000_000;
+      cacheWriteCostUSD += cacheWriteCost(p, cwTok, Number(row.total_cache_write_1h_tokens));
       cacheReadCostUSD += (crTok * p.cacheReadPerM) / 1_000_000;
     }
 
