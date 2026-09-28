@@ -6,16 +6,25 @@
  *
  * SINGLE SOURCE OF TRUTH for per-model rates. The dashboard API SQL `CASE`
  * expressions in `dashboard/src/server/routes/cost.ts` and
- * `dashboard/src/server/routes/cache.ts` are GENERATED from `PRICING` below
- * via `buildRateCaseSql()` / `getPricingEntries()` — they must never be
- * hand-maintained again, so `pricing.ts` and the SQL can no longer drift.
+ * `dashboard/src/server/routes/cache.ts`, and the cost backfill in
+ * `src/db/cost-backfill.ts`, are GENERATED from `PRICING` below via
+ * `buildRateCaseSql()` — they must never be hand-maintained again, so
+ * `pricing.ts` and the SQL can no longer drift.
+ *
+ * MATCHING: a model id matches an entry EXACTLY after normalization — lowercased,
+ * with a trailing release date removed (`claude-haiku-4-5-20251001` →
+ * `claude-haiku-4-5`). Prefix matching let a new point release inherit a
+ * sibling's rates without any warning: Fable 5.1 took Fable 5's $1 cache read
+ * instead of $0.25. Every id now needs its own entry; one without is priced at
+ * DEFAULT_PRICING and reported by `reportUnknownModels()`, `/api/health` and
+ * `npm run check:pricing`.
  *
  * IMPORTANT — stored-cost backfill rule:
- *   `conversation_turns.cost_usd` is computed at ingest time by
- *   `calculateCost()` and STORED. Editing the rates here does NOT retroactively
- *   correct already-ingested rows. Any rate change MUST be followed by running
- *   `scripts/backfill-costs.mjs`, which recomputes the stored `cost_usd` and
- *   `sessions.total_cost_usd` columns in place. See COST-002.
+ *   `conversation_turns.cost_usd` and `sub_agents.cost_usd` are computed at
+ *   ingest time by `calculateCost()` and STORED. Editing the rates here does
+ *   NOT retroactively correct already-ingested rows. Any rate change MUST be
+ *   followed by `npm run backfill:costs` (`scripts/backfill-costs.ts`), which
+ *   recomputes the stored cost columns in place. See COST-002.
  */
 
 /** Per-million-token pricing for a model. */
@@ -27,68 +36,49 @@ export interface ModelPricing {
 }
 
 /**
- * Pricing table for known Anthropic models (USD per million tokens).
- * Keys are matched as prefixes against the lowercased model ID; the FIRST
- * matching prefix wins, so more-specific prefixes MUST come before broader
- * ones (e.g. `claude-opus-4-7` before `claude-opus-4`).
+ * Pricing table for known Anthropic models (USD per million tokens), keyed by
+ * normalized model id (see {@link normalizeModelId}).
  *
  * Rates verified against the official Anthropic pricing table
- * (platform.claude.com/docs/en/about-claude/pricing, June 2026):
- *   Fable 5 / Mythos 5         = 10 / 50 / 12.5 / 1.0
- *   Opus 4.5 / 4.6 / 4.7 / 4.8 = 5 / 25 / 6.25 / 0.5
- *   Opus 4 family (4.0 / 4.1)  = 15 / 75 / 18.75 / 1.5
- *   Sonnet 5 / Sonnet 4.x      = 3 / 15 / 3.75 / 0.3
- *   Haiku 4.5                  = 1 / 5 / 1.25 / 0.1
- * cache-write = 1.25x input and cache-read = 0.1x input for every entry.
+ * (platform.claude.com/docs/en/about-claude/pricing) on 2026-09-28. Cache
+ * writes here are 5-minute writes, 1.25x input. Cache reads are 0.1x input
+ * except on Opus 5.5 (0.05x) and Fable 5.1 / Mythos 5.1 (0.025x).
  */
 const PRICING: [string, ModelPricing][] = [
-  // Claude 5 family — Fable 5 is the generally-available id; Mythos 5 is the
-  // same model + rates via Project Glasswing. $10/$50 per MTok (above Opus-tier).
+  // Claude 5 family. Mythos is the Project Glasswing twin of Fable: same rates.
+  ["claude-fable-5-1", { inputPerM: 10, outputPerM: 50, cacheCreationPerM: 12.5, cacheReadPerM: 0.25 }],
+  ["claude-mythos-5-1", { inputPerM: 10, outputPerM: 50, cacheCreationPerM: 12.5, cacheReadPerM: 0.25 }],
   ["claude-fable-5", { inputPerM: 10, outputPerM: 50, cacheCreationPerM: 12.5, cacheReadPerM: 1 }],
   ["claude-mythos-5", { inputPerM: 10, outputPerM: 50, cacheCreationPerM: 12.5, cacheReadPerM: 1 }],
-  // Claude 4 family — specific models before broader prefixes (first match wins)
-  ["claude-opus-4-5", { inputPerM: 5, outputPerM: 25, cacheCreationPerM: 6.25, cacheReadPerM: 0.5 }],
-  ["claude-opus-4-6", { inputPerM: 5, outputPerM: 25, cacheCreationPerM: 6.25, cacheReadPerM: 0.5 }],
-  // claude-opus-4-7 / claude-opus-4-8: official rates 5/25/6.25/0.5. They MUST
-  // precede the broad "claude-opus-4" prefix below, otherwise they fall through
-  // to the Opus-4 ($15/$75/...) rates and are overcharged 3x (COST-001 for 4.7;
-  // COST-008 found claude-opus-4-8 with exactly this fallthrough).
-  ["claude-opus-4-7", { inputPerM: 5, outputPerM: 25, cacheCreationPerM: 6.25, cacheReadPerM: 0.5 }],
+  ["claude-opus-5-5", { inputPerM: 4, outputPerM: 20, cacheCreationPerM: 5, cacheReadPerM: 0.2 }],
+  ["claude-opus-5", { inputPerM: 5, outputPerM: 25, cacheCreationPerM: 6.25, cacheReadPerM: 0.5 }],
+  // Sonnet 5's $2/$10 launch price became its standard price; the rise to
+  // $3/$15 announced for 2026-09-01 was cancelled.
+  ["claude-sonnet-5", { inputPerM: 2, outputPerM: 10, cacheCreationPerM: 2.5, cacheReadPerM: 0.2 }],
+  // Claude 4 family
   ["claude-opus-4-8", { inputPerM: 5, outputPerM: 25, cacheCreationPerM: 6.25, cacheReadPerM: 0.5 }],
+  ["claude-opus-4-7", { inputPerM: 5, outputPerM: 25, cacheCreationPerM: 6.25, cacheReadPerM: 0.5 }],
+  ["claude-opus-4-6", { inputPerM: 5, outputPerM: 25, cacheCreationPerM: 6.25, cacheReadPerM: 0.5 }],
+  ["claude-opus-4-5", { inputPerM: 5, outputPerM: 25, cacheCreationPerM: 6.25, cacheReadPerM: 0.5 }],
+  ["claude-opus-4-1", { inputPerM: 15, outputPerM: 75, cacheCreationPerM: 18.75, cacheReadPerM: 1.5 }],
   ["claude-opus-4", { inputPerM: 15, outputPerM: 75, cacheCreationPerM: 18.75, cacheReadPerM: 1.5 }],
-  // Sonnet 5 — Claude 5 Sonnet-tier. Standard list rates match the Sonnet 4.x
-  // line (3 / 15 / 3.75 / 0.3). The $2/$10 introductory input/output promo
-  // (through 2026-08-31) is intentionally NOT encoded: this table tracks
-  // standard list prices like every other entry, and these rates equal
-  // DEFAULT_PRICING, so the explicit entry changes no already-stored cost — it
-  // just stops claude-sonnet-5 tripping reportUnknownModels() (COST-007).
-  // Distinct prefix from "claude-sonnet-4", so its order vs the 4.x entries
-  // does not matter for first-match resolution.
-  ["claude-sonnet-5", { inputPerM: 3, outputPerM: 15, cacheCreationPerM: 3.75, cacheReadPerM: 0.3 }],
-  // Sonnet 4.x — claude-sonnet-4-5 / -4-6 / -4-7 all resolve here via the
-  // broad "claude-sonnet-4" prefix (rates are identical across the 4.x line).
-  // An explicit claude-sonnet-4-6 entry is listed so a model present in the DB
-  // has an exact, intentional entry rather than resolving by accident.
   ["claude-sonnet-4-6", { inputPerM: 3, outputPerM: 15, cacheCreationPerM: 3.75, cacheReadPerM: 0.3 }],
+  ["claude-sonnet-4-5", { inputPerM: 3, outputPerM: 15, cacheCreationPerM: 3.75, cacheReadPerM: 0.3 }],
   ["claude-sonnet-4", { inputPerM: 3, outputPerM: 15, cacheCreationPerM: 3.75, cacheReadPerM: 0.3 }],
+  // Haiku 4 shipped only as 4.5; a future haiku-4.x is reported, not guessed (COST-006).
   ["claude-haiku-4-5", { inputPerM: 1, outputPerM: 5, cacheCreationPerM: 1.25, cacheReadPerM: 0.1 }],
-  // NOTE: there is no public "claude-haiku-4-x" model that is not 4.5
-  // (Haiku 4 shipped as 4.5), so the broad "claude-haiku-4" catch-all entry
-  // was removed (COST-006) — a hypothetical future haiku-4.x now hits
-  // DEFAULT_PRICING and is surfaced by reportUnknownModels() (COST-007)
-  // rather than being silently priced with a guessed rate.
-  // Claude 3.7 family
+  // Claude 3.x
   ["claude-3-7-sonnet", { inputPerM: 3, outputPerM: 15, cacheCreationPerM: 3.75, cacheReadPerM: 0.3 }],
-  // Claude 3.5 family
   ["claude-3-5-sonnet", { inputPerM: 3, outputPerM: 15, cacheCreationPerM: 3.75, cacheReadPerM: 0.3 }],
   ["claude-3-5-haiku", { inputPerM: 0.8, outputPerM: 4, cacheCreationPerM: 1, cacheReadPerM: 0.08 }],
-  // Claude 3 family
   ["claude-3-opus", { inputPerM: 15, outputPerM: 75, cacheCreationPerM: 18.75, cacheReadPerM: 1.5 }],
   ["claude-3-sonnet", { inputPerM: 3, outputPerM: 15, cacheCreationPerM: 3.75, cacheReadPerM: 0.3 }],
   ["claude-3-haiku", { inputPerM: 0.25, outputPerM: 1.25, cacheCreationPerM: 0.3, cacheReadPerM: 0.03 }],
 ];
 
-/** Default pricing when model is unknown (uses Sonnet rates). */
+const PRICING_BY_ID = new Map(PRICING);
+
+/** Default pricing when model is unknown (uses Sonnet 4.x rates). */
 const DEFAULT_PRICING: ModelPricing = {
   inputPerM: 3,
   outputPerM: 15,
@@ -100,7 +90,20 @@ const DEFAULT_PRICING: ModelPricing = {
 export type PricingRateKey = keyof ModelPricing;
 
 /**
- * Return the full prefix→pricing table (read-only copy).
+ * Normalize a model id for pricing lookup: lowercase, and drop a trailing
+ * `-YYYYMMDD` release date (`claude-opus-4-5-20251101` → `claude-opus-4-5`).
+ */
+export function normalizeModelId(model: string): string {
+  return model.toLowerCase().replace(/-\d{8}$/, "");
+}
+
+/** SQL twin of {@link normalizeModelId} for a model column. */
+export function normalizedModelSql(modelColumn = "model"): string {
+  return `regexp_replace(lower(${modelColumn}), '-[0-9]{8}$', '')`;
+}
+
+/**
+ * Return the full id→pricing table (read-only copy).
  * Consumers that need to generate SQL or audit coverage use this so the
  * table is defined in exactly one place.
  */
@@ -116,11 +119,11 @@ export function getDefaultPricing(): ModelPricing {
 /**
  * Build a SQL `CASE` expression that maps a model column to its per-MTok rate
  * for one pricing category, derived from {@link PRICING}. This is the single
- * generator the dashboard cost/cache routes use so the SQL rate tables can
- * never drift from `pricing.ts`.
+ * generator the dashboard cost/cache routes and the backfill use, so the SQL
+ * rate tables can never drift from `pricing.ts`.
  *
- * The prefix order of `PRICING` is preserved (first match wins), which mirrors
- * `getPricing()` exactly. The `ELSE` arm uses {@link DEFAULT_PRICING}.
+ * The column is normalized like {@link getPricing} does; the `ELSE` arm uses
+ * {@link DEFAULT_PRICING}, as does a NULL model.
  *
  * @param rateKey - Which rate to emit (inputPerM, outputPerM, ...)
  * @param modelColumn - SQL column/expression holding the model id (default "model")
@@ -131,10 +134,9 @@ export function buildRateCaseSql(
   modelColumn = "model",
 ): string {
   const lines = PRICING.map(
-    ([prefix, pricing]) =>
-      `    WHEN ${modelColumn} LIKE '${prefix}%' THEN ${pricing[rateKey]}`,
+    ([id, pricing]) => `    WHEN '${id}' THEN ${pricing[rateKey]}`,
   );
-  return `CASE\n${lines.join("\n")}\n    ELSE ${DEFAULT_PRICING[rateKey]}\n  END`;
+  return `CASE ${normalizedModelSql(modelColumn)}\n${lines.join("\n")}\n    ELSE ${DEFAULT_PRICING[rateKey]}\n  END`;
 }
 
 /**
@@ -143,8 +145,7 @@ export function buildRateCaseSql(
  * of paying the full input price, i.e. `inputPerM - cacheReadPerM`.
  *
  * Derived from {@link PRICING} so the dashboard cache route can never drift
- * (COST-001 — claude-opus-4-7 is covered automatically). The `ELSE` arm uses
- * {@link DEFAULT_PRICING}.
+ * (COST-001). The `ELSE` arm uses {@link DEFAULT_PRICING}.
  *
  * NOTE (framing, MAX-004 — out of scope here): this is an *API-list-price*
  * savings figure; a flat-subscription user does not realize these dollars.
@@ -154,49 +155,53 @@ export function buildRateCaseSql(
  */
 export function buildCacheSavingsRateCaseSql(modelColumn = "model"): string {
   const lines = PRICING.map(
-    ([prefix, pricing]) =>
-      `    WHEN ${modelColumn} LIKE '${prefix}%' THEN ${
-        pricing.inputPerM - pricing.cacheReadPerM
-      }`,
+    ([id, pricing]) =>
+      `    WHEN '${id}' THEN ${pricing.inputPerM - pricing.cacheReadPerM}`,
   );
-  return `CASE\n${lines.join("\n")}\n    ELSE ${
+  return `CASE ${normalizedModelSql(modelColumn)}\n${lines.join("\n")}\n    ELSE ${
     DEFAULT_PRICING.inputPerM - DEFAULT_PRICING.cacheReadPerM
   }\n  END`;
 }
 
 /**
- * Look up pricing for a model by prefix matching.
+ * Look up pricing for a model; unknown and missing ids get DEFAULT_PRICING.
  */
 export function getPricing(model: string | null | undefined): ModelPricing {
   if (!model) return DEFAULT_PRICING;
-  const lower = model.toLowerCase();
-  for (const [prefix, pricing] of PRICING) {
-    if (lower.startsWith(prefix)) {
-      return pricing;
-    }
-  }
-  return DEFAULT_PRICING;
+  return PRICING_BY_ID.get(normalizeModelId(model)) ?? DEFAULT_PRICING;
 }
 
 /**
- * Whether a model id matches a known pricing prefix exactly (i.e. does NOT
- * fall through to {@link DEFAULT_PRICING}). Used by diagnostics to surface
- * models that are being priced at the Sonnet default — the exact failure
- * mode that hid the claude-opus-4-7 mispricing (COST-007).
+ * Whether a model id has its own pricing entry (i.e. does NOT fall through to
+ * {@link DEFAULT_PRICING}). Used by diagnostics to surface models that are
+ * being priced at the Sonnet default — the failure mode that hid the
+ * claude-opus-4-7 mispricing (COST-007).
  */
 export function hasKnownPricing(model: string | null | undefined): boolean {
   if (!model) return false;
-  const lower = model.toLowerCase();
-  return PRICING.some(([prefix]) => lower.startsWith(prefix));
+  return PRICING_BY_ID.has(normalizeModelId(model));
 }
 
 /**
- * Inspect a set of model ids and warn (once) about any that have no exact
- * pricing entry and therefore fall through to DEFAULT_PRICING. Intended to be
- * called once per ingest run with the distinct models seen in the batch.
+ * The model ids in `models` that have no pricing entry, sorted and without
+ * duplicates. Missing ids and the "<synthetic>" placeholder (0 tokens) are
+ * expected and left out.
+ */
+export function unpricedModels(models: Iterable<string | null | undefined>): string[] {
+  const unknown = new Set<string>();
+  for (const m of models) {
+    if (!m || m === "<synthetic>") continue;
+    if (!hasKnownPricing(m)) unknown.add(m);
+  }
+  return [...unknown].sort();
+}
+
+/**
+ * Inspect a set of model ids and warn (once) about any that have no pricing
+ * entry and therefore fall through to DEFAULT_PRICING. Intended to be called
+ * once per ingest run with the distinct models seen in the batch.
  *
  * Returns the list of unknown model ids so callers can also assert/test on it.
- * The "<synthetic>" placeholder model is treated as expected and not warned.
  *
  * @param models - Iterable of model ids encountered during ingestion
  * @param warn - Sink for the warning line (default: console.warn)
@@ -205,21 +210,13 @@ export function reportUnknownModels(
   models: Iterable<string | null | undefined>,
   warn: (msg: string) => void = console.warn,
 ): string[] {
-  const unknown = new Set<string>();
-  for (const m of models) {
-    if (!m) continue;
-    if (m === "<synthetic>") continue;
-    if (!hasKnownPricing(m)) {
-      unknown.add(m);
-    }
-  }
-  const list = [...unknown].sort();
+  const list = unpricedModels(models);
   if (list.length > 0) {
     warn(
-      `[pricing] ${list.length} model id(s) have no exact pricing entry and ` +
+      `[pricing] ${list.length} model id(s) have no pricing entry and ` +
         `were priced at DEFAULT (Sonnet) rates — costs for these may be wrong: ` +
         `${list.join(", ")}. Add them to PRICING in src/utils/pricing.ts and ` +
-        `re-run scripts/backfill-costs.mjs.`,
+        `run \`npm run backfill:costs\`.`,
     );
   }
   return list;

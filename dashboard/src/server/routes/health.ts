@@ -7,13 +7,28 @@
 
 import { Router } from "express";
 import { query, getDbPathInfo } from "../helpers/db.js";
+import {
+  MODEL_USAGE_SQL,
+  findUnpricedModels,
+  type UnpricedModel,
+} from "../../../../src/db/unpriced-models.js";
 
 const router = Router();
+
+/** Models costed at fallback rates; empty while the tables do not exist yet. */
+async function listUnpricedModels(): Promise<UnpricedModel[]> {
+  try {
+    return findUnpricedModels((await query(MODEL_USAGE_SQL)).rows);
+  } catch {
+    return [];
+  }
+}
 
 /**
  * GET /api/health
  *
- * Returns server health status including database connectivity.
+ * Returns server health status including database connectivity and the
+ * models that have no pricing entry (src/db/unpriced-models).
  */
 router.get("/", async (_req, res) => {
   try {
@@ -29,6 +44,7 @@ router.get("/", async (_req, res) => {
         path: getDbPathInfo(),
         latencyMs: dbLatencyMs,
       },
+      pricing: { unpricedModels: await listUnpricedModels() },
     });
   } catch (err) {
     // A DatabaseOpenError (src/db/open-failure) also says why and what to do.

@@ -2,12 +2,13 @@
  * @module tests/utils/pricing
  *
  * Unit tests for the pricing utility — cost calculation, the single shared
- * rate source, the generated SQL CASE expressions, model-coverage guards
- * (COST-001), the removed dead entry (COST-006) and the unknown-model
- * diagnostic (COST-007).
+ * rate source, exact model-id matching, the generated SQL CASE expressions
+ * (evaluated in DuckDB), model-coverage guards (COST-001), the removed dead
+ * entry (COST-006) and the unknown-model diagnostic (COST-007).
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { DuckDBInstance, type DuckDBConnection } from "@duckdb/node-api";
 import {
   calculateCost,
   getPricing,
@@ -16,302 +17,208 @@ import {
   getDefaultPricing,
   buildRateCaseSql,
   buildCacheSavingsRateCaseSql,
+  normalizeModelId,
   reportUnknownModels,
+  unpricedModels,
+  type ModelPricing,
 } from "../../src/utils/pricing.js";
+
+const rateKeys = ["inputPerM", "outputPerM", "cacheCreationPerM", "cacheReadPerM"] as const;
+
+const rates = (
+  inputPerM: number,
+  outputPerM: number,
+  cacheCreationPerM: number,
+  cacheReadPerM: number,
+): ModelPricing => ({ inputPerM, outputPerM, cacheCreationPerM, cacheReadPerM });
 
 describe("calculateCost", () => {
   it("should calculate cost for claude-sonnet-4-5", () => {
-    // Sonnet: $3/MTok input, $15/MTok output
+    // Sonnet 4.5: $3/MTok input, $15/MTok output
     const cost = calculateCost("claude-sonnet-4-5", 1_000_000, 100_000, 0, 0);
-    // 1M input * $3/MTok + 100K output * $15/MTok = $3 + $1.5 = $4.5
-    expect(cost).toBeCloseTo(4.5, 1);
+    expect(cost).toBeCloseTo(4.5, 6);
   });
 
   it("should calculate cost for claude-opus-4", () => {
     // Opus 4: $15/MTok input, $75/MTok output
     const cost = calculateCost("claude-opus-4", 1_000_000, 100_000, 0, 0);
-    // 1M input * $15/MTok + 100K output * $75/MTok = $15 + $7.5 = $22.5
-    expect(cost).toBeCloseTo(22.5, 1);
+    expect(cost).toBeCloseTo(22.5, 6);
   });
 
-  it("should handle cache tokens", () => {
-    const cost = calculateCost("claude-sonnet-4-5", 500_000, 100_000, 200_000, 300_000);
-    expect(cost).toBeGreaterThan(0);
+  it("prices each token category at its own rate", () => {
+    // Opus 5.5: 4 / 20 / 5 / 0.20
+    const cost = calculateCost("claude-opus-5-5", 1_000_000, 1_000_000, 1_000_000, 1_000_000);
+    expect(cost).toBeCloseTo(4 + 20 + 5 + 0.2, 9);
   });
 
   it("should return 0 for zero tokens", () => {
-    const cost = calculateCost("claude-sonnet-4-5", 0, 0, 0, 0);
-    expect(cost).toBe(0);
+    expect(calculateCost("claude-sonnet-4-5", 0, 0, 0, 0)).toBe(0);
   });
 
   it("should use default pricing for unknown model", () => {
-    const cost = calculateCost("unknown-model", 1_000_000, 0, 0, 0);
-    expect(cost).toBeGreaterThan(0);
-  });
-
-  it("should match model by prefix (case insensitive)", () => {
-    const cost1 = calculateCost("claude-sonnet-4-5-20260101", 1_000_000, 0, 0, 0);
-    const cost2 = calculateCost("claude-sonnet-4-5", 1_000_000, 0, 0, 0);
-    expect(cost1).toBe(cost2);
+    expect(calculateCost("unknown-model", 1_000_000, 0, 0, 0)).toBe(3);
   });
 });
 
-describe("COST-001: claude-opus-4-7 pricing", () => {
-  it("prices claude-opus-4-7 at the official $5/$25/$6.25/$0.50 rates, NOT Opus-4 rates", () => {
-    const p = getPricing("claude-opus-4-7");
-    expect(p).toEqual({
-      inputPerM: 5,
-      outputPerM: 25,
-      cacheCreationPerM: 6.25,
-      cacheReadPerM: 0.5,
-    });
+describe("live rates (Anthropic pricing page, 2026-09-28)", () => {
+  it.each([
+    ["claude-fable-5-1", rates(10, 50, 12.5, 0.25)],
+    ["claude-mythos-5-1", rates(10, 50, 12.5, 0.25)],
+    ["claude-fable-5", rates(10, 50, 12.5, 1)],
+    ["claude-mythos-5", rates(10, 50, 12.5, 1)],
+    ["claude-opus-5-5", rates(4, 20, 5, 0.2)],
+    ["claude-opus-5", rates(5, 25, 6.25, 0.5)],
+    ["claude-sonnet-5", rates(2, 10, 2.5, 0.2)],
+    ["claude-opus-4-8", rates(5, 25, 6.25, 0.5)],
+    ["claude-opus-4-7", rates(5, 25, 6.25, 0.5)],
+    ["claude-opus-4-6", rates(5, 25, 6.25, 0.5)],
+    ["claude-opus-4-5", rates(5, 25, 6.25, 0.5)],
+    ["claude-opus-4-1", rates(15, 75, 18.75, 1.5)],
+    ["claude-opus-4", rates(15, 75, 18.75, 1.5)],
+    ["claude-sonnet-4-6", rates(3, 15, 3.75, 0.3)],
+    ["claude-sonnet-4-5", rates(3, 15, 3.75, 0.3)],
+    ["claude-sonnet-4", rates(3, 15, 3.75, 0.3)],
+    ["claude-haiku-4-5", rates(1, 5, 1.25, 0.1)],
+  ])("prices %s", (model, expected) => {
+    expect(getPricing(model)).toEqual(expected);
   });
 
-  it("does NOT fall through to the broad claude-opus-4 ($15/$75) prefix", () => {
-    const opus47 = getPricing("claude-opus-4-7");
-    const opus4 = getPricing("claude-opus-4");
-    expect(opus47.inputPerM).toBe(5);
-    expect(opus4.inputPerM).toBe(15);
-    expect(opus47.inputPerM).not.toBe(opus4.inputPerM);
-  });
-
-  it("matches a dated claude-opus-4-7-* model id by prefix", () => {
-    expect(getPricing("claude-opus-4-7-20260401")).toEqual(getPricing("claude-opus-4-7"));
-  });
-
-  it("computes a 3x-lower cost for opus-4-7 than the old (wrong) Opus-4 fallthrough", () => {
-    const tokens = 10_000_000;
-    const correct = calculateCost("claude-opus-4-7", tokens, 0, 0, 0);
-    const wrongOld = calculateCost("claude-opus-4", tokens, 0, 0, 0);
-    expect(correct).toBeCloseTo(50, 5); // 10M * $5/MTok
-    expect(wrongOld).toBeCloseTo(150, 5); // 10M * $15/MTok
-  });
-
-  it("has an explicit claude-sonnet-4-6 entry (no longer resolves by accident)", () => {
-    const entries = getPricingEntries();
-    expect(entries.some(([prefix]) => prefix === "claude-sonnet-4-6")).toBe(true);
-    // and it still resolves to the Sonnet 4.x rate
-    expect(getPricing("claude-sonnet-4-6").inputPerM).toBe(3);
+  it("writes to cache at 1.25x input for every Claude 4 and 5 model", () => {
+    // Retired Claude 3 Haiku wrote at $0.30 on $0.25 input (1.2x).
+    for (const [id, p] of getPricingEntries().filter(([id]) => !id.startsWith("claude-3-"))) {
+      expect(p.cacheCreationPerM, id).toBeCloseTo(p.inputPerM * 1.25, 9);
+    }
   });
 });
 
-describe("COST-008: Claude 5 family (Fable/Mythos) + Opus 4.8 pricing", () => {
-  it("prices claude-fable-5 at the official $10/$50/$12.50/$1.00 rates", () => {
-    expect(getPricing("claude-fable-5")).toEqual({
-      inputPerM: 10,
-      outputPerM: 50,
-      cacheCreationPerM: 12.5,
-      cacheReadPerM: 1,
-    });
+describe("D4: exact model-id matching", () => {
+  it("normalizes case and a trailing release date only", () => {
+    expect(normalizeModelId("claude-haiku-4-5-20251001")).toBe("claude-haiku-4-5");
+    expect(normalizeModelId("Claude-Opus-4-7")).toBe("claude-opus-4-7");
+    expect(normalizeModelId("claude-opus-5-5")).toBe("claude-opus-5-5");
+    expect(normalizeModelId("claude-3-5-sonnet-latest")).toBe("claude-3-5-sonnet-latest");
   });
 
-  it("prices claude-mythos-5 identically to claude-fable-5 (same model)", () => {
-    expect(getPricing("claude-mythos-5")).toEqual(getPricing("claude-fable-5"));
+  it("matches dated ids to their model", () => {
+    expect(getPricing("claude-opus-4-5-20251101")).toEqual(getPricing("claude-opus-4-5"));
+    expect(getPricing("claude-sonnet-4-5-20250929")).toEqual(getPricing("claude-sonnet-4-5"));
+    expect(getPricing("claude-opus-4-20250514")).toEqual(getPricing("claude-opus-4"));
   });
 
-  it("does NOT price Fable 5 at the DEFAULT (Sonnet) rates anymore", () => {
-    expect(hasKnownPricing("claude-fable-5")).toBe(true);
-    expect(getPricing("claude-fable-5")).not.toEqual(getDefaultPricing());
+  it("does not let a point release inherit its sibling's rates", () => {
+    // Under prefix matching Fable 5.1 took Fable 5's $1 cache read.
+    expect(getPricing("claude-fable-5-1").cacheReadPerM).toBe(0.25);
+    expect(getPricing("claude-opus-5-5")).not.toEqual(getPricing("claude-opus-5"));
+    expect(getPricing("claude-opus-4-7")).not.toEqual(getPricing("claude-opus-4"));
   });
 
-  it("prices claude-opus-4-8 at $5/$25/$6.25/$0.50, NOT the broad Opus-4 fallthrough", () => {
-    expect(getPricing("claude-opus-4-8")).toEqual({
-      inputPerM: 5,
-      outputPerM: 25,
-      cacheCreationPerM: 6.25,
-      cacheReadPerM: 0.5,
-    });
-    // The fallthrough this guards against: claude-opus-4 = $15/$75 (3x higher).
-    expect(getPricing("claude-opus-4").inputPerM).toBe(15);
-  });
-
-  it("matches dated variants by prefix", () => {
-    expect(getPricing("claude-fable-5-20260601")).toEqual(getPricing("claude-fable-5"));
-    expect(getPricing("claude-opus-4-8-20260301")).toEqual(getPricing("claude-opus-4-8"));
-  });
-
-  it("orders claude-opus-4-8 BEFORE the broad claude-opus-4 prefix (first match wins)", () => {
-    const prefixes = getPricingEntries().map(([p]) => p);
-    expect(prefixes.indexOf("claude-opus-4-8")).toBeLessThan(prefixes.indexOf("claude-opus-4"));
-  });
-
-  it("emits the new entries in every generated SQL rate CASE", () => {
-    const sql = buildRateCaseSql("outputPerM");
-    expect(sql).toContain("claude-fable-5%' THEN 50");
-    expect(sql).toContain("claude-mythos-5%' THEN 50");
-    expect(sql).toContain("claude-opus-4-8%' THEN 25");
-  });
-
-  it("computes the correct cache-savings rates (input − cacheRead)", () => {
-    const sql = buildCacheSavingsRateCaseSql();
-    expect(sql).toContain("claude-fable-5%' THEN 9"); // 10 − 1
-    expect(sql).toContain("claude-opus-4-8%' THEN 4.5"); // 5 − 0.5
-  });
-});
-
-describe("F-SA: claude-sonnet-5 pricing (sub-agent model)", () => {
-  it("prices claude-sonnet-5 at the Sonnet standard list rates 3/15/3.75/0.3", () => {
-    expect(getPricing("claude-sonnet-5")).toEqual({
-      inputPerM: 3,
-      outputPerM: 15,
-      cacheCreationPerM: 3.75,
-      cacheReadPerM: 0.3,
-    });
-  });
-
-  it("is a KNOWN model even though its rates equal DEFAULT (silences COST-007)", () => {
-    expect(hasKnownPricing("claude-sonnet-5")).toBe(true);
-    // Rates equal DEFAULT_PRICING by design — the explicit entry exists to
-    // silence the unknown-model warning, not to change any computed cost.
-    expect(getPricing("claude-sonnet-5")).toEqual(getDefaultPricing());
-  });
-
-  it("has its own explicit entry (does not lean on the broad claude-sonnet-4 prefix)", () => {
-    const prefixes = getPricingEntries().map(([p]) => p);
-    expect(prefixes).toContain("claude-sonnet-5");
-  });
-
-  it("computes cost identically to Sonnet 4.x for the same tokens", () => {
-    const s5 = calculateCost("claude-sonnet-5", 1_000_000, 100_000, 0, 0);
-    const s46 = calculateCost("claude-sonnet-4-6", 1_000_000, 100_000, 0, 0);
-    expect(s5).toBeCloseTo(s46, 6);
-    expect(s5).toBeCloseTo(4.5, 6); // 1M*$3 + 100K*$15
-  });
-
-  it("does not warn for claude-sonnet-5 in reportUnknownModels", () => {
-    const warnings: string[] = [];
-    const unknown = reportUnknownModels(["claude-sonnet-5"], (m) => warnings.push(m));
-    expect(unknown).toEqual([]);
-    expect(warnings).toHaveLength(0);
-  });
-});
-
-describe("COST-001/COST-003: shared rate source — SQL CASE cannot drift", () => {
-  // The dashboard cost/cache routes GENERATE their SQL CASE from this table.
-  // These tests assert the generator output matches the table exactly, so a
-  // future rate edit in pricing.ts cannot leave the SQL stale.
-  const rateKeys = [
-    "inputPerM",
-    "outputPerM",
-    "cacheCreationPerM",
-    "cacheReadPerM",
-  ] as const;
-
-  it("generates one WHEN branch per pricing entry plus an ELSE", () => {
-    const entries = getPricingEntries();
-    for (const key of rateKeys) {
-      const sql = buildRateCaseSql(key);
-      const whenCount = (sql.match(/WHEN /g) ?? []).length;
-      expect(whenCount).toBe(entries.length);
-      expect(sql).toContain("ELSE");
-      expect(sql.trim().startsWith("CASE")).toBe(true);
-      expect(sql.trim().endsWith("END")).toBe(true);
+  it("treats an unseen point release as unknown instead of guessing", () => {
+    for (const model of ["claude-opus-5-6", "claude-fable-5-2", "claude-sonnet-4-7", "claude-haiku-4-6"]) {
+      expect(hasKnownPricing(model), model).toBe(false);
+      expect(getPricing(model), model).toEqual(getDefaultPricing());
     }
   });
 
-  it("emits each entry's exact rate in prefix order (first-match-wins parity with getPricing)", () => {
-    const entries = getPricingEntries();
+  it("keys every entry by a unique, already-normalized id", () => {
+    const ids = getPricingEntries().map(([id]) => id);
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const id of ids) expect(normalizeModelId(id)).toBe(id);
+  });
+});
+
+describe("generated SQL CASE — evaluated in DuckDB", () => {
+  let instance: DuckDBInstance;
+  let conn: DuckDBConnection;
+
+  const sampleModels = [
+    ...getPricingEntries().map(([id]) => id),
+    "claude-opus-4-5-20251101",
+    "claude-sonnet-4-5-20250929",
+    "claude-haiku-4-5-20251001",
+    "CLAUDE-OPUS-4-7",
+    "claude-opus-5-6",
+    "totally-unknown-model",
+    "<synthetic>",
+  ];
+
+  beforeAll(async () => {
+    instance = await DuckDBInstance.create(":memory:");
+    conn = await instance.connect();
+    await conn.run("CREATE TABLE m (model VARCHAR)");
+    for (const model of sampleModels) {
+      await conn.run(`INSERT INTO m VALUES ('${model}')`);
+    }
+    await conn.run("INSERT INTO m VALUES (NULL)");
+  });
+
+  afterAll(() => {
+    conn.closeSync();
+    instance.closeSync();
+  });
+
+  async function evaluate(caseSql: string): Promise<Map<string | null, number>> {
+    const reader = await conn.runAndReadAll(`SELECT model, (${caseSql})::DOUBLE AS rate FROM m`);
+    const rows = reader.getRowObjectsJS() as { model: string | null; rate: number }[];
+    return new Map(rows.map((r) => [r.model, r.rate]));
+  }
+
+  it.each(rateKeys)("matches getPricing() for every sample model: %s", async (key) => {
+    const result = await evaluate(buildRateCaseSql(key));
+    for (const model of sampleModels) {
+      expect(result.get(model), model).toBeCloseTo(getPricing(model)[key], 9);
+    }
+    expect(result.get(null)).toBeCloseTo(getDefaultPricing()[key], 9);
+  });
+
+  it("computes cache savings as input minus cache read", async () => {
+    const result = await evaluate(buildCacheSavingsRateCaseSql());
+    for (const model of sampleModels) {
+      const p = getPricing(model);
+      expect(result.get(model), model).toBeCloseTo(p.inputPerM - p.cacheReadPerM, 9);
+    }
+    expect(result.get("claude-opus-5-5")).toBeCloseTo(3.8, 9);
+    expect(result.get("claude-fable-5-1")).toBeCloseTo(9.75, 9);
+  });
+
+  it("supports an aliased model column for joined queries", async () => {
+    const sql = buildRateCaseSql("inputPerM", "ct.model");
+    expect(sql).toContain("lower(ct.model)");
+    const reader = await conn.runAndReadAll(
+      `SELECT (${sql})::DOUBLE AS rate FROM m AS ct WHERE ct.model = 'claude-opus-5-5'`,
+    );
+    expect((reader.getRowObjectsJS()[0] as { rate: number }).rate).toBe(4);
+  });
+
+  it("has one WHEN per entry and the default in the ELSE arm", () => {
     for (const key of rateKeys) {
       const sql = buildRateCaseSql(key);
-      const lines = sql
-        .split("\n")
-        .filter((l) => l.includes("WHEN "));
-      expect(lines.length).toBe(entries.length);
-      entries.forEach(([prefix, pricing], idx) => {
-        expect(lines[idx]).toContain(`LIKE '${prefix}%'`);
-        expect(lines[idx]).toContain(`THEN ${pricing[key]}`);
-      });
-      // ELSE arm uses DEFAULT_PRICING
+      expect((sql.match(/WHEN /g) ?? []).length).toBe(getPricingEntries().length);
       expect(sql).toContain(`ELSE ${getDefaultPricing()[key]}`);
     }
   });
-
-  it("includes claude-opus-4-7 in every generated rate CASE", () => {
-    for (const key of rateKeys) {
-      expect(buildRateCaseSql(key)).toContain("claude-opus-4-7%");
-    }
-    // and BEFORE the broad claude-opus-4 branch
-    const sql = buildRateCaseSql("inputPerM");
-    expect(sql.indexOf("claude-opus-4-7%")).toBeLessThan(
-      sql.indexOf("claude-opus-4%\n") >= 0
-        ? sql.indexOf("claude-opus-4%\n")
-        : sql.lastIndexOf("claude-opus-4%"),
-    );
-  });
-
-  it("supports an aliased model column for joined queries", () => {
-    const sql = buildRateCaseSql("inputPerM", "ct.model");
-    expect(sql).toContain("ct.model LIKE 'claude-opus-4-7%'");
-    expect(sql).not.toMatch(/[^.]model LIKE/);
-  });
-
-  it("the generated CASE evaluated by hand equals getPricing() for every known model", () => {
-    // Simulate SQL first-match-wins evaluation of the generated CASE.
-    const entries = getPricingEntries();
-    const evalCase = (model: string, key: (typeof rateKeys)[number]): number => {
-      const lower = model.toLowerCase();
-      for (const [prefix, pricing] of entries) {
-        if (lower.startsWith(prefix)) return pricing[key];
-      }
-      return getDefaultPricing()[key];
-    };
-    const sampleModels = [
-      "claude-fable-5",
-      "claude-mythos-5",
-      "claude-opus-4-8",
-      "claude-opus-4-7-20260401",
-      "claude-opus-4-6",
-      "claude-opus-4-5-20251101",
-      "claude-opus-4",
-      "claude-sonnet-4-6",
-      "claude-sonnet-4-5-20250929",
-      "claude-haiku-4-5-20251001",
-      "claude-3-7-sonnet",
-      "claude-3-5-haiku",
-      "claude-3-opus",
-      "totally-unknown-model",
-    ];
-    for (const model of sampleModels) {
-      for (const key of rateKeys) {
-        expect(evalCase(model, key)).toBe(getPricing(model)[key]);
-      }
-    }
-  });
-
-  it("generates a cache-savings CASE = inputPerM - cacheReadPerM per entry", () => {
-    const entries = getPricingEntries();
-    const sql = buildCacheSavingsRateCaseSql();
-    entries.forEach(([prefix, pricing]) => {
-      expect(sql).toContain(
-        `LIKE '${prefix}%' THEN ${pricing.inputPerM - pricing.cacheReadPerM}`,
-      );
-    });
-    // claude-opus-4-7 cache savings = 5 - 0.5 = 4.5 (not the old 13.5)
-    expect(sql).toContain("claude-opus-4-7%' THEN 4.5");
-  });
 });
 
-describe("COST-001: every model present in the DB has an exact pricing entry", () => {
-  // Guard test: fails if a model id that exists in the analytics DB does NOT
-  // match a known pricing prefix (i.e. would be silently priced at DEFAULT).
-  // The list below mirrors the distinct assistant `model` values observed in
-  // ~/.ccanalytics/analytics.duckdb at the time of the COST-001 audit. Keep it
-  // in sync when new models appear — that is exactly the signal this guards.
+describe("COST-001: every model present in the DB has a pricing entry", () => {
+  // Guard test: the distinct assistant `model` values observed in
+  // ~/.ccanalytics/analytics.duckdb on 2026-09-28. Keep it in sync when new
+  // models appear — that is exactly the signal this guards.
   const MODELS_IN_DB = [
-    "claude-fable-5",
-    "claude-opus-4-8",
     "claude-opus-4-7",
+    "claude-fable-5",
     "claude-opus-4-6",
+    "claude-opus-4-8",
+    "claude-fable-5-1",
+    "claude-opus-5",
+    "claude-opus-5-5",
     "claude-opus-4-5-20251101",
-    "claude-sonnet-4-6",
-    // Sonnet 5 appears in sub-agent transcripts (F-SA / migration 6) — priced.
     "claude-sonnet-5",
+    "claude-sonnet-4-6",
     "claude-sonnet-4-5-20250929",
     "claude-haiku-4-5-20251001",
     // "<synthetic>" is an intentional placeholder (0 tokens) — excluded.
   ];
 
-  it.each(MODELS_IN_DB)("model %s matches a known pricing prefix", (model) => {
+  it.each(MODELS_IN_DB)("model %s has a pricing entry", (model) => {
     expect(hasKnownPricing(model)).toBe(true);
   });
 
@@ -320,17 +227,11 @@ describe("COST-001: every model present in the DB has an exact pricing entry", (
   });
 });
 
-describe("COST-006: the dead, guessed-rate claude-haiku-4 entry was removed", () => {
+describe("COST-006: the dead, guessed-rate claude-haiku-4 entry stays removed", () => {
   it("has no 'claude-haiku-4' catch-all entry separate from claude-haiku-4-5", () => {
-    const prefixes = getPricingEntries().map(([p]) => p);
-    expect(prefixes).not.toContain("claude-haiku-4");
-    // claude-haiku-4-5 is still present and correct
-    expect(prefixes).toContain("claude-haiku-4-5");
-  });
-
-  it("a hypothetical future haiku-4.x now falls through to DEFAULT (surfaced by COST-007), not a guessed rate", () => {
-    expect(hasKnownPricing("claude-haiku-4-6")).toBe(false);
-    expect(getPricing("claude-haiku-4-6")).toEqual(getDefaultPricing());
+    const ids = getPricingEntries().map(([id]) => id);
+    expect(ids).not.toContain("claude-haiku-4");
+    expect(ids).toContain("claude-haiku-4-5");
   });
 });
 
@@ -346,32 +247,26 @@ describe("COST-007: unknown-model diagnostic", () => {
     expect(warnings[0]).toContain("some-future-model");
     expect(warnings[0]).toContain("another-unknown");
     expect(warnings[0]).toContain("DEFAULT");
+    expect(warnings[0]).toContain("npm run backfill:costs");
   });
 
-  it("does not warn when every model has an exact entry", () => {
+  it("does not warn when every model has an entry", () => {
     const warnings: string[] = [];
     const unknown = reportUnknownModels(
-      ["claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6"],
+      ["claude-opus-4-7", "claude-opus-5-5", "claude-haiku-4-5-20251001"],
       (m) => warnings.push(m),
     );
     expect(unknown).toEqual([]);
     expect(warnings).toHaveLength(0);
   });
 
-  it("treats the <synthetic> placeholder as expected (no warning)", () => {
-    const warnings: string[] = [];
-    const unknown = reportUnknownModels(["<synthetic>"], (m) => warnings.push(m));
-    expect(unknown).toEqual([]);
-    expect(warnings).toHaveLength(0);
+  it("treats the <synthetic> placeholder and missing ids as expected", () => {
+    expect(unpricedModels(["<synthetic>", null, undefined, ""])).toEqual([]);
   });
 
-  it("ignores null/undefined model ids", () => {
-    const warnings: string[] = [];
-    const unknown = reportUnknownModels(
-      [null, undefined, "claude-opus-4-7"],
-      (m) => warnings.push(m),
-    );
-    expect(unknown).toEqual([]);
-    expect(warnings).toHaveLength(0);
+  it("lists each unknown id once", () => {
+    expect(unpricedModels(["claude-opus-6", "claude-opus-6", "claude-opus-5-5"])).toEqual([
+      "claude-opus-6",
+    ]);
   });
 });
