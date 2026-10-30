@@ -52,10 +52,14 @@ export type UnrecordedCacheTtl = "1h" | "5m";
  * normalized model id (see {@link normalizeModelId}).
  *
  * Rates verified against the official Anthropic pricing table
- * (platform.claude.com/docs/en/about-claude/pricing) on 2026-09-28. Cache
+ * (platform.claude.com/docs/en/about-claude/pricing) on 2026-10-30. Cache
  * writes cost 1.25x input for the 5-minute cache and 2x input for the 1-hour
- * cache. Cache reads are 0.1x input except on Opus 5.5 (0.05x) and Fable 5.1
- * / Mythos 5.1 (0.025x).
+ * cache. Cache reads are 0.1x input except on Opus 5.5 / Sonnet 5.5 (0.05x)
+ * and Fable 5.1 / Mythos 5.1 (0.025x).
+ *
+ * Haiku 5.5 is deliberately absent: its rates depend on prompt size ($0.10 /
+ * $0.50 up to 100K tokens, $0.50 / $2.50 above), which one flat entry cannot
+ * express. It stays reported as unpriced until tiered pricing exists.
  */
 const PRICING: [string, ModelPricing][] = [
   // Claude 5 family. Mythos is the Project Glasswing twin of Fable: same rates.
@@ -65,6 +69,7 @@ const PRICING: [string, ModelPricing][] = [
   ["claude-mythos-5", { inputPerM: 10, outputPerM: 50, cacheCreationPerM: 12.5, cacheWrite1hPerM: 20, cacheReadPerM: 1 }],
   ["claude-opus-5-5", { inputPerM: 4, outputPerM: 20, cacheCreationPerM: 5, cacheWrite1hPerM: 8, cacheReadPerM: 0.2 }],
   ["claude-opus-5", { inputPerM: 5, outputPerM: 25, cacheCreationPerM: 6.25, cacheWrite1hPerM: 10, cacheReadPerM: 0.5 }],
+  ["claude-sonnet-5-5", { inputPerM: 2, outputPerM: 10, cacheCreationPerM: 2.5, cacheWrite1hPerM: 4, cacheReadPerM: 0.1 }],
   // Sonnet 5's $2/$10 launch price became its standard price; the rise to
   // $3/$15 announced for 2026-09-01 was cancelled.
   ["claude-sonnet-5", { inputPerM: 2, outputPerM: 10, cacheCreationPerM: 2.5, cacheWrite1hPerM: 4, cacheReadPerM: 0.2 }],

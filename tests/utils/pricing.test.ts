@@ -64,7 +64,7 @@ describe("calculateCost", () => {
   });
 });
 
-describe("live rates (Anthropic pricing page, 2026-09-28)", () => {
+describe("live rates (Anthropic pricing page, 2026-10-30)", () => {
   it.each([
     ["claude-fable-5-1", rates(10, 12.5, 20, 0.25, 50)],
     ["claude-mythos-5-1", rates(10, 12.5, 20, 0.25, 50)],
@@ -72,6 +72,7 @@ describe("live rates (Anthropic pricing page, 2026-09-28)", () => {
     ["claude-mythos-5", rates(10, 12.5, 20, 1, 50)],
     ["claude-opus-5-5", rates(4, 5, 8, 0.2, 20)],
     ["claude-opus-5", rates(5, 6.25, 10, 0.5, 25)],
+    ["claude-sonnet-5-5", rates(2, 2.5, 4, 0.1, 10)],
     ["claude-sonnet-5", rates(2, 2.5, 4, 0.2, 10)],
     ["claude-opus-4-8", rates(5, 6.25, 10, 0.5, 25)],
     ["claude-opus-4-7", rates(5, 6.25, 10, 0.5, 25)],
