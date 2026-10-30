@@ -20,6 +20,7 @@ import {
   buildCacheWriteCostSql,
   cacheWriteCost,
   normalizeModelId,
+  promptLengthPricedModels,
   reportUnknownModels,
   unpricedModels,
   type ModelPricing,
@@ -83,6 +84,7 @@ describe("live rates (Anthropic pricing page, 2026-10-30)", () => {
     ["claude-sonnet-4-6", rates(3, 3.75, 6, 0.3, 15)],
     ["claude-sonnet-4-5", rates(3, 3.75, 6, 0.3, 15)],
     ["claude-sonnet-4", rates(3, 3.75, 6, 0.3, 15)],
+    ["claude-haiku-5-5", rates(0.1, 0.125, 0.2, 0.01, 0.5)],
     ["claude-haiku-4-5", rates(1, 1.25, 2, 0.1, 5)],
   ])("prices %s", (model, expected) => {
     expect(getPricing(model)).toEqual(expected);
@@ -99,6 +101,78 @@ describe("live rates (Anthropic pricing page, 2026-10-30)", () => {
     for (const [id, p] of getPricingEntries().filter(([id]) => !id.startsWith("claude-3-"))) {
       expect(p.cacheCreationPerM, id).toBeCloseTo(p.inputPerM * 1.25, 9);
     }
+  });
+});
+
+describe("prompt-length pricing (Haiku 5.5)", () => {
+  const short = rates(0.1, 0.125, 0.2, 0.01, 0.5);
+  const long = rates(0.5, 0.625, 1, 0.05, 2.5);
+
+  it("charges the long-prompt rates only above 100,000 prompt tokens", () => {
+    expect(getPricing("claude-haiku-5-5")).toEqual(short);
+    expect(getPricing("claude-haiku-5-5", 100_000)).toEqual(short);
+    expect(getPricing("claude-haiku-5-5", 100_001)).toEqual(long);
+    expect(getPricing("CLAUDE-HAIKU-5-5", 100_001)).toEqual(long);
+    expect(promptLengthPricedModels()).toEqual(["claude-haiku-5-5"]);
+  });
+
+  it("leaves flat-rate models alone at any prompt length", () => {
+    expect(getPricing("claude-opus-5-5", 900_000)).toEqual(getPricing("claude-opus-5-5"));
+    expect(getPricing("unknown-model", 900_000)).toEqual(getDefaultPricing());
+  });
+
+  it("measures the prompt as input + cache writes + cache reads, and prices output too", () => {
+    // 100,000 prompt tokens: the short rates.
+    expect(calculateCost("claude-haiku-5-5", 10_000, 1_000_000, 30_000, 60_000)).toBeCloseTo(
+      (10_000 * 0.1 + 1_000_000 * 0.5 + 30_000 * 0.125 + 60_000 * 0.01) / 1_000_000,
+      12,
+    );
+    // One cache-read token more: every category at the long rates.
+    expect(calculateCost("claude-haiku-5-5", 10_000, 1_000_000, 30_000, 60_001, 20_000)).toBeCloseTo(
+      (10_000 * 0.5 + 1_000_000 * 2.5 + 10_000 * 0.625 + 20_000 * 1 + 60_001 * 0.05) / 1_000_000,
+      12,
+    );
+  });
+
+  it("keeps the cache multipliers in the long-prompt tier", () => {
+    expect(long.cacheCreationPerM).toBeCloseTo(long.inputPerM * 1.25, 9);
+    expect(long.cacheWrite1hPerM).toBeCloseTo(long.inputPerM * 2, 9);
+    expect(long.cacheReadPerM).toBeCloseTo(long.inputPerM * 0.1, 9);
+  });
+
+  it("picks the same tier per row in the generated SQL", async () => {
+    const instance = await DuckDBInstance.create(":memory:");
+    const c = await instance.connect();
+    await c.run(`CREATE TABLE ct (model VARCHAR, input_tokens BIGINT, cache_creation_tokens BIGINT,
+      cache_creation_1h_tokens BIGINT, cache_read_tokens BIGINT)`);
+    const rows: [string, number, number, number | null, number][] = [
+      ["claude-haiku-5-5", 10_000, 30_000, 5_000, 60_000],
+      ["claude-haiku-5-5", 10_000, 30_000, 5_000, 60_001],
+      ["claude-haiku-5-5", 400_000, 0, null, 0],
+      ["claude-opus-5-5", 400_000, 0, null, 0],
+    ];
+    for (const [model, input, write, oneHour, read] of rows) {
+      await c.run(`INSERT INTO ct VALUES ('${model}', ${input}, ${write}, ${oneHour ?? "NULL"}, ${read})`);
+    }
+    const reader = await c.runAndReadAll(`SELECT model, input_tokens, cache_creation_tokens,
+      cache_creation_1h_tokens, cache_read_tokens,
+      (${buildRateCaseSql("inputPerM", "ct.")})::DOUBLE AS input_rate,
+      (${buildRateCaseSql("outputPerM", "ct.")})::DOUBLE AS output_rate,
+      (${buildCacheSavingsRateCaseSql("ct.")})::DOUBLE AS savings_rate,
+      (${buildCacheWriteCostSql("1h", "ct.")})::DOUBLE AS write_cost
+      FROM ct`);
+    for (const r of reader.getRowObjectsJS() as Record<string, string | number | bigint | null>[]) {
+      const [input, write, read] = [r.input_tokens, r.cache_creation_tokens, r.cache_read_tokens].map(Number);
+      const oneHour = r.cache_creation_1h_tokens === null ? write : Number(r.cache_creation_1h_tokens);
+      const p = getPricing(r.model as string, input + write + read);
+      const label = `${r.model} ${input + write + read}`;
+      expect(r.input_rate, label).toBeCloseTo(p.inputPerM, 9);
+      expect(r.output_rate, label).toBeCloseTo(p.outputPerM, 9);
+      expect(r.savings_rate, label).toBeCloseTo(p.inputPerM - p.cacheReadPerM, 9);
+      expect(r.write_cost, label).toBeCloseTo(cacheWriteCost(p, write, oneHour), 12);
+    }
+    c.closeSync();
+    instance.closeSync();
   });
 });
 
@@ -169,11 +243,13 @@ describe("generated SQL CASE — evaluated in DuckDB", () => {
   beforeAll(async () => {
     instance = await DuckDBInstance.create(":memory:");
     conn = await instance.connect();
-    await conn.run("CREATE TABLE m (model VARCHAR)");
+    await conn.run(
+      "CREATE TABLE m (model VARCHAR, input_tokens BIGINT, cache_creation_tokens BIGINT, cache_read_tokens BIGINT)",
+    );
     for (const model of sampleModels) {
-      await conn.run(`INSERT INTO m VALUES ('${model}')`);
+      await conn.run(`INSERT INTO m VALUES ('${model}', 0, 0, 0)`);
     }
-    await conn.run("INSERT INTO m VALUES (NULL)");
+    await conn.run("INSERT INTO m VALUES (NULL, 0, 0, 0)");
   });
 
   afterAll(() => {
@@ -207,10 +283,11 @@ describe("generated SQL CASE — evaluated in DuckDB", () => {
 
   it("prices a row's cache writes by its split, or by the unrecorded default", async () => {
     await conn.run(
-      `CREATE TABLE w (model VARCHAR, cache_creation_tokens BIGINT, cache_creation_1h_tokens BIGINT)`,
+      `CREATE TABLE w (model VARCHAR, input_tokens BIGINT, cache_creation_tokens BIGINT,
+        cache_creation_1h_tokens BIGINT, cache_read_tokens BIGINT)`,
     );
     await conn.run(`INSERT INTO w VALUES
-      ('claude-opus-5-5', 1000000, 250000), ('claude-opus-5-5', 1000000, NULL), (NULL, 1000000, NULL)`);
+      ('claude-opus-5-5', 0, 1000000, 250000, 0), ('claude-opus-5-5', 0, 1000000, NULL, 0), (NULL, 0, 1000000, NULL, 0)`);
     for (const unrecordedAs of ["1h", "5m"] as const) {
       const reader = await conn.runAndReadAll(
         `SELECT model, cache_creation_1h_tokens AS h, (${buildCacheWriteCostSql(unrecordedAs)})::DOUBLE AS cost FROM w`,
@@ -226,9 +303,10 @@ describe("generated SQL CASE — evaluated in DuckDB", () => {
     await conn.run("DROP TABLE w");
   });
 
-  it("supports an aliased model column for joined queries", async () => {
-    const sql = buildRateCaseSql("inputPerM", "ct.model");
+  it("supports a table alias for joined queries", async () => {
+    const sql = buildRateCaseSql("inputPerM", "ct.");
     expect(sql).toContain("lower(ct.model)");
+    expect(sql).toContain("ct.cache_read_tokens");
     const reader = await conn.runAndReadAll(
       `SELECT (${sql})::DOUBLE AS rate FROM m AS ct WHERE ct.model = 'claude-opus-5-5'`,
     );
@@ -238,7 +316,7 @@ describe("generated SQL CASE — evaluated in DuckDB", () => {
   it("has one WHEN per entry and the default in the ELSE arm", () => {
     for (const key of rateKeys) {
       const sql = buildRateCaseSql(key);
-      expect((sql.match(/WHEN /g) ?? []).length).toBe(getPricingEntries().length);
+      expect((sql.match(/WHEN '/g) ?? []).length).toBe(getPricingEntries().length);
       expect(sql).toContain(`ELSE ${getDefaultPricing()[key]}`);
     }
   });
@@ -257,6 +335,7 @@ describe("COST-001: every model present in the DB has a pricing entry", () => {
     "claude-opus-5",
     "claude-opus-5-5",
     "claude-opus-4-5-20251101",
+    "claude-sonnet-5-5",
     "claude-sonnet-5",
     "claude-sonnet-4-6",
     "claude-sonnet-4-5-20250929",

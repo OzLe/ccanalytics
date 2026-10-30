@@ -28,8 +28,10 @@ const router = Router();
 
 /**
  * Per-model rate CASE expressions ($/MTok), generated from the shared
- * PRICING table in src/utils/pricing.ts. `model` is the bare column name;
- * routes that alias the table (e.g. `ct`) regenerate against `ct.model`.
+ * PRICING table in src/utils/pricing.ts. They read the bare `model` and token
+ * columns; routes that alias the table (e.g. `ct`) regenerate against `ct.`.
+ * Each is a per-turn rate (Haiku 5.5's depends on the turn's prompt length),
+ * so it is applied inside SUM(...), never to summed tokens.
  *
  * COST-001: includes claude-opus-4-7 (= 5/25/6.25/0.5) and claude-sonnet-4-6
  * automatically because they are entries in the shared table.
@@ -39,9 +41,9 @@ const OUTPUT_RATE_CASE = buildRateCaseSql("outputPerM");
 const CACHE_READ_RATE_CASE = buildRateCaseSql("cacheReadPerM");
 
 /** The same CASE expressions, qualified to the `ct` table alias. */
-const INPUT_RATE_CASE_CT = buildRateCaseSql("inputPerM", "ct.model");
-const OUTPUT_RATE_CASE_CT = buildRateCaseSql("outputPerM", "ct.model");
-const CACHE_READ_RATE_CASE_CT = buildRateCaseSql("cacheReadPerM", "ct.model");
+const INPUT_RATE_CASE_CT = buildRateCaseSql("inputPerM", "ct.");
+const OUTPUT_RATE_CASE_CT = buildRateCaseSql("outputPerM", "ct.");
+const CACHE_READ_RATE_CASE_CT = buildRateCaseSql("cacheReadPerM", "ct.");
 
 /**
  * Cache-write cost of one turn in USD: 5-minute and 1-hour writes at their own

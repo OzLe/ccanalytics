@@ -31,6 +31,9 @@ const ROWS: TokenRow[] = [
   { model: "claude-fable-5-1", input: 3, output: 25_000, cacheWrite: 70_000, oneHour: null, cacheRead: 1_900_000 },
   { model: "claude-opus-5", input: 7, output: 30_000, cacheWrite: 50_000, oneHour: 20_000, cacheRead: 800_000 },
   { model: "claude-haiku-4-5-20251001", input: 900, output: 1_200, cacheWrite: 4_000, oneHour: 0, cacheRead: 60_000 },
+  // Haiku 5.5 is priced by prompt length: 60,000 tokens (short) and 200,005 (long).
+  { model: "claude-haiku-5-5", input: 2_000, output: 3_000, cacheWrite: 8_000, oneHour: 0, cacheRead: 50_000 },
+  { model: "claude-haiku-5-5", input: 5, output: 4_000, cacheWrite: 20_000, oneHour: null, cacheRead: 180_000 },
   { model: "claude-opus-6", input: 1, output: 10, cacheWrite: 100, oneHour: null, cacheRead: 1_000 },
   { model: null, input: 0, output: 0, cacheWrite: 0, oneHour: null, cacheRead: 0 },
 ];
@@ -87,7 +90,9 @@ describe("cost backfill statements", () => {
     await db.connection.run(subAgentCostUpdateSql());
     for (const [i, t] of ROWS.entries()) {
       const stored = await scalar(`SELECT cost_usd FROM sub_agents WHERE agent_id = 'a${i}'`);
-      expect(stored, String(t.model)).toBeCloseTo(expectedCost(t, () => 0), 9);
+      // Prompt-length pricing needs each request; summed tokens keep ingest's cost.
+      const expected = t.model === "claude-haiku-5-5" ? 456 : expectedCost(t, () => 0);
+      expect(stored, String(t.model)).toBeCloseTo(expected, 9);
     }
   });
 
