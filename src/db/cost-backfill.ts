@@ -11,13 +11,16 @@
 import {
   buildCacheWriteCostSql,
   buildRateCaseSql,
+  normalizedModelSql,
+  promptLengthPricedModels,
   type UnrecordedCacheTtl,
 } from "../utils/pricing.js";
 
 /**
  * Cost of one row from its token columns. `conversation_turns` and
  * `sub_agents` share the column names; cache writes without a recorded split
- * count as `unrecordedAs`.
+ * count as `unrecordedAs`. Exact for a turn (one request); for a sub-agent
+ * row (summed tokens) only on models priced at flat rates.
  */
 function costFromTokensSql(unrecordedAs: UnrecordedCacheTtl): string {
   return [
@@ -62,13 +65,19 @@ SET total_cost_usd = COALESCE(
  * models where most agents' stored cost disagrees with the current rates are
  * recomputed. A second run changes nothing. Unrecorded cache writes count as
  * 5-minute writes, which every recorded sub-agent write is.
+ *
+ * Models priced by prompt length (Haiku 5.5) are never recomputed: the tier
+ * is chosen per request, which summed tokens cannot recover, so the stored
+ * per-turn cost from ingest is the only correct number.
  */
 export function subAgentCostUpdateSql(): string {
   const cost = costFromTokensSql("5m");
+  const perRequestOnly = promptLengthPricedModels().map((id) => `'${id}'`).join(", ");
   return `UPDATE sub_agents
 SET cost_usd =
       ${cost}
-WHERE COALESCE(model, '') IN (
+WHERE COALESCE(${normalizedModelSql()}, '') NOT IN (${perRequestOnly})
+AND COALESCE(model, '') IN (
   SELECT COALESCE(model, '') FROM sub_agents
   GROUP BY COALESCE(model, '')
   HAVING AVG(CASE WHEN ABS(cost_usd - (

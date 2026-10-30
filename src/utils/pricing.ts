@@ -57,9 +57,8 @@ export type UnrecordedCacheTtl = "1h" | "5m";
  * cache. Cache reads are 0.1x input except on Opus 5.5 / Sonnet 5.5 (0.05x)
  * and Fable 5.1 / Mythos 5.1 (0.025x).
  *
- * Haiku 5.5 is deliberately absent: its rates depend on prompt size ($0.10 /
- * $0.50 up to 100K tokens, $0.50 / $2.50 above), which one flat entry cannot
- * express. It stays reported as unpriced until tiered pricing exists.
+ * A model priced by prompt length (Haiku 5.5) has its short-prompt rates here
+ * and its long-prompt rates in {@link LONG_PROMPT_PRICING}.
  */
 const PRICING: [string, ModelPricing][] = [
   // Claude 5 family. Mythos is the Project Glasswing twin of Fable: same rates.
@@ -73,6 +72,8 @@ const PRICING: [string, ModelPricing][] = [
   // Sonnet 5's $2/$10 launch price became its standard price; the rise to
   // $3/$15 announced for 2026-09-01 was cancelled.
   ["claude-sonnet-5", { inputPerM: 2, outputPerM: 10, cacheCreationPerM: 2.5, cacheWrite1hPerM: 4, cacheReadPerM: 0.2 }],
+  // Prompts up to 100K tokens; longer prompts are in LONG_PROMPT_PRICING.
+  ["claude-haiku-5-5", { inputPerM: 0.1, outputPerM: 0.5, cacheCreationPerM: 0.125, cacheWrite1hPerM: 0.2, cacheReadPerM: 0.01 }],
   // Claude 4 family
   ["claude-opus-4-8", { inputPerM: 5, outputPerM: 25, cacheCreationPerM: 6.25, cacheWrite1hPerM: 10, cacheReadPerM: 0.5 }],
   ["claude-opus-4-7", { inputPerM: 5, outputPerM: 25, cacheCreationPerM: 6.25, cacheWrite1hPerM: 10, cacheReadPerM: 0.5 }],
@@ -95,6 +96,28 @@ const PRICING: [string, ModelPricing][] = [
 ];
 
 const PRICING_BY_ID = new Map(PRICING);
+
+/** Higher rates a model charges for a request whose prompt is long. */
+interface LongPromptPricing {
+  /** A prompt of more than this many tokens pays `pricing`. */
+  overTokens: number;
+  pricing: ModelPricing;
+}
+
+/**
+ * Models priced by prompt length, keyed like {@link PRICING} (which holds
+ * their short-prompt rates). A request's prompt length counts all its input:
+ * `input_tokens + cache_creation_tokens + cache_read_tokens`. A request over
+ * the threshold pays the higher rates for ALL its tokens, output included,
+ * and each request is priced on its own — so the tier can only be chosen per
+ * turn, never from summed tokens.
+ */
+const LONG_PROMPT_PRICING = new Map<string, LongPromptPricing>([
+  ["claude-haiku-5-5", {
+    overTokens: 100_000,
+    pricing: { inputPerM: 0.5, outputPerM: 2.5, cacheCreationPerM: 0.625, cacheWrite1hPerM: 1, cacheReadPerM: 0.05 },
+  }],
+]);
 
 /** Default pricing when model is unknown (uses Sonnet 4.x rates). */
 const DEFAULT_PRICING: ModelPricing = {
@@ -136,58 +159,87 @@ export function getDefaultPricing(): ModelPricing {
 }
 
 /**
- * Build a SQL `CASE` expression that maps a model column to its per-MTok rate
- * for one pricing category, derived from {@link PRICING}. This is the single
- * generator the dashboard cost/cache routes and the backfill use, so the SQL
- * rate tables can never drift from `pricing.ts`.
+ * The model ids priced by prompt length. Their cost can only be computed per
+ * request, so a recompute from summed tokens must skip them.
+ */
+export function promptLengthPricedModels(): string[] {
+  return [...LONG_PROMPT_PRICING.keys()];
+}
+
+/**
+ * SQL for one row's prompt length — all its input, cached or not — as
+ * {@link calculateCost} measures it for {@link LONG_PROMPT_PRICING}.
  *
- * The column is normalized like {@link getPricing} does; the `ELSE` arm uses
- * {@link DEFAULT_PRICING}, as does a NULL model.
+ * @param prefix - Table alias with its dot, e.g. "ct." (default none)
+ */
+export function promptTokensSql(prefix = ""): string {
+  return (
+    `(COALESCE(${prefix}input_tokens, 0) + COALESCE(${prefix}cache_creation_tokens, 0)` +
+    ` + COALESCE(${prefix}cache_read_tokens, 0))`
+  );
+}
+
+/**
+ * Shared generator for the per-model SQL `CASE` expressions: one `WHEN` per
+ * {@link PRICING} entry, a nested prompt-length `CASE` for the models in
+ * {@link LONG_PROMPT_PRICING}, and {@link DEFAULT_PRICING} in the `ELSE` arm.
+ */
+function buildPricingCaseSql(value: (p: ModelPricing) => number, prefix: string): string {
+  const lines = PRICING.map(([id, pricing]) => {
+    const long = LONG_PROMPT_PRICING.get(id);
+    const rate = long
+      ? `CASE WHEN ${promptTokensSql(prefix)} > ${long.overTokens} THEN ${value(long.pricing)} ELSE ${value(pricing)} END`
+      : `${value(pricing)}`;
+    return `    WHEN '${id}' THEN ${rate}`;
+  });
+  return `CASE ${normalizedModelSql(`${prefix}model`)}\n${lines.join("\n")}\n    ELSE ${value(DEFAULT_PRICING)}\n  END`;
+}
+
+/**
+ * Build a SQL `CASE` expression that maps a row to its per-MTok rate for one
+ * pricing category, derived from {@link PRICING} and
+ * {@link LONG_PROMPT_PRICING}. This is the single generator the dashboard
+ * cost/cache routes, the CLI analyzers and the backfill use, so the SQL rate
+ * tables can never drift from `pricing.ts`.
+ *
+ * The model column is normalized like {@link getPricing} does; the `ELSE` arm
+ * uses {@link DEFAULT_PRICING}, as does a NULL model. The rate is per request:
+ * use it on a turn row (inside `SUM(...)` to aggregate), never on summed
+ * tokens. The row needs `model`, `input_tokens`, `cache_creation_tokens` and
+ * `cache_read_tokens` columns.
  *
  * @param rateKey - Which rate to emit (inputPerM, outputPerM, ...)
- * @param modelColumn - SQL column/expression holding the model id (default "model")
+ * @param prefix - Table alias with its dot, e.g. "ct." (default none)
  * @returns A SQL `CASE ... END` string
  */
-export function buildRateCaseSql(
-  rateKey: PricingRateKey,
-  modelColumn = "model",
-): string {
-  const lines = PRICING.map(
-    ([id, pricing]) => `    WHEN '${id}' THEN ${pricing[rateKey]}`,
-  );
-  return `CASE ${normalizedModelSql(modelColumn)}\n${lines.join("\n")}\n    ELSE ${DEFAULT_PRICING[rateKey]}\n  END`;
+export function buildRateCaseSql(rateKey: PricingRateKey, prefix = ""): string {
+  return buildPricingCaseSql((p) => p[rateKey], prefix);
 }
 
 /**
  * Build a SQL `CASE` expression for the per-MTok *cache-read savings rate* of
- * a model: the dollars saved per million tokens by reading from cache instead
+ * a row: the dollars saved per million tokens by reading from cache instead
  * of paying the full input price, i.e. `inputPerM - cacheReadPerM`.
  *
- * Derived from {@link PRICING} so the dashboard cache route can never drift
- * (COST-001). The `ELSE` arm uses {@link DEFAULT_PRICING}.
+ * Derived like {@link buildRateCaseSql}, so the dashboard cache route can
+ * never drift (COST-001), and per request like it.
  *
  * NOTE (framing, MAX-004 — out of scope here): this is an *API-list-price*
  * savings figure; a flat-subscription user does not realize these dollars.
  *
- * @param modelColumn - SQL column/expression holding the model id (default "model")
+ * @param prefix - Table alias with its dot, e.g. "ct." (default none)
  * @returns A SQL `CASE ... END` string
  */
-export function buildCacheSavingsRateCaseSql(modelColumn = "model"): string {
-  const lines = PRICING.map(
-    ([id, pricing]) =>
-      `    WHEN '${id}' THEN ${pricing.inputPerM - pricing.cacheReadPerM}`,
-  );
-  return `CASE ${normalizedModelSql(modelColumn)}\n${lines.join("\n")}\n    ELSE ${
-    DEFAULT_PRICING.inputPerM - DEFAULT_PRICING.cacheReadPerM
-  }\n  END`;
+export function buildCacheSavingsRateCaseSql(prefix = ""): string {
+  return buildPricingCaseSql((p) => p.inputPerM - p.cacheReadPerM, prefix);
 }
 
 /**
  * Build the SQL for one row's cache-write cost in USD: the 5-minute writes at
  * the 5-minute rate plus the 1-hour writes (`cache_creation_1h_tokens`) at the
  * 1-hour rate. A row whose split was not recorded (NULL) counts entirely as
- * `unrecordedAs`. The row needs `cache_creation_tokens`,
- * `cache_creation_1h_tokens` and `model` columns.
+ * `unrecordedAs`. The row needs the columns {@link buildRateCaseSql} needs,
+ * plus `cache_creation_1h_tokens`.
  *
  * @param unrecordedAs - "1h" for main-thread rows, "5m" for sub-agent rows
  * @param prefix - Table alias with its dot, e.g. "ct." (default none)
@@ -198,19 +250,25 @@ export function buildCacheWriteCostSql(
 ): string {
   const total = `${prefix}cache_creation_tokens`;
   const oneHour = `COALESCE(${prefix}cache_creation_1h_tokens, ${unrecordedAs === "1h" ? total : "0"})`;
-  const model = `${prefix}model`;
   return (
-    `((${total} - ${oneHour}) * (${buildRateCaseSql("cacheCreationPerM", model)})` +
-    ` + ${oneHour} * (${buildRateCaseSql("cacheWrite1hPerM", model)})) / 1000000.0`
+    `((${total} - ${oneHour}) * (${buildRateCaseSql("cacheCreationPerM", prefix)})` +
+    ` + ${oneHour} * (${buildRateCaseSql("cacheWrite1hPerM", prefix)})) / 1000000.0`
   );
 }
 
 /**
  * Look up pricing for a model; unknown and missing ids get DEFAULT_PRICING.
+ *
+ * @param promptTokens - The request's prompt length (input + cache writes +
+ *   cache reads); selects the long-prompt rates of a model in
+ *   {@link LONG_PROMPT_PRICING}. Default 0: the short-prompt rates.
  */
-export function getPricing(model: string | null | undefined): ModelPricing {
+export function getPricing(model: string | null | undefined, promptTokens = 0): ModelPricing {
   if (!model) return DEFAULT_PRICING;
-  return PRICING_BY_ID.get(normalizeModelId(model)) ?? DEFAULT_PRICING;
+  const id = normalizeModelId(model);
+  const long = LONG_PROMPT_PRICING.get(id);
+  if (long && promptTokens > long.overTokens) return long.pricing;
+  return PRICING_BY_ID.get(id) ?? DEFAULT_PRICING;
 }
 
 /**
@@ -280,7 +338,8 @@ export function cacheWriteCost(
 }
 
 /**
- * Calculate cost in USD from token counts and model.
+ * Calculate cost in USD from token counts and model, for ONE request: a model
+ * in {@link LONG_PROMPT_PRICING} is priced by this request's prompt length.
  *
  * @param model - Model identifier (e.g. "claude-sonnet-4-20250514")
  * @param inputTokens - Number of input tokens
@@ -299,7 +358,7 @@ export function calculateCost(
   cacheReadTokens: number,
   cacheCreation1hTokens = 0,
 ): number {
-  const p = getPricing(model);
+  const p = getPricing(model, inputTokens + cacheCreationTokens + cacheReadTokens);
   return (
     (inputTokens * p.inputPerM) / 1_000_000 +
     (outputTokens * p.outputPerM) / 1_000_000 +

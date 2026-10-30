@@ -27,8 +27,20 @@ import type {
 } from "../types/index.js";
 import type { QueryExecutor } from "../db/executor.js";
 import { buildTurnFilters } from "./filter-builder.js";
-import { getPricing } from "../utils/pricing.js";
+import { buildCacheSavingsRateCaseSql } from "../utils/pricing.js";
 import { resolveTimezone, wrapTimestampForTz } from "../utils/timezone.js";
+
+/**
+ * SQL summing the cache-read savings of the turns in a group, each turn at
+ * its own model's (inputPerM - cacheReadPerM) rate. The rate is per turn
+ * (Haiku 5.5's depends on the turn's prompt length), so summed tokens cannot
+ * be priced.
+ *
+ * @param prefix - Table alias with its dot, e.g. "ct." (default none)
+ */
+function savingsSumSql(prefix = ""): string {
+  return `COALESCE(SUM(${prefix}cache_read_tokens * (${buildCacheSavingsRateCaseSql(prefix)}) / 1000000.0), 0)`;
+}
 
 /** Cache metrics for a single session. */
 export interface SessionCacheMetrics {
@@ -69,7 +81,8 @@ export class CacheAnalyzer {
         model,
         COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
         COALESCE(SUM(cache_creation_tokens), 0) AS cache_write_tokens,
-        COALESCE(SUM(input_tokens), 0) AS total_input_tokens
+        COALESCE(SUM(input_tokens), 0) AS total_input_tokens,
+        ${savingsSumSql()} AS estimated_savings_usd
       FROM conversation_turns
       WHERE role = 'assistant'
         AND timestamp >= $1 AND timestamp < $2
@@ -81,6 +94,7 @@ export class CacheAnalyzer {
       cache_read_tokens: number;
       cache_write_tokens: number;
       total_input_tokens: number;
+      estimated_savings_usd: number;
     }>(sql, [range.start, range.end, ...f.params]);
 
     let cacheReadTokens = 0;
@@ -96,11 +110,7 @@ export class CacheAnalyzer {
       cacheReadTokens += crTok;
       cacheWriteTokens += cwTok;
       totalInputTokens += inTok;
-
-      // Savings per model = (inputPerM - cacheReadPerM) per MTok of cache reads
-      const p = getPricing(row.model);
-      const savingsPerMTok = p.inputPerM - p.cacheReadPerM;
-      estimatedSavingsUSD += (crTok / 1_000_000) * savingsPerMTok;
+      estimatedSavingsUSD += Number(row.estimated_savings_usd);
     }
 
     // KPI-001: input_tokens is already the uncached-input figure (cache reads
@@ -188,7 +198,7 @@ export class CacheAnalyzer {
    * @returns Per-session cache metrics
    */
   async getCacheBySession(range: TimeRange): Promise<SessionCacheMetrics[]> {
-    // Group by session and model to compute model-aware savings
+    // Group by session and model; savings are priced per turn in SQL
     const sql = `
       SELECT
         s.session_id,
@@ -198,7 +208,8 @@ export class CacheAnalyzer {
         COALESCE(SUM(ct.cache_creation_tokens), 0) AS cache_write_tokens,
         -- KPI-001: input_tokens is already the uncached-input figure; do not
         -- subtract cache_read (they are separate Anthropic API fields).
-        COALESCE(SUM(ct.input_tokens), 0) AS uncached_input_tokens
+        COALESCE(SUM(ct.input_tokens), 0) AS uncached_input_tokens,
+        ${savingsSumSql("ct.")} AS estimated_savings_usd
       FROM v_session_summary s
       LEFT JOIN conversation_turns ct ON ct.session_id = s.session_id
       WHERE s.start_time >= $1 AND s.start_time < $2
@@ -212,6 +223,7 @@ export class CacheAnalyzer {
       cache_read_tokens: number;
       cache_write_tokens: number;
       uncached_input_tokens: number;
+      estimated_savings_usd: number;
     }>(sql, [range.start, range.end]);
 
     // Aggregate per-model rows into per-session metrics
@@ -232,15 +244,10 @@ export class CacheAnalyzer {
         sessionMap.set(sid, entry);
       }
 
-      const crTok = Number(row.cache_read_tokens);
-      entry.cacheReadTokens += crTok;
+      entry.cacheReadTokens += Number(row.cache_read_tokens);
       entry.cacheWriteTokens += Number(row.cache_write_tokens);
       entry.uncachedInputTokens += Number(row.uncached_input_tokens);
-
-      // Model-aware savings: (inputPerM - cacheReadPerM) per MTok
-      const p = getPricing(row.model);
-      const savingsPerMTok = p.inputPerM - p.cacheReadPerM;
-      entry.estimatedSavingsUSD += (crTok / 1_000_000) * savingsPerMTok;
+      entry.estimatedSavingsUSD += Number(row.estimated_savings_usd);
     }
 
     const results = Array.from(sessionMap.values());
